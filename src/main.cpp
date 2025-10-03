@@ -1,6 +1,11 @@
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
 
+#define VMA_STATIC_VULKAN_FUNCTIONS  0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+#define VMA_IMPLEMENTATION
+#include <vk_mem_alloc.h>
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
@@ -266,6 +271,28 @@ int main() {
 
     VkDevice device = VK_NULL_HANDLE;
     VK_CHECK(vkCreateDevice(physical_device, &device_info, nullptr, &device));
+    volkLoadDevice(device);
+
+    VmaAllocatorCreateInfo allocator_info = {
+        .flags                          = 0,
+        .physicalDevice                 = physical_device,
+        .device                         = device,
+        .preferredLargeHeapBlockSize    = 0,
+        .pAllocationCallbacks           = nullptr,
+        .pDeviceMemoryCallbacks         = nullptr,
+        .pHeapSizeLimit                 = nullptr,
+        .pVulkanFunctions               = nullptr,
+        .instance                       = instance,
+        .vulkanApiVersion               = VK_API_VERSION_1_4,
+        .pTypeExternalMemoryHandleTypes = nullptr
+    };
+
+    VmaVulkanFunctions vma_functions = {};
+    VK_CHECK(vmaImportVulkanFunctionsFromVolk(&allocator_info, &vma_functions));
+    allocator_info.pVulkanFunctions = &vma_functions;
+
+    VmaAllocator vma_allocator;
+    VK_CHECK(vmaCreateAllocator(&allocator_info, &vma_allocator));
 
     VkQueue graphics_queue = VK_NULL_HANDLE;
     vkGetDeviceQueue(device, graphics_queue_index, 0, &graphics_queue);
@@ -542,7 +569,7 @@ int main() {
     VkDescriptorPoolCreateInfo imgui_pool_info = {
         .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .pNext         = nullptr,
-        .flags         = 0,
+        .flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
         .maxSets       = max_imgui_sets,
         .poolSizeCount = static_cast<uint32_t>(IM_ARRAYSIZE(imgui_pool_sizes)),
         .pPoolSizes    = imgui_pool_sizes
@@ -591,7 +618,7 @@ int main() {
     init_info.PipelineCache               = nullptr;
     init_info.DescriptorPool              = imgui_descriptor_pool;
     init_info.MinImageCount               = 2;
-    init_info.ImageCount                  = 2;
+    init_info.ImageCount                  = swapchain_image_count;
     init_info.Subpass                     = 0;
     init_info.MSAASamples                 = VK_SAMPLE_COUNT_1_BIT;
     init_info.Allocator                   = nullptr;
@@ -626,6 +653,8 @@ int main() {
 
         uint32_t image_index = 0;
         vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, image_available_semaphore, VK_NULL_HANDLE, &image_index);
+
+        vmaSetCurrentFrameIndex(vma_allocator, image_index);
 
         VkCommandBufferBeginInfo begin_info = {
             .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
