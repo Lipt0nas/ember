@@ -1,8 +1,13 @@
+#define VOLK_IMPLEMENTATION
 #include <volk.h>
 
-#include <spdlog/spdlog.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
 
-#include <GLFW/glfw3.h>
+#include <imgui.h>
+#include <imgui_impl_sdl3.h>
+#include <imgui_impl_vulkan.h>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -18,10 +23,6 @@ const std::vector<const char*> validation_layer_names = {"VK_LAYER_KHRONOS_valid
         assert(result_ == VK_SUCCESS);                                                                                 \
     } while (0)
 
-void glfw_error_callback(int error, const char* description) {
-    spdlog::error("GLFW error {}: {}", error, description);
-}
-
 VKAPI_ATTR VkBool32 VKAPI_CALL vulkan_debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT      messageSeverity,
     VkDebugUtilsMessageTypeFlagsEXT             messageType,
@@ -31,6 +32,10 @@ VKAPI_ATTR VkBool32 VKAPI_CALL vulkan_debug_callback(
     spdlog::debug("VK validation: {}", pCallbackData->pMessage);
 
     return VK_FALSE;
+}
+
+PFN_vkVoidFunction imgui_load_function(const char* function_name, void* user_data) {
+    return vkGetInstanceProcAddr((VkInstance)user_data, function_name);
 }
 
 std::tuple<VkPhysicalDeviceProperties, VkPhysicalDeviceFeatures>
@@ -67,7 +72,7 @@ uint32_t find_queue_index(VkPhysicalDevice physical_device, VkQueueFlagBits queu
 }
 
 std::tuple<VkSurfaceCapabilitiesKHR, VkSurfaceFormatKHR, VkPresentModeKHR, VkExtent2D>
-get_swapchain_settings(GLFWwindow* window, VkPhysicalDevice physical_device, VkSurfaceKHR surface) {
+get_swapchain_settings(SDL_Window* window, VkPhysicalDevice physical_device, VkSurfaceKHR surface) {
     VkSurfaceCapabilitiesKHR capabilities = {};
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &capabilities);
 
@@ -101,7 +106,7 @@ get_swapchain_settings(GLFWwindow* window, VkPhysicalDevice physical_device, VkS
 
     int width;
     int height;
-    glfwGetFramebufferSize(window, &width, &height);
+    SDL_GetWindowSize(window, &width, &height);
 
     VkExtent2D extent = {.width = static_cast<uint32_t>(width), .height = static_cast<uint32_t>(height)};
 
@@ -144,18 +149,15 @@ int main() {
 
     VK_CHECK(volkInitialize());
 
-    spdlog::info("Initializing GLFW");
-    glfwSetErrorCallback(glfw_error_callback);
-    if (!glfwInit()) {
-        spdlog::error("Failed to initialize GLFW");
+    spdlog::info("Initializing SDL");
+    if (!SDL_Init(SDL_INIT_EVENTS | SDL_INIT_VIDEO)) {
+        spdlog::error("Failed to initialize SDL");
         return 1;
     }
 
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-    auto* window = glfwCreateWindow(1280, 720, "Ember", nullptr, nullptr);
+    auto* window = SDL_CreateWindow("Ember", 1280, 720, SDL_WINDOW_VULKAN);
     if (!window) {
-        spdlog::error("Failed to create GLFW window");
+        spdlog::error("Failed to create SDL window");
         return 1;
     }
 
@@ -163,13 +165,14 @@ int main() {
     vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
     spdlog::debug("Instance supports {} extensions", extension_count);
 
-    uint32_t     glfw_extension_count = 0;
-    const char** glfw_extensions      = glfwGetRequiredInstanceExtensions(&glfw_extension_count);
-    spdlog::debug("GLFW requires {} extensions", glfw_extension_count);
+    uint32_t sdl_extension_count = 0;
+    auto     sdl_extensions      = SDL_Vulkan_GetInstanceExtensions(&sdl_extension_count);
+
+    spdlog::debug("SDL requires {} extensions", sdl_extension_count);
 
     std::vector<const char*> instance_extensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
-    for (uint32_t i = 0; i < glfw_extension_count; i++) {
-        instance_extensions.push_back(glfw_extensions[i]);
+    for (uint32_t i = 0; i < sdl_extension_count; i++) {
+        instance_extensions.push_back(sdl_extensions[i]);
     }
 
     VkDebugUtilsMessengerCreateInfoEXT debug_messenger_info = {
@@ -268,7 +271,10 @@ int main() {
     vkGetDeviceQueue(device, graphics_queue_index, 0, &graphics_queue);
 
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    VK_CHECK(glfwCreateWindowSurface(instance, window, nullptr, &surface));
+    if (!SDL_Vulkan_CreateSurface(window, instance, nullptr, &surface)) {
+        spdlog::error("Failed to create SDL window surface");
+        return 1;
+    }
 
     auto [swapchain_capabilities, swapchain_format, swapchain_mode, swapchain_extent] =
         get_swapchain_settings(window, physical_device, surface);
@@ -322,12 +328,13 @@ int main() {
                  .g = VK_COMPONENT_SWIZZLE_IDENTITY,
                  .b = VK_COMPONENT_SWIZZLE_IDENTITY,
                  .a = VK_COMPONENT_SWIZZLE_IDENTITY},
-            .subresourceRange =
-                {.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                 .baseMipLevel   = 0,
-                 .levelCount     = 1,
-                 .baseArrayLayer = 0,
-                 .layerCount     = 1}
+            .subresourceRange = {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel   = 0,
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1
+            }
         };
 
         VK_CHECK(vkCreateImageView(device, &image_view_info, nullptr, &swapchain_image_views[i]));
@@ -523,8 +530,99 @@ int main() {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &graphics_pipeline_info, nullptr, &pipeline));
 
-    while (!glfwWindowShouldClose(window)) {
-        glfwPollEvents();
+    VkDescriptorPoolSize imgui_pool_sizes[] = {
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, IMGUI_IMPL_VULKAN_MINIMUM_IMAGE_SAMPLER_POOL_SIZE}
+    };
+
+    uint32_t max_imgui_sets = 0;
+    for (VkDescriptorPoolSize& size : imgui_pool_sizes) {
+        max_imgui_sets += size.descriptorCount;
+    }
+
+    VkDescriptorPoolCreateInfo imgui_pool_info = {
+        .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .pNext         = nullptr,
+        .flags         = 0,
+        .maxSets       = max_imgui_sets,
+        .poolSizeCount = static_cast<uint32_t>(IM_ARRAYSIZE(imgui_pool_sizes)),
+        .pPoolSizes    = imgui_pool_sizes
+
+    };
+
+    VkDescriptorPool imgui_descriptor_pool = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateDescriptorPool(device, &imgui_pool_info, nullptr, &imgui_descriptor_pool));
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+
+    ImGui::StyleColorsLight();
+
+    ImGuiStyle& style          = ImGui::GetStyle();
+    io.ConfigDpiScaleFonts     = true;
+    io.ConfigDpiScaleViewports = true;
+
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        style.WindowRounding              = 0.0f;
+        style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+    }
+
+    VkPipelineRenderingCreateInfoKHR imgui_rendering_info = {
+        .sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .pNext                   = nullptr,
+        .viewMask                = 0,
+        .colorAttachmentCount    = 1,
+        .pColorAttachmentFormats = &swapchain_format.format,
+        .depthAttachmentFormat   = VK_FORMAT_UNDEFINED,
+        .stencilAttachmentFormat = VK_FORMAT_UNDEFINED
+    };
+
+    ImGui_ImplSDL3_InitForVulkan(window);
+    ImGui_ImplVulkan_InitInfo init_info   = {};
+    init_info.Instance                    = instance;
+    init_info.PhysicalDevice              = physical_device;
+    init_info.Device                      = device;
+    init_info.QueueFamily                 = graphics_queue_index;
+    init_info.Queue                       = graphics_queue;
+    init_info.PipelineCache               = nullptr;
+    init_info.DescriptorPool              = imgui_descriptor_pool;
+    init_info.MinImageCount               = 2;
+    init_info.ImageCount                  = 2;
+    init_info.Subpass                     = 0;
+    init_info.MSAASamples                 = VK_SAMPLE_COUNT_1_BIT;
+    init_info.Allocator                   = nullptr;
+    init_info.UseDynamicRendering         = true;
+    init_info.RenderPass                  = VK_NULL_HANDLE;
+    init_info.PipelineRenderingCreateInfo = imgui_rendering_info;
+    init_info.CheckVkResultFn             = nullptr;
+    ImGui_ImplVulkan_LoadFunctions(VK_API_VERSION_1_3, imgui_load_function, instance);
+    ImGui_ImplVulkan_Init(&init_info);
+
+    bool running = true;
+    while (running) {
+        SDL_Event window_event;
+        while (SDL_PollEvent(&window_event)) {
+            ImGui_ImplSDL3_ProcessEvent(&window_event);
+            switch (window_event.type) {
+            case SDL_EVENT_QUIT:
+                running = false;
+                break;
+            }
+        }
+
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        ImGui::NewFrame();
+
+        ImGui::ShowDemoWindow();
+
+        ImGui::Render();
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
 
         uint32_t image_index = 0;
         vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, image_available_semaphore, VK_NULL_HANDLE, &image_index);
@@ -549,12 +647,13 @@ int main() {
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image               = swapchain_images[image_index],
-            .subresourceRange =
-                {.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                 .baseMipLevel   = 0,
-                 .levelCount     = 1,
-                 .baseArrayLayer = 0,
-                 .layerCount     = 1}
+            .subresourceRange    = {
+                   .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                   .baseMipLevel   = 0,
+                   .levelCount     = 1,
+                   .baseArrayLayer = 0,
+                   .layerCount     = 1
+            }
         };
 
         VkDependencyInfo to_dependency = {
@@ -601,6 +700,8 @@ int main() {
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
 
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
+
         vkCmdEndRendering(command_buffer);
 
         VkImageMemoryBarrier2 to_present_barrier = {
@@ -615,12 +716,13 @@ int main() {
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image               = swapchain_images[image_index],
-            .subresourceRange =
-                {.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                 .baseMipLevel   = 0,
-                 .levelCount     = 1,
-                 .baseArrayLayer = 0,
-                 .layerCount     = 1}
+            .subresourceRange    = {
+                   .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                   .baseMipLevel   = 0,
+                   .levelCount     = 1,
+                   .baseArrayLayer = 0,
+                   .layerCount     = 1
+            }
         };
 
         VkDependencyInfo present_dependency = {
@@ -666,6 +768,9 @@ int main() {
         vkDeviceWaitIdle(device);
     }
 
+    ImGui_ImplSDL3_Shutdown();
+    ImGui_ImplVulkan_Shutdown();
+    vkDestroyDescriptorPool(device, imgui_descriptor_pool, nullptr);
     vkDestroyShaderModule(device, vertex_module, nullptr);
     vkDestroyShaderModule(device, fragment_module, nullptr);
     vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
@@ -681,8 +786,8 @@ int main() {
     vkDestroyDevice(device, nullptr);
     vkDestroyDebugUtilsMessengerEXT(instance, debug_messenger, nullptr);
     vkDestroyInstance(instance, nullptr);
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    SDL_DestroyWindow(window);
+    SDL_Quit();
 
     return 0;
 }
