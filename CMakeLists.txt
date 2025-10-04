@@ -95,3 +95,33 @@ target_link_libraries(Ember PRIVATE
     volk
     tinygltf
 )
+
+# TODO: temporary convenience
+find_program(GLSLC glslc)
+if(NOT GLSLC)
+    message(FATAL_ERROR "glslc not found! Make sure Vulkan SDK is installed and in PATH")
+endif()
+
+set(SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data/shaders")
+file(GLOB_RECURSE SHADER_SOURCES 
+    "${SHADER_SOURCE_DIR}/*"
+)
+list(FILTER SHADER_SOURCES EXCLUDE REGEX ".*\\.spv$")
+
+set(SHADER_OUTPUTS)
+foreach(SHADER_SOURCE ${SHADER_SOURCES})
+    set(SHADER_OUTPUT "${SHADER_SOURCE}.spv")
+    
+    add_custom_command(
+        OUTPUT ${SHADER_OUTPUT}
+        COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
+        DEPENDS ${SHADER_SOURCE}
+        COMMENT "Compiling shader: ${SHADER_SOURCE}"
+        VERBATIM
+    )
+    
+    list(APPEND SHADER_OUTPUTS ${SHADER_OUTPUT})
+endforeach()
+
+add_custom_target(shaders ALL DEPENDS ${SHADER_OUTPUTS})
+add_dependencies(Ember shaders)

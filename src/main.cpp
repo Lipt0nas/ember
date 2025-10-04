@@ -1001,8 +1001,8 @@ int main() {
         .stencilAttachmentFormat = VK_FORMAT_UNDEFINED
     };
 
-    VkShaderModule vertex_module   = shader_module_from_file(device, "data/shaders/vert.spv");
-    VkShaderModule fragment_module = shader_module_from_file(device, "data/shaders/frag.spv");
+    VkShaderModule vertex_module   = shader_module_from_file(device, "data/shaders/vert.vert.spv");
+    VkShaderModule fragment_module = shader_module_from_file(device, "data/shaders/frag.frag.spv");
 
     VkPipelineShaderStageCreateInfo shader_stage_infos[] = {
         {.sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
