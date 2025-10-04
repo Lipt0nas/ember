@@ -49,7 +49,13 @@ FetchContent_Declare(volk
     GIT_SHALLOW TRUE
 )
 
-FetchContent_MakeAvailable(glm sdl vma spdlog volk)
+FetchContent_Declare(tinygltf
+    GIT_REPOSITORY https://github.com/syoyo/tinygltf.git
+    GIT_TAG v2.9.6
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(glm sdl vma spdlog volk tinygltf)
 
 FetchContent_GetProperties(imgui)
 if(NOT imgui_POPULATED)
@@ -75,6 +81,7 @@ endif()
 
 set(SOURCES
     "src/main.cpp"
+    "src/implementations.cpp"
 )
 add_executable(Ember ${SOURCES})
 
@@ -86,4 +93,5 @@ target_link_libraries(Ember PRIVATE
     VulkanMemoryAllocator
     spdlog::spdlog
     volk
+    tinygltf
 )
