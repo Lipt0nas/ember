@@ -1349,15 +1349,15 @@ int main() {
             .pName               = "main",
             .pSpecializationInfo = nullptr,
         },
-        // {
-        //     .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        //     .pNext               = nullptr,
-        //     .flags               = 0,
-        //     .stage               = VK_SHADER_STAGE_TASK_BIT_EXT,
-        //     .module              = task_module,
-        //     .pName               = "main",
-        //     .pSpecializationInfo = nullptr,
-        // },
+        {
+            .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pNext               = nullptr,
+            .flags               = 0,
+            .stage               = VK_SHADER_STAGE_TASK_BIT_EXT,
+            .module              = task_module,
+            .pName               = "main",
+            .pSpecializationInfo = nullptr,
+        },
         {
             .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .pNext               = nullptr,
@@ -2026,8 +2026,10 @@ int main() {
             uint32_t first_index   = static_cast<uint32_t>(mesh.index_buffer_offset / sizeof(uint32_t));
             int32_t  vertex_offset = static_cast<int32_t>(mesh.vertex_buffer_offset / sizeof(Vertex));
 
+            uint32_t group_count = (mesh.meshlet_count + 31) / 32;
+
             VkDrawMeshTasksIndirectCommandEXT command = {
-                .groupCountX = mesh.meshlet_count,
+                .groupCountX = group_count,
                 .groupCountY = 1,
                 .groupCountZ = 1,
             };

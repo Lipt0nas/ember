@@ -13,17 +13,21 @@ layout(location = 1) out vec2 out_uv[];
 layout(location = 2) flat out uint out_albedo_index[];
 layout(location = 3) out vec3 out_meshlet_color[];
 
+struct TaskPayload {
+    uint draw_id;
+    uint meshlet_ids[32];
+    uint meshlet_count;
+};
+
+taskPayloadSharedEXT TaskPayload payload;
+
 struct DrawData {
     mat4 model;
-
     uint albedo_index;
-
     uint first_index;
     int vertex_offset;
-
     uint meshlet_offset;
     uint meshlet_count;
-
     float _pad0;
     float _pad1;
     float _pad2;
@@ -32,7 +36,6 @@ struct DrawData {
 struct Meshlet {
     uint vertex_offset;
     uint triangle_offset;
-
     uint vertex_count;
     uint triangle_count;
 };
@@ -81,10 +84,17 @@ layout(push_constant, std430) uniform pc {
 } push_constants;
 
 void main() {
-    uint meshlet_id = gl_WorkGroupID.x;
+    uint local_meshlet_id = gl_WorkGroupID.x;
     uint thread_id = gl_LocalInvocationIndex;
 
-    DrawData draw = uniforms.draw_data[gl_DrawID];
+    // TODO: Shouldn't happen
+    // if (local_meshlet_id >= payload.meshlet_count) {
+    //     return;
+    // }
+
+    uint meshlet_id = payload.meshlet_ids[local_meshlet_id];
+
+    DrawData draw = uniforms.draw_data[payload.draw_id];
 
     uint draw_meshlet_id = draw.meshlet_offset + meshlet_id;
     Meshlet m = push_constants.meshlet_buffer.meshlets[draw_meshlet_id];
