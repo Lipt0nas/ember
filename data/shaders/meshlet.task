@@ -1,11 +1,16 @@
 #version 460
+
+#extension GL_EXT_mesh_shader : require
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 
-layout(location = 0) out vec3 out_color;
-layout(location = 1) out vec2 out_uv;
-layout(location = 2) flat out uint out_albedo_index;
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+taskPayloadSharedEXT struct {
+    uint meshlet_indices[128];
+    uint draw_id;
+} payload;
 
 struct DrawData {
     mat4 model;
@@ -23,18 +28,21 @@ struct DrawData {
     float _pad2;
 };
 
-struct Vertex {
-    vec3 position;
-    vec3 normal;
-    vec2 uv;
-};
-
 struct Meshlet {
     uint vertex_offset;
     uint triangle_offset;
 
     uint vertex_count;
     uint triangle_count;
+};
+
+struct MeshletBounds {
+    vec3 center;
+    float radius;
+
+    vec3 cone_apex;
+    vec3 cone_axis;
+    float cone_cutoff;
 };
 
 layout(buffer_reference, scalar) readonly buffer IndexBuffer {
@@ -47,6 +55,10 @@ layout(buffer_reference, scalar) readonly buffer VertexBuffer {
 
 layout(buffer_reference, scalar) readonly buffer MeshletBuffer {
     Meshlet meshlets[];
+};
+
+layout(buffer_reference, scalar) readonly buffer MeshletBoundsBuffer {
+    MeshletBounds bounds[];
 };
 
 layout(buffer_reference, scalar) readonly buffer MeshletVertexIndices {
@@ -68,30 +80,25 @@ layout(push_constant, std430) uniform pc {
     MeshletBuffer meshlet_buffer;
     MeshletVertexIndices meshlet_vertex_indices;
     MeshletPrimitiveIndices meshlet_primitive_indices;
+    MeshletBoundsBuffer meshlet_bounds_buffer;
 } push_constants;
 
 void main() {
-    DrawData draw = uniforms.draw_data[gl_DrawID];
+    uint object_id = gl_DrawID;
+    uint local_meshlet_id = gl_GlobalInvocationID.x;
 
-    uint base = gl_VertexIndex * 8;
-    vec3 position = vec3(
-            push_constants.vertex_buffer.data[base + 0],
-            push_constants.vertex_buffer.data[base + 1],
-            push_constants.vertex_buffer.data[base + 2]
-        );
-    vec3 normal = vec3(
-            push_constants.vertex_buffer.data[base + 3],
-            push_constants.vertex_buffer.data[base + 4],
-            push_constants.vertex_buffer.data[base + 5]
-        );
-    vec2 uv = vec2(
-            push_constants.vertex_buffer.data[base + 6],
-            push_constants.vertex_buffer.data[base + 7]
-        );
+    DrawData obj = uniforms.draw_data[object_id];
 
-    out_color = normal;
-    out_uv = uv;
-    out_albedo_index = draw.albedo_index;
+    if (local_meshlet_id >= obj.meshlet_count) {
+        return;
+    }
 
-    gl_Position = push_constants.transform * draw.model * vec4(position, 1.0);
+    payload.meshlet_indices[gl_LocalInvocationID.x] = local_meshlet_id;
+
+    if (gl_LocalInvocationID.x == 0) {
+        payload.draw_id = object_id;
+
+        uint meshlets_in_this_workgroup = min(128, obj.meshlet_count - gl_WorkGroupID.x * 128);
+        EmitMeshTasksEXT(meshlets_in_this_workgroup, 1, 1);
+    }
 }

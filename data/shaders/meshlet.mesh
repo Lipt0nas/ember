@@ -1,0 +1,140 @@
+#version 460
+
+#extension GL_EXT_mesh_shader : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(triangles, max_vertices = 64, max_primitives = 124) out;
+
+layout(location = 0) out vec3 out_color[];
+layout(location = 1) out vec2 out_uv[];
+layout(location = 2) flat out uint out_albedo_index[];
+layout(location = 3) out vec3 out_meshlet_color[];
+
+struct DrawData {
+    mat4 model;
+
+    uint albedo_index;
+
+    uint first_index;
+    int vertex_offset;
+
+    uint meshlet_offset;
+    uint meshlet_count;
+
+    float _pad0;
+    float _pad1;
+    float _pad2;
+};
+
+struct Meshlet {
+    uint vertex_offset;
+    uint triangle_offset;
+
+    uint vertex_count;
+    uint triangle_count;
+};
+
+struct MeshletBounds {
+    vec3 center;
+    float radius;
+
+    vec3 cone_apex;
+    vec3 cone_axis;
+    float cone_cutoff;
+};
+
+layout(buffer_reference, scalar) readonly buffer IndexBuffer {
+    uint indices[];
+};
+
+layout(buffer_reference, scalar) readonly buffer VertexBuffer {
+    float data[];
+};
+
+layout(buffer_reference, scalar) readonly buffer MeshletBuffer {
+    Meshlet meshlets[];
+};
+
+layout(buffer_reference, scalar) readonly buffer MeshletBoundsBuffer {
+    MeshletBounds bounds[];
+};
+
+layout(buffer_reference, scalar) readonly buffer MeshletVertexIndices {
+    uint indices[];
+};
+
+layout(buffer_reference, scalar) readonly buffer MeshletPrimitiveIndices {
+    uint8_t indices[];
+};
+
+layout(set = 0, binding = 0) readonly buffer DrawDataBuffer {
+    DrawData draw_data[];
+} uniforms;
+
+layout(push_constant, std430) uniform pc {
+    mat4 transform;
+    VertexBuffer vertex_buffer;
+    IndexBuffer index_buffer;
+    MeshletBuffer meshlet_buffer;
+    MeshletVertexIndices meshlet_vertex_indices;
+    MeshletPrimitiveIndices meshlet_primitive_indices;
+    MeshletBoundsBuffer meshlet_bounds_buffer;
+} push_constants;
+
+void main() {
+    uint meshlet_id = gl_WorkGroupID.x;
+    uint thread_id = gl_LocalInvocationIndex;
+
+    DrawData draw = uniforms.draw_data[gl_DrawID];
+
+    uint draw_meshlet_id = draw.meshlet_offset + meshlet_id;
+    Meshlet m = push_constants.meshlet_buffer.meshlets[draw_meshlet_id];
+
+    SetMeshOutputsEXT(m.vertex_count, m.triangle_count);
+
+    if (thread_id < m.vertex_count) {
+        uint global_vertex_index = push_constants.meshlet_vertex_indices.indices[m.vertex_offset + thread_id];
+
+        uint base = global_vertex_index * 8;
+        vec3 position = vec3(
+                push_constants.vertex_buffer.data[base + 0],
+                push_constants.vertex_buffer.data[base + 1],
+                push_constants.vertex_buffer.data[base + 2]
+            );
+        vec3 normal = vec3(
+                push_constants.vertex_buffer.data[base + 3],
+                push_constants.vertex_buffer.data[base + 4],
+                push_constants.vertex_buffer.data[base + 5]
+            );
+        vec2 uv = vec2(
+                push_constants.vertex_buffer.data[base + 6],
+                push_constants.vertex_buffer.data[base + 7]
+            );
+
+        uint hash = draw_meshlet_id * 747796405u + 2891336453u;
+        vec3 meshlet_color = vec3(
+                float((hash >> 0) & 0xFF) / 255.0,
+                float((hash >> 8) & 0xFF) / 255.0,
+                float((hash >> 16) & 0xFF) / 255.0
+            );
+
+        gl_MeshVerticesEXT[thread_id].gl_Position = push_constants.transform * draw.model * vec4(position, 1.0);
+        out_color[thread_id] = normal;
+        out_uv[thread_id] = uv;
+        out_albedo_index[thread_id] = draw.albedo_index;
+        out_meshlet_color[thread_id] = meshlet_color;
+    }
+
+    if (thread_id < m.triangle_count) {
+        uint prim_base = m.triangle_offset + thread_id * 3;
+
+        uint i_0 = uint(push_constants.meshlet_primitive_indices.indices[prim_base + 0]);
+        uint i_1 = uint(push_constants.meshlet_primitive_indices.indices[prim_base + 1]);
+        uint i_2 = uint(push_constants.meshlet_primitive_indices.indices[prim_base + 2]);
+
+        gl_PrimitiveTriangleIndicesEXT[thread_id] = uvec3(i_0, i_1, i_2);
+    }
+}

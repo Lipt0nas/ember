@@ -11,6 +11,8 @@
 #include <imgui_impl_vulkan.h>
 #include <spdlog/spdlog.h>
 
+#include <meshoptimizer.h>
+
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_ENABLE_EXPERIMENTAL
@@ -29,6 +31,15 @@
         assert(result_ == VK_SUCCESS);                                                                                 \
     } while (0)
 
+struct MeshletBounds {
+    glm::vec3 center;
+    float     radius;
+
+    glm::vec3 cone_apex;
+    glm::vec3 cone_axis;
+    float     cone_cutoff;
+};
+
 struct Vertex {
     glm::vec3 position;
     glm::vec3 normal;
@@ -39,13 +50,30 @@ struct Vertex {
     }
 };
 
+struct PushConstants {
+    glm::mat4    combined;
+    VkDeviceSize vertex_buffer_address;
+    VkDeviceSize index_buffer_address;
+    VkDeviceSize meshlet_buffer_address;
+    VkDeviceSize meshlet_vertex_buffer_indices_address;
+    VkDeviceSize meshlet_primitive_indices_buffer_address;
+    VkDeviceSize meshlet_bounds_buffer_address;
+};
+
 struct DrawData {
     glm::mat4 model_matrix;
 
     uint32_t albedo_index;
+
+    // Vertex pulling
     uint32_t first_index;
     int32_t  vertex_offset;
-    uint32_t _pad;
+
+    // Meshlets
+    uint32_t meshlet_offset;
+    uint32_t meshlet_count;
+
+    float _pad[3];
 };
 
 struct Buffer {
@@ -64,14 +92,15 @@ struct Image {
 };
 
 struct Material {
-    Image image;
-
     uint32_t albedo_index;
 };
 
 struct Mesh {
     VkDeviceSize vertex_buffer_offset;
     VkDeviceSize index_buffer_offset;
+
+    uint32_t meshlet_offset;
+    uint32_t meshlet_count;
 
     uint32_t vertex_count;
     uint32_t index_count;
@@ -241,8 +270,17 @@ void copy_buffer(
     VkDevice        device,
     void*           data,
     size_t          data_size,
-    VkDeviceSize    dst_buffer_offet = 0
+    VkDeviceSize    dst_buffer_offset = 0
 ) {
+    if (data_size + dst_buffer_offset >= dst_buffer.size) {
+        spdlog::error(
+            "Attempted out of bounds buffer write, size={}, remaining space={}",
+            data_size,
+            dst_buffer.size - dst_buffer_offset
+        );
+        exit(1);
+    }
+
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .pNext = nullptr, .flags = 0, .pInheritanceInfo = nullptr
     };
@@ -250,7 +288,7 @@ void copy_buffer(
 
     VkBufferCopy copy_region = {
         .srcOffset = 0,
-        .dstOffset = dst_buffer_offet,
+        .dstOffset = dst_buffer_offset,
         .size      = data_size,
     };
     vkCmdCopyBuffer(command_buffer, src_buffer.handle, dst_buffer.handle, 1, &copy_region);
@@ -499,16 +537,25 @@ VkShaderModule shader_module_from_file(VkDevice device, const std::filesystem::p
 }
 
 std::vector<Mesh> load_model(
-    const std::filesystem::path& path,
-    const Buffer&                staging_buffer,
-    const Buffer&                indirect_vertex_buffer,
-    VkDeviceSize&                indirect_vertex_buffer_offset,
-    const Buffer&                indirect_index_buffer,
-    VkDeviceSize&                indirect_index_buffer_offset,
-    VmaAllocator                 allocator,
-    VkCommandBuffer              command_buffer,
-    VkQueue                      queue,
-    VkDevice                     device
+    const std::filesystem::path&         path,
+    const Buffer&                        staging_buffer,
+    const Buffer&                        indirect_vertex_buffer,
+    VkDeviceSize&                        indirect_vertex_buffer_offset,
+    const Buffer&                        indirect_index_buffer,
+    VkDeviceSize&                        indirect_index_buffer_offset,
+    const Buffer&                        meshlet_bufffer,
+    VkDeviceSize&                        meshlet_buffer_offset,
+    const Buffer&                        meshlet_vertex_indices,
+    VkDeviceSize&                        meshlet_vertex_indices_offset,
+    const Buffer&                        meshlet_primitive_indices,
+    VkDeviceSize&                        meshlet_primitive_indices_offset,
+    const Buffer&                        meshlet_bounds_buffer,
+    VkDeviceSize&                        meshlet_bounds_buffer_offset,
+    std::unordered_map<uint32_t, Image>& global_texture_cache,
+    VmaAllocator                         allocator,
+    VkCommandBuffer                      command_buffer,
+    VkQueue                              queue,
+    VkDevice                             device
 ) {
     tinygltf::TinyGLTF loader;
     tinygltf::Model    model;
@@ -534,13 +581,17 @@ std::vector<Mesh> load_model(
     }
 
     std::vector<Mesh> meshes;
+
+    uint32_t                               local_cache_offset = global_texture_cache.size();
+    std::unordered_map<uint32_t, uint32_t> local_texture_cache;
+
     for (int m = 0; m < model.meshes.size(); m++) {
         const tinygltf::Mesh& mesh = model.meshes[m];
 
-        std::vector<Vertex>   vertices;
-        std::vector<uint32_t> indices;
-
         for (int p = 0; p < mesh.primitives.size(); p++) {
+            std::vector<Vertex>   vertices;
+            std::vector<uint32_t> indices;
+
             const tinygltf::Primitive& primitive = mesh.primitives[p];
 
             const tinygltf::Accessor& pos_accessor      = model.accessors[primitive.attributes.at("POSITION")];
@@ -594,14 +645,14 @@ std::vector<Mesh> load_model(
                 const tinygltf::BufferView& index_view     = model.bufferViews[index_accessor.bufferView];
                 const tinygltf::Buffer&     index_buffer   = model.buffers[index_view.buffer];
 
-                size_t indexCount = index_accessor.count;
+                size_t index_count = index_accessor.count;
 
                 switch (index_accessor.componentType) {
                 case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
                     const uint16_t* short_indices = reinterpret_cast<const uint16_t*>(
                         &index_buffer.data[index_view.byteOffset + index_accessor.byteOffset]
                     );
-                    for (size_t i = 0; i < indexCount; i++) {
+                    for (size_t i = 0; i < index_count; i++) {
                         indices.push_back(static_cast<uint32_t>(short_indices[i]));
                     }
                     break;
@@ -611,7 +662,7 @@ std::vector<Mesh> load_model(
                         &index_buffer.data[index_view.byteOffset + index_accessor.byteOffset]
                     );
 
-                    for (int ind = 0; ind < indexCount; ind++) {
+                    for (int ind = 0; ind < index_count; ind++) {
                         indices.push_back(long_indices[ind]);
                     }
                     break;
@@ -620,96 +671,300 @@ std::vector<Mesh> load_model(
                     const uint8_t* byte_indices = reinterpret_cast<const uint8_t*>(
                         &index_buffer.data[index_view.byteOffset + index_accessor.byteOffset]
                     );
-                    for (size_t i = 0; i < indexCount; i++) {
+                    for (size_t i = 0; i < index_count; i++) {
                         indices.push_back(static_cast<uint32_t>(byte_indices[i]));
                     }
                     break;
                 }
                 }
             }
-        }
 
-        VkDeviceSize mesh_vertex_offset = indirect_vertex_buffer_offset;
-        VkDeviceSize mesh_index_offset  = indirect_index_buffer_offset;
+            VkDeviceSize mesh_vertex_offset = indirect_vertex_buffer_offset;
+            VkDeviceSize mesh_index_offset  = indirect_index_buffer_offset;
 
-        void* staging_buffer_ptr = nullptr;
-        VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
-        memcpy(staging_buffer_ptr, vertices.data(), sizeof(Vertex) * vertices.size());
-        copy_buffer(
-            staging_buffer,
-            indirect_vertex_buffer,
-            command_buffer,
-            queue,
-            device,
-            staging_buffer_ptr,
-            sizeof(Vertex) * vertices.size(),
-            indirect_vertex_buffer_offset
-        );
-        indirect_vertex_buffer_offset += sizeof(Vertex) * vertices.size();
+            spdlog::debug("Copying vertices into global buffer");
+            void* staging_buffer_ptr = nullptr;
+            VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
+            memcpy(staging_buffer_ptr, vertices.data(), sizeof(Vertex) * vertices.size());
+            copy_buffer(
+                staging_buffer,
+                indirect_vertex_buffer,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(Vertex) * vertices.size(),
+                indirect_vertex_buffer_offset
+            );
+            indirect_vertex_buffer_offset += sizeof(Vertex) * vertices.size();
 
-        memcpy(staging_buffer_ptr, indices.data(), sizeof(uint32_t) * indices.size());
-        copy_buffer(
-            staging_buffer,
-            indirect_index_buffer,
-            command_buffer,
-            queue,
-            device,
-            staging_buffer_ptr,
-            sizeof(uint32_t) * indices.size(),
-            indirect_index_buffer_offset
-        );
-        indirect_index_buffer_offset += sizeof(uint32_t) * indices.size();
+            spdlog::debug("Copying indices into global buffer");
+            memcpy(staging_buffer_ptr, indices.data(), sizeof(uint32_t) * indices.size());
+            copy_buffer(
+                staging_buffer,
+                indirect_index_buffer,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(uint32_t) * indices.size(),
+                indirect_index_buffer_offset
+            );
+            indirect_index_buffer_offset += sizeof(uint32_t) * indices.size();
 
-        Image mesh_image = {};
-        if (model.textures.size() > 0) {
-            tinygltf::Texture& texture = model.textures[0];
+            uint32_t albedo_index = 0;
+            if (primitive.material >= 0) {
+                const tinygltf::Material& material = model.materials[primitive.material];
 
-            if (texture.source > -1) {
-                tinygltf::Image& img = model.images[texture.source];
+                if (material.pbrMetallicRoughness.baseColorTexture.index >= 0) {
+                    int                texture_index = material.pbrMetallicRoughness.baseColorTexture.index;
+                    tinygltf::Texture& texture       = model.textures[texture_index];
+                    int                image_index   = texture.source;
 
-                mesh_image = create_image(
-                    VK_FORMAT_B8G8R8A8_UNORM,
-                    {
-                        .width  = static_cast<uint32_t>(img.width),
-                        .height = static_cast<uint32_t>(img.height),
-                    },
-                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT,
-                    allocator,
-                    device
+                    if (image_index >= 0) {
+                        auto local_it = local_texture_cache.find(image_index + local_cache_offset);
+                        if (local_it != local_texture_cache.end()) {
+                            albedo_index = local_it->second;
+                        } else {
+                            spdlog::info("Loading albedo texture");
+                            tinygltf::Image& img = model.images[image_index];
+
+                            Image image = create_image(
+                                VK_FORMAT_R8G8B8A8_SRGB,
+                                {
+                                    .width  = static_cast<uint32_t>(img.width),
+                                    .height = static_cast<uint32_t>(img.height),
+                                },
+                                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                VK_IMAGE_ASPECT_COLOR_BIT,
+                                allocator,
+                                device
+                            );
+
+                            if (img.image.size() > staging_buffer.size) {
+                                spdlog::error(
+                                    "Attempted out of bounds buffer write for image, size={}, staging size={}",
+                                    img.image.size(),
+                                    staging_buffer.size
+                                );
+                                exit(1);
+                            }
+
+                            memcpy(staging_buffer_ptr, &img.image.at(0), img.image.size());
+                            copy_image(staging_buffer, image, command_buffer, queue, device);
+
+                            uint32_t index = global_texture_cache.size();
+                            global_texture_cache.insert({index, image});
+                            local_texture_cache.insert({image_index + local_cache_offset, index});
+
+                            albedo_index = index;
+                        }
+                    }
+                } else {
+                    spdlog::warn("Model {} primitive {} does not have a base color texture!", path.string(), p);
+                }
+            }
+
+            spdlog::debug("Building meshlets");
+            const size_t max_vertices  = 64;
+            const size_t max_triangles = 124;
+            const float  cone_weight   = 0.0f;
+
+            size_t max_meshlets = meshopt_buildMeshletsBound(indices.size(), max_vertices, max_triangles);
+            spdlog::info("Max meshlets {}", max_meshlets);
+
+            std::vector<meshopt_Meshlet> meshlets(max_meshlets);
+            std::vector<MeshletBounds>   meshlet_bounds(max_meshlets);
+            std::vector<unsigned int>    meshlet_vertices(max_meshlets * max_vertices);
+            std::vector<unsigned char>   meshlet_triangles(max_meshlets * max_triangles * 3);
+
+            size_t meshlet_count = meshopt_buildMeshlets(
+                meshlets.data(),
+                meshlet_vertices.data(),
+                meshlet_triangles.data(),
+                indices.data(),
+                indices.size(),
+                &vertices[0].position.x,
+                vertices.size(),
+                sizeof(Vertex),
+                max_vertices,
+                max_triangles,
+                cone_weight
+            );
+
+            uint32_t idx = 0;
+            for (auto& m : meshlets) {
+                meshopt_optimizeMeshlet(
+                    &meshlet_vertices[m.vertex_offset],
+                    &meshlet_triangles[m.triangle_offset],
+                    m.triangle_count,
+                    m.vertex_count
                 );
 
-                memcpy(staging_buffer_ptr, &img.image.at(0), img.image.size());
-                copy_image(staging_buffer, mesh_image, command_buffer, queue, device);
-            }
-        }
+                auto bounds = meshopt_computeMeshletBounds(
+                    &meshlet_vertices[m.vertex_offset],
+                    &meshlet_triangles[m.triangle_offset],
+                    m.triangle_count,
+                    &vertices[0].position.x,
+                    vertices.size(),
+                    sizeof(Vertex)
+                );
 
-        meshes.emplace_back(
-            mesh_vertex_offset,
-            mesh_index_offset,
-            vertices.size(),
-            indices.size(),
-            Material{
-                .image = mesh_image,
+                meshlet_bounds[idx++] = MeshletBounds{
+                    .center =
+                        {
+                            bounds.center[0],
+                            bounds.center[1],
+                            bounds.center[2],
+                        },
+                    .radius = bounds.radius,
+                    .cone_apex =
+                        {
+                            bounds.cone_apex[0],
+                            bounds.cone_apex[1],
+                            bounds.cone_apex[2],
+                        },
+                    .cone_axis =
+                        {
+                            bounds.cone_axis[0],
+                            bounds.cone_axis[1],
+                            bounds.cone_axis[2],
+                        },
+                    .cone_cutoff = bounds.cone_cutoff
+                };
             }
-        );
+
+            auto& last_meshlet = meshlets[meshlet_count - 1];
+            meshlet_vertices.resize(last_meshlet.vertex_offset + last_meshlet.vertex_count);
+            meshlet_triangles.resize(last_meshlet.triangle_offset + ((last_meshlet.triangle_count * 3 + 3) & ~3));
+            meshlets.resize(meshlet_count);
+
+            size_t global_vertex_indices_offset    = meshlet_vertex_indices_offset / sizeof(unsigned int);
+            size_t global_primitive_indices_offset = meshlet_primitive_indices_offset;
+
+            for (size_t i = 0; i < meshlet_count; i++) {
+                meshlets[i].vertex_offset += global_vertex_indices_offset;
+                meshlets[i].triangle_offset += global_primitive_indices_offset;
+            }
+
+            for (size_t i = 0; i < meshlet_vertices.size(); i++) {
+                meshlet_vertices[i] += mesh_vertex_offset / sizeof(Vertex);
+            }
+
+            uint32_t current_meshlet_offset = meshlet_buffer_offset / sizeof(meshopt_Meshlet);
+
+            // spdlog::debug(
+            //     "Mesh {}: meshlet_count={}, meshlet_offset={}, vertex_buf_size={}MB, index_buf_size={}MB",
+            //     meshes.size(),
+            //     meshlet_count,
+            //     current_meshlet_offset,
+            //     (vertices.size() * sizeof(Vertex)) / 1024.0f / 1024.f,
+            //     (sizeof(uint32_t) * indices.size()) / 1024.0f / 1024.0f
+            // );
+            // spdlog::debug(
+            //     "  global_vertex_indices_offset={}, global_primitive_indices_offset={}",
+            //     global_vertex_indices_offset,
+            //     global_primitive_indices_offset
+            // );
+            // spdlog::debug(
+            //     "  First meshlet: v_off={}, t_off={}, v_cnt={}, t_cnt={}",
+            //     meshlets[0].vertex_offset,
+            //     meshlets[0].triangle_offset,
+            //     meshlets[0].vertex_count,
+            //     meshlets[0].triangle_count
+            // );
+            // if (meshlet_count > 1) {
+            //     spdlog::debug(
+            //         "  Last meshlet: v_off={}, t_off={}, v_cnt={}, t_cnt={}",
+            //         meshlets[meshlet_count - 1].vertex_offset,
+            //         meshlets[meshlet_count - 1].triangle_offset,
+            //         meshlets[meshlet_count - 1].vertex_count,
+            //         meshlets[meshlet_count - 1].triangle_count
+            //     );
+            // }
+
+            spdlog::debug("Copying meshlets into meshlet buffer");
+            memcpy(staging_buffer_ptr, meshlets.data(), sizeof(meshopt_Meshlet) * meshlets.size());
+            copy_buffer(
+                staging_buffer,
+                meshlet_bufffer,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(meshopt_Meshlet) * meshlets.size(),
+                meshlet_buffer_offset
+            );
+            meshlet_buffer_offset += sizeof(meshopt_Meshlet) * meshlets.size();
+
+            spdlog::debug("Copying meshlet bounds into meshlet bounds buffer");
+            memcpy(staging_buffer_ptr, meshlet_bounds.data(), sizeof(MeshletBounds) * meshlet_bounds.size());
+            copy_buffer(
+                staging_buffer,
+                meshlet_bounds_buffer,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(MeshletBounds) * meshlet_bounds.size(),
+                meshlet_bounds_buffer_offset
+            );
+            meshlet_bounds_buffer_offset += sizeof(MeshletBounds) * meshlet_bounds.size();
+
+            spdlog::debug("Copying meshlet vertices into meshlet buffer");
+            memcpy(staging_buffer_ptr, meshlet_vertices.data(), sizeof(unsigned int) * meshlet_vertices.size());
+            copy_buffer(
+                staging_buffer,
+                meshlet_vertex_indices,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(unsigned int) * meshlet_vertices.size(),
+                meshlet_vertex_indices_offset
+            );
+            meshlet_vertex_indices_offset += sizeof(unsigned int) * meshlet_vertices.size();
+
+            spdlog::debug("Copying meshlet triangle indices into meshlet buffer");
+            memcpy(staging_buffer_ptr, meshlet_triangles.data(), sizeof(unsigned char) * meshlet_triangles.size());
+            copy_buffer(
+                staging_buffer,
+                meshlet_primitive_indices,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(unsigned char) * meshlet_triangles.size(),
+                meshlet_primitive_indices_offset
+            );
+            meshlet_primitive_indices_offset += sizeof(unsigned char) * meshlet_triangles.size();
+
+            meshes.emplace_back(
+                mesh_vertex_offset,
+                mesh_index_offset,
+                current_meshlet_offset,
+                meshlet_count,
+                vertices.size(),
+                indices.size(),
+                Material{
+                    .albedo_index = albedo_index,
+                }
+            );
+        }
     }
 
     return meshes;
 }
 
 void populate_materials(
-    std::vector<Mesh>& meshes,
-    uint32_t&          texture_index,
-    VkDescriptorSet    descriptor_set,
-    VkSampler          sampler,
-    VkDevice           device
+    const std::unordered_map<uint32_t, Image>& texture_cache,
+    VkDescriptorSet                            descriptor_set,
+    VkSampler                                  sampler,
+    VkDevice                                   device
 ) {
-    for (auto& mesh : meshes) {
+    for (auto& [slot, image] : texture_cache) {
         VkDescriptorImageInfo image_write_info = {
-            .sampler     = sampler,
-            .imageView   = mesh.material.image.view,
-            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            .sampler = sampler, .imageView = image.view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         };
 
         VkWriteDescriptorSet write_set = {
@@ -717,7 +972,7 @@ void populate_materials(
             .pNext            = nullptr,
             .dstSet           = descriptor_set,
             .dstBinding       = 1,
-            .dstArrayElement  = texture_index,
+            .dstArrayElement  = slot,
             .descriptorCount  = 1,
             .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .pImageInfo       = &image_write_info,
@@ -725,9 +980,6 @@ void populate_materials(
             .pTexelBufferView = nullptr
         };
         vkUpdateDescriptorSets(device, 1, &write_set, 0, nullptr);
-
-        mesh.material.albedo_index = texture_index;
-        texture_index++;
     }
 }
 
@@ -821,7 +1073,12 @@ int main() {
 
     spdlog::info("Queue index that supports graphics operations: {}", graphics_queue_index);
 
-    std::vector<const char*> device_extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    std::vector<const char*> device_extensions = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_KHR_SPIRV_1_4_EXTENSION_NAME,
+        VK_EXT_MESH_SHADER_EXTENSION_NAME,
+        VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME
+    };
 
     float                   queue_prorities   = 1.0f;
     VkDeviceQueueCreateInfo device_queue_info = {
@@ -847,6 +1104,7 @@ int main() {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .pNext = &vulkan_features_11,
     };
+    vulkan_features_12.storageBuffer8BitAccess                      = VK_TRUE;
     vulkan_features_12.drawIndirectCount                            = VK_TRUE;
     vulkan_features_12.scalarBlockLayout                            = VK_TRUE;
     vulkan_features_12.bufferDeviceAddress                          = VK_TRUE;
@@ -866,9 +1124,19 @@ int main() {
     enabled_features_13.dynamicRendering = VK_TRUE;
     enabled_features_13.synchronization2 = VK_TRUE;
 
+    VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features = {
+        .sType                                  = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+        .pNext                                  = &enabled_features_13,
+        .taskShader                             = VK_TRUE,
+        .meshShader                             = VK_TRUE,
+        .multiviewMeshShader                    = VK_FALSE,
+        .primitiveFragmentShadingRateMeshShader = VK_FALSE,
+        .meshShaderQueries                      = VK_FALSE
+    };
+
     VkDeviceCreateInfo device_info = {
         .sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext                   = &enabled_features_13,
+        .pNext                   = &mesh_shader_features,
         .flags                   = 0,
         .queueCreateInfoCount    = 1,
         .pQueueCreateInfos       = &device_queue_info,
@@ -1045,21 +1313,37 @@ int main() {
     VkShaderModule vertex_module   = shader_module_from_file(device, "data/shaders/bindless.vert.spv");
     VkShaderModule fragment_module = shader_module_from_file(device, "data/shaders/bindless.frag.spv");
 
-    VkPipelineShaderStageCreateInfo shader_stage_infos[] = {
-        {.sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-         .pNext               = nullptr,
-         .flags               = 0,
-         .stage               = VK_SHADER_STAGE_VERTEX_BIT,
-         .module              = vertex_module,
-         .pName               = "main",
-         .pSpecializationInfo = nullptr},
-        {.sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-         .pNext               = nullptr,
-         .flags               = 0,
-         .stage               = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .module              = fragment_module,
-         .pName               = "main",
-         .pSpecializationInfo = nullptr}
+    VkShaderModule mesh_module = shader_module_from_file(device, "data/shaders/meshlet.mesh.spv");
+    VkShaderModule task_module = shader_module_from_file(device, "data/shaders/meshlet.task.spv");
+
+    std::vector<VkPipelineShaderStageCreateInfo> shader_stage_infos = {
+        {
+            .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pNext               = nullptr,
+            .flags               = 0,
+            .stage               = VK_SHADER_STAGE_MESH_BIT_EXT,
+            .module              = mesh_module,
+            .pName               = "main",
+            .pSpecializationInfo = nullptr,
+        },
+        // {
+        //     .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        //     .pNext               = nullptr,
+        //     .flags               = 0,
+        //     .stage               = VK_SHADER_STAGE_TASK_BIT_EXT,
+        //     .module              = task_module,
+        //     .pName               = "main",
+        //     .pSpecializationInfo = nullptr,
+        // },
+        {
+            .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pNext               = nullptr,
+            .flags               = 0,
+            .stage               = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module              = fragment_module,
+            .pName               = "main",
+            .pSpecializationInfo = nullptr,
+        }
     };
 
     VkPipelineVertexInputStateCreateInfo vertex_input_state = {
@@ -1150,7 +1434,9 @@ int main() {
     };
 
     VkPushConstantRange push_constants_range = {
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .offset = 0, .size = sizeof(glm::mat4) + sizeof(VkDeviceAddress) * 2
+        .stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT,
+        .offset     = 0,
+        .size       = sizeof(PushConstants)
     };
 
     std::vector<VkDescriptorSetLayoutBinding> descriptor_layout_bindings = {
@@ -1158,7 +1444,7 @@ int main() {
             .binding            = 0,
             .descriptorType     = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .descriptorCount    = 1,
-            .stageFlags         = VK_SHADER_STAGE_VERTEX_BIT,
+            .stageFlags         = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT,
             .pImmutableSamplers = nullptr,
         },
         {
@@ -1226,10 +1512,10 @@ int main() {
         .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext               = &pipeline_rendering_info,
         .flags               = 0,
-        .stageCount          = 2,
+        .stageCount          = static_cast<uint32_t>(shader_stage_infos.size()),
         .pStages             = &shader_stage_infos[0],
-        .pVertexInputState   = &vertex_input_state,
-        .pInputAssemblyState = &input_assembly_state,
+        .pVertexInputState   = nullptr,
+        .pInputAssemblyState = nullptr,
         .pTessellationState  = nullptr,
         .pViewportState      = &viewport_state,
         .pRasterizationState = &rasterization_state,
@@ -1344,7 +1630,7 @@ int main() {
     VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &linear_sampler));
 
     Buffer staging_buffer = create_buffer(
-        1024 * 1024 * 24,
+        1024 * 1024 * 128,
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
@@ -1412,7 +1698,7 @@ int main() {
     VkDeviceAddress global_vertex_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
 
     Buffer bindless_global_index_buffer = create_buffer(
-        1024 * 1024 * 32, // 32MB
+        1024 * 1024 * 64, // 32MB
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         vma_allocator
@@ -1439,6 +1725,61 @@ int main() {
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
     std::vector<DrawData> bindless_draw_data_cpu_buffer;
+
+    Buffer meshlet_buffer = create_buffer(
+        1024 * 1024 * 64, // 32MB
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        vma_allocator
+    );
+    address_info = {
+        .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = meshlet_buffer.handle,
+    };
+    VkDeviceAddress meshlet_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
+
+    std::vector<VkDrawMeshTasksIndirectCommandEXT> meshlet_draw_commands;
+
+    Buffer meshlet_vertex_indices_buffer = create_buffer(
+        1024 * 1024 * 64, // 32MB
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        vma_allocator
+    );
+    address_info = {
+        .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = meshlet_vertex_indices_buffer.handle,
+    };
+    VkDeviceAddress meshlet_vertex_buffer_indices_address = vkGetBufferDeviceAddress(device, &address_info);
+
+    Buffer meshlet_primitive_indices_buffer = create_buffer(
+        1024 * 1024 * 64, // 32MB
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        vma_allocator
+    );
+    address_info = {
+        .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = meshlet_primitive_indices_buffer.handle,
+    };
+    VkDeviceAddress meshlet_primitive_indices_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
+
+    Buffer meshlet_bounds_buffer = create_buffer(
+        1024 * 1024 * 64, // 32MB
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        vma_allocator
+    );
+    address_info = {
+        .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = meshlet_bounds_buffer.handle,
+    };
+    VkDeviceAddress meshlet_bounds_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
+
+    VkDeviceSize meshlet_buffer_offset                   = 0;
+    VkDeviceSize meshlet_vertex_indices_offset           = 0;
+    VkDeviceSize meshlet_vertex_primitive_indices_offset = 0;
+    VkDeviceSize meshlet_bounds_buffer_offset            = 0;
 
     VkDeviceSize indirect_vertex_buffer_offset = 0;
     VkDeviceSize indirect_index_buffer_offset  = 0;
@@ -1484,7 +1825,7 @@ int main() {
     };
     vkUpdateDescriptorSets(device, 1, &bindless_uniform_buffer_write_set, 0, nullptr);
 
-    uint32_t texture_index = 0;
+    std::unordered_map<uint32_t, Image> texture_cache;
 
     auto lantern = load_model(
         "data/models/lantern.glb",
@@ -1493,35 +1834,53 @@ int main() {
         indirect_vertex_buffer_offset,
         bindless_global_index_buffer,
         indirect_index_buffer_offset,
+        meshlet_buffer,
+        meshlet_buffer_offset,
+        meshlet_vertex_indices_buffer,
+        meshlet_vertex_indices_offset,
+        meshlet_primitive_indices_buffer,
+        meshlet_vertex_primitive_indices_offset,
+        meshlet_bounds_buffer,
+        meshlet_bounds_buffer_offset,
+        texture_cache,
         vma_allocator,
         command_buffer,
         graphics_queue,
         device
     );
-    populate_materials(lantern, texture_index, bindless_uniform_buffer_descriptor_set, linear_sampler, device);
 
     auto helmet = load_model(
-        "data/models/helmet.glb",
+        "data/models/sponza-gltf-pbr/sponza.glb",
         staging_buffer,
         bindless_global_vertex_buffer,
         indirect_vertex_buffer_offset,
         bindless_global_index_buffer,
         indirect_index_buffer_offset,
+        meshlet_buffer,
+        meshlet_buffer_offset,
+        meshlet_vertex_indices_buffer,
+        meshlet_vertex_indices_offset,
+        meshlet_primitive_indices_buffer,
+        meshlet_vertex_primitive_indices_offset,
+        meshlet_bounds_buffer,
+        meshlet_bounds_buffer_offset,
+        texture_cache,
         vma_allocator,
         command_buffer,
         graphics_queue,
         device
     );
-    populate_materials(helmet, texture_index, bindless_uniform_buffer_descriptor_set, linear_sampler, device);
     for (auto& m : helmet) {
-        m.position = glm::vec3(10, 0, 0);
-        m.scale    = 7;
+        m.position = glm::vec3(10, -4, 13);
+        m.scale    = 0.01;
     }
 
     std::vector<Mesh> meshes;
     meshes.reserve(lantern.size() + helmet.size());
     meshes.insert(meshes.end(), lantern.begin(), lantern.end());
     meshes.insert(meshes.end(), helmet.begin(), helmet.end());
+
+    populate_materials(texture_cache, bindless_uniform_buffer_descriptor_set, linear_sampler, device);
 
     bool running = true;
     while (running) {
@@ -1535,32 +1894,43 @@ int main() {
             }
         }
 
-        bindless_render_cpu_command_buffer.clear();
+        // bindless_render_cpu_command_buffer.clear();
+
+        meshlet_draw_commands.clear();
         bindless_draw_data_cpu_buffer.clear();
         for (auto& mesh : meshes) {
             uint32_t first_index   = static_cast<uint32_t>(mesh.index_buffer_offset / sizeof(uint32_t));
             int32_t  vertex_offset = static_cast<int32_t>(mesh.vertex_buffer_offset / sizeof(Vertex));
 
-            VkDrawIndexedIndirectCommand command = {
-                .indexCount    = mesh.index_count,
-                .instanceCount = 1,
-                .firstIndex    = first_index,
-                .vertexOffset  = vertex_offset,
-                .firstInstance = 0
+            VkDrawMeshTasksIndirectCommandEXT command = {
+                .groupCountX = mesh.meshlet_count,
+                .groupCountY = 1,
+                .groupCountZ = 1,
             };
-            bindless_render_cpu_command_buffer.push_back(command);
+            meshlet_draw_commands.push_back(command);
+
+            // VkDrawIndexedIndirectCommand command = {
+            //     .indexCount    = mesh.index_count,
+            //     .instanceCount = 1,
+            //     .firstIndex    = first_index,
+            //     .vertexOffset  = vertex_offset,
+            //     .firstInstance = 0
+            // };
+            // bindless_render_cpu_command_buffer.push_back(command);
 
             glm::mat4 model = glm::translate(glm::mat4(1.0f), mesh.position);
             model           = glm::scale(model, glm::vec3(mesh.scale));
-            bindless_draw_data_cpu_buffer.push_back({model, mesh.material.albedo_index, first_index, vertex_offset});
+            bindless_draw_data_cpu_buffer.push_back(
+                {model, mesh.material.albedo_index, first_index, vertex_offset, mesh.meshlet_offset, mesh.meshlet_count}
+            );
         }
 
         void* bindless_command_ptr = nullptr;
         VK_CHECK(vmaMapMemory(vma_allocator, bindless_render_command_buffer.allocation, &bindless_command_ptr));
         memcpy(
             bindless_command_ptr,
-            bindless_render_cpu_command_buffer.data(),
-            sizeof(VkDrawIndexedIndirectCommand) * bindless_render_cpu_command_buffer.size()
+            meshlet_draw_commands.data(),
+            sizeof(VkDrawMeshTasksIndirectCommandEXT) * meshlet_draw_commands.size()
         );
 
         void* bindless_uniform_ptr = nullptr;
@@ -1680,7 +2050,7 @@ int main() {
             nullptr
         );
 
-        vkCmdBindIndexBuffer(command_buffer, bindless_global_index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
+        // vkCmdBindIndexBuffer(command_buffer, bindless_global_index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
 
         glm::vec3 position  = {10, 0, 20};
         glm::vec3 direction = {0, 0, -1};
@@ -1690,29 +2060,37 @@ int main() {
         auto proj = glm::perspective(glm::radians(90.0f), 1280.0f / 720.0f, 0.1f, 50.0f);
         proj[1][1] *= -1;
 
-        struct {
-            glm::mat4    combined;
-            VkDeviceSize vertex_buffer_address;
-            VkDeviceSize index_buffer_address;
-        } push;
-        push.combined              = proj * view;
-        push.vertex_buffer_address = global_vertex_buffer_address;
-        push.index_buffer_address  = global_index_buffer_address;
+        PushConstants push;
+        push.combined                                 = proj * view;
+        push.vertex_buffer_address                    = global_vertex_buffer_address;
+        push.index_buffer_address                     = global_index_buffer_address;
+        push.meshlet_buffer_address                   = meshlet_buffer_address;
+        push.meshlet_vertex_buffer_indices_address    = meshlet_vertex_buffer_indices_address;
+        push.meshlet_primitive_indices_buffer_address = meshlet_primitive_indices_buffer_address;
+        push.meshlet_bounds_buffer_address            = meshlet_bounds_buffer_address;
 
         vkCmdPushConstants(
             command_buffer,
             pipeline_layout,
-            VK_SHADER_STAGE_VERTEX_BIT,
+            VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT,
             0,
-            sizeof(glm::mat4) + sizeof(VkDeviceSize) * 2,
+            sizeof(PushConstants),
             &push
         );
-        vkCmdDrawIndexedIndirect(
+        // vkCmdDrawIndexedIndirect(
+        //     command_buffer,
+        //     bindless_render_command_buffer.handle,
+        //     0,
+        //     bindless_render_cpu_command_buffer.size(),
+        //     sizeof(VkDrawIndexedIndirectCommand)
+        // );
+
+        vkCmdDrawMeshTasksIndirectEXT(
             command_buffer,
             bindless_render_command_buffer.handle,
             0,
-            bindless_render_cpu_command_buffer.size(),
-            sizeof(VkDrawIndexedIndirectCommand)
+            meshlet_draw_commands.size(),
+            sizeof(VkDrawMeshTasksIndirectCommandEXT)
         );
 
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);

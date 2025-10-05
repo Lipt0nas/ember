@@ -55,7 +55,13 @@ FetchContent_Declare(tinygltf
     GIT_SHALLOW TRUE
 )
 
-FetchContent_MakeAvailable(glm sdl vma spdlog volk tinygltf)
+FetchContent_Declare(meshoptimizer
+    GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
+    GIT_TAG v0.25
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(glm sdl vma spdlog volk tinygltf meshoptimizer)
 
 FetchContent_GetProperties(imgui)
 if(NOT imgui_POPULATED)
@@ -94,6 +100,7 @@ target_link_libraries(Ember PRIVATE
     spdlog::spdlog
     volk
     tinygltf
+    meshoptimizer
 )
 
 # TODO: temporary convenience
@@ -114,7 +121,7 @@ foreach(SHADER_SOURCE ${SHADER_SOURCES})
     
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
-        COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
+        COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT} --target-spv=spv1.4
         DEPENDS ${SHADER_SOURCE}
         COMMENT "Compiling shader: ${SHADER_SOURCE}"
         VERBATIM
