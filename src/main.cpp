@@ -29,6 +29,25 @@
         assert(result_ == VK_SUCCESS);                                                                                 \
     } while (0)
 
+struct Vertex {
+    glm::vec3 position;
+    glm::vec3 normal;
+    glm::vec2 uv;
+
+    bool operator==(const Vertex& other) const {
+        return position == other.position && normal == other.normal && uv == other.uv;
+    }
+};
+
+struct DrawData {
+    glm::mat4 model_matrix;
+
+    uint32_t albedo_index;
+    uint32_t first_index;
+    int32_t  vertex_offset;
+    uint32_t _pad;
+};
+
 struct Buffer {
     VkBuffer      handle;
     VkDeviceSize  size;
@@ -47,12 +66,15 @@ struct Image {
 struct Material {
     Image image;
 
-    VkDescriptorSet descriptor_set;
+    uint32_t albedo_index;
 };
 
 struct Mesh {
-    Buffer vertex_buffer;
-    Buffer index_buffer;
+    VkDeviceSize vertex_buffer_offset;
+    VkDeviceSize index_buffer_offset;
+
+    uint32_t vertex_count;
+    uint32_t index_count;
 
     Material material;
 
@@ -218,14 +240,19 @@ void copy_buffer(
     VkQueue         queue,
     VkDevice        device,
     void*           data,
-    size_t          data_size
+    size_t          data_size,
+    VkDeviceSize    dst_buffer_offet = 0
 ) {
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .pNext = nullptr, .flags = 0, .pInheritanceInfo = nullptr
     };
     VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
 
-    VkBufferCopy copy_region = {.srcOffset = 0, .dstOffset = 0, .size = data_size};
+    VkBufferCopy copy_region = {
+        .srcOffset = 0,
+        .dstOffset = dst_buffer_offet,
+        .size      = data_size,
+    };
     vkCmdCopyBuffer(command_buffer, src_buffer.handle, dst_buffer.handle, 1, &copy_region);
 
     VK_CHECK(vkEndCommandBuffer(command_buffer));
@@ -474,6 +501,10 @@ VkShaderModule shader_module_from_file(VkDevice device, const std::filesystem::p
 std::vector<Mesh> load_model(
     const std::filesystem::path& path,
     const Buffer&                staging_buffer,
+    const Buffer&                indirect_vertex_buffer,
+    VkDeviceSize&                indirect_vertex_buffer_offset,
+    const Buffer&                indirect_index_buffer,
+    VkDeviceSize&                indirect_index_buffer_offset,
     VmaAllocator                 allocator,
     VkCommandBuffer              command_buffer,
     VkQueue                      queue,
@@ -505,16 +536,6 @@ std::vector<Mesh> load_model(
     std::vector<Mesh> meshes;
     for (int m = 0; m < model.meshes.size(); m++) {
         const tinygltf::Mesh& mesh = model.meshes[m];
-
-        struct Vertex {
-            glm::vec3 position;
-            glm::vec3 normal;
-            glm::vec2 uv;
-
-            bool operator==(const Vertex& other) const {
-                return position == other.position && normal == other.normal && uv == other.uv;
-            }
-        };
 
         std::vector<Vertex>   vertices;
         std::vector<uint32_t> indices;
@@ -608,41 +629,36 @@ std::vector<Mesh> load_model(
             }
         }
 
-        Buffer vertex_buffer = create_buffer(
-            sizeof(Vertex) * vertices.size(),
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            allocator
-        );
-
-        Buffer index_buffer = create_buffer(
-            sizeof(uint32_t) * indices.size(),
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-            allocator
-        );
+        VkDeviceSize mesh_vertex_offset = indirect_vertex_buffer_offset;
+        VkDeviceSize mesh_index_offset  = indirect_index_buffer_offset;
 
         void* staging_buffer_ptr = nullptr;
         VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
         memcpy(staging_buffer_ptr, vertices.data(), sizeof(Vertex) * vertices.size());
         copy_buffer(
             staging_buffer,
-            vertex_buffer,
+            indirect_vertex_buffer,
             command_buffer,
             queue,
             device,
             staging_buffer_ptr,
-            sizeof(Vertex) * vertices.size()
+            sizeof(Vertex) * vertices.size(),
+            indirect_vertex_buffer_offset
         );
+        indirect_vertex_buffer_offset += sizeof(Vertex) * vertices.size();
 
         memcpy(staging_buffer_ptr, indices.data(), sizeof(uint32_t) * indices.size());
         copy_buffer(
             staging_buffer,
-            index_buffer,
+            indirect_index_buffer,
             command_buffer,
             queue,
             device,
             staging_buffer_ptr,
-            sizeof(uint32_t) * indices.size()
+            sizeof(uint32_t) * indices.size(),
+            indirect_index_buffer_offset
         );
+        indirect_index_buffer_offset += sizeof(uint32_t) * indices.size();
 
         Image mesh_image = {};
         if (model.textures.size() > 0) {
@@ -669,11 +685,12 @@ std::vector<Mesh> load_model(
         }
 
         meshes.emplace_back(
-            vertex_buffer,
-            index_buffer,
+            mesh_vertex_offset,
+            mesh_index_offset,
+            vertices.size(),
+            indices.size(),
             Material{
-                .image          = mesh_image,
-                .descriptor_set = VK_NULL_HANDLE,
+                .image = mesh_image,
             }
         );
     }
@@ -682,24 +699,13 @@ std::vector<Mesh> load_model(
 }
 
 void populate_materials(
-    std::vector<Mesh>&    meshes,
-    VkDescriptorPool      descriptor_pool,
-    VkDescriptorSetLayout descriptor_layout,
-    VkSampler             sampler,
-    VkDevice              device
+    std::vector<Mesh>& meshes,
+    uint32_t&          texture_index,
+    VkDescriptorSet    descriptor_set,
+    VkSampler          sampler,
+    VkDevice           device
 ) {
     for (auto& mesh : meshes) {
-        VkDescriptorSetAllocateInfo descriptor_allocate_info = {
-            .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .pNext              = nullptr,
-            .descriptorPool     = descriptor_pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts        = &descriptor_layout
-        };
-
-        VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-        VK_CHECK(vkAllocateDescriptorSets(device, &descriptor_allocate_info, &descriptor_set));
-
         VkDescriptorImageInfo image_write_info = {
             .sampler     = sampler,
             .imageView   = mesh.material.image.view,
@@ -710,8 +716,8 @@ void populate_materials(
             .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .pNext            = nullptr,
             .dstSet           = descriptor_set,
-            .dstBinding       = 0,
-            .dstArrayElement  = 0,
+            .dstBinding       = 1,
+            .dstArrayElement  = texture_index,
             .descriptorCount  = 1,
             .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .pImageInfo       = &image_write_info,
@@ -720,7 +726,8 @@ void populate_materials(
         };
         vkUpdateDescriptorSets(device, 1, &write_set, 0, nullptr);
 
-        mesh.material.descriptor_set = descriptor_set;
+        mesh.material.albedo_index = texture_index;
+        texture_index++;
     }
 }
 
@@ -826,8 +833,35 @@ int main() {
         .pQueuePriorities = &queue_prorities
     };
 
+    VkPhysicalDeviceFeatures features = {};
+    features.samplerAnisotropy        = VK_TRUE;
+    features.multiDrawIndirect        = VK_TRUE;
+
+    VkPhysicalDeviceVulkan11Features vulkan_features_11{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+        .pNext = nullptr,
+    };
+    vulkan_features_11.shaderDrawParameters = VK_TRUE;
+
+    VkPhysicalDeviceVulkan12Features vulkan_features_12{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .pNext = &vulkan_features_11,
+    };
+    vulkan_features_12.drawIndirectCount                            = VK_TRUE;
+    vulkan_features_12.scalarBlockLayout                            = VK_TRUE;
+    vulkan_features_12.bufferDeviceAddress                          = VK_TRUE;
+    vulkan_features_12.descriptorIndexing                           = VK_TRUE;
+    vulkan_features_12.runtimeDescriptorArray                       = VK_TRUE;
+    vulkan_features_12.descriptorBindingPartiallyBound              = VK_TRUE;
+    vulkan_features_12.descriptorBindingVariableDescriptorCount     = VK_TRUE;
+    vulkan_features_12.shaderSampledImageArrayNonUniformIndexing    = VK_TRUE;
+    vulkan_features_12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+    vulkan_features_12.hostQueryReset                               = VK_TRUE;
+    vulkan_features_12.uniformAndStorageBuffer8BitAccess            = VK_TRUE;
+
     VkPhysicalDeviceVulkan13Features enabled_features_13 = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = nullptr
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .pNext = &vulkan_features_12,
     };
     enabled_features_13.dynamicRendering = VK_TRUE;
     enabled_features_13.synchronization2 = VK_TRUE;
@@ -842,7 +876,7 @@ int main() {
         .ppEnabledLayerNames     = validation_layer_names.data(),
         .enabledExtensionCount   = static_cast<uint32_t>(device_extensions.size()),
         .ppEnabledExtensionNames = device_extensions.data(),
-        .pEnabledFeatures        = nullptr
+        .pEnabledFeatures        = &features
     };
 
     VkDevice device = VK_NULL_HANDLE;
@@ -850,7 +884,7 @@ int main() {
     volkLoadDevice(device);
 
     VmaAllocatorCreateInfo allocator_info = {
-        .flags                          = 0,
+        .flags                          = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
         .physicalDevice                 = physical_device,
         .device                         = device,
         .preferredLargeHeapBlockSize    = 0,
@@ -974,17 +1008,24 @@ int main() {
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
     VK_CHECK(vkAllocateCommandBuffers(device, &command_buffer_info, &command_buffer));
 
-    VkDescriptorPoolSize descriptor_pool_size = {
-        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1000
+    std::vector<VkDescriptorPoolSize> descriptor_pool_sizes = {
+        {
+            .type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 10000,
+        },
+        {
+            .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1000,
+        },
     };
 
     VkDescriptorPoolCreateInfo descriptor_pool_info = {
-        .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .pNext         = nullptr,
-        .flags         = 0,
-        .maxSets       = 1000,
-        .poolSizeCount = 1,
-        .pPoolSizes    = &descriptor_pool_size
+        .sType   = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .pNext   = nullptr,
+        .flags   = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+        .maxSets = 1000,
+        .poolSizeCount = static_cast<uint32_t>(descriptor_pool_sizes.size()),
+        .pPoolSizes    = &descriptor_pool_sizes[0]
 
     };
 
@@ -1001,8 +1042,8 @@ int main() {
         .stencilAttachmentFormat = VK_FORMAT_UNDEFINED
     };
 
-    VkShaderModule vertex_module   = shader_module_from_file(device, "data/shaders/vert.vert.spv");
-    VkShaderModule fragment_module = shader_module_from_file(device, "data/shaders/frag.frag.spv");
+    VkShaderModule vertex_module   = shader_module_from_file(device, "data/shaders/bindless.vert.spv");
+    VkShaderModule fragment_module = shader_module_from_file(device, "data/shaders/bindless.frag.spv");
 
     VkPipelineShaderStageCreateInfo shader_stage_infos[] = {
         {.sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -1021,41 +1062,10 @@ int main() {
          .pSpecializationInfo = nullptr}
     };
 
-    VkVertexInputBindingDescription binding_description = {
-        .binding   = 0,
-        .stride    = sizeof(float) * 8,
-        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
-    };
-
-    std::vector<VkVertexInputAttributeDescription> binding_attributes = {
-        VkVertexInputAttributeDescription{
-            .location = 0,
-            .binding  = 0,
-            .format   = VK_FORMAT_R32G32B32A32_SFLOAT,
-            .offset   = 0,
-        },
-        VkVertexInputAttributeDescription{
-            .location = 1,
-            .binding  = 0,
-            .format   = VK_FORMAT_R32G32B32A32_SFLOAT,
-            .offset   = sizeof(float) * 3,
-        },
-        VkVertexInputAttributeDescription{
-            .location = 2,
-            .binding  = 0,
-            .format   = VK_FORMAT_R32G32_SFLOAT,
-            .offset   = sizeof(float) * 6,
-        },
-    };
-
     VkPipelineVertexInputStateCreateInfo vertex_input_state = {
-        .sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .pNext                           = nullptr,
-        .flags                           = 0,
-        .vertexBindingDescriptionCount   = 1,
-        .pVertexBindingDescriptions      = &binding_description,
-        .vertexAttributeDescriptionCount = static_cast<uint32_t>(binding_attributes.size()),
-        .pVertexAttributeDescriptions    = binding_attributes.data()
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
     };
 
     VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
@@ -1140,23 +1150,44 @@ int main() {
     };
 
     VkPushConstantRange push_constants_range = {
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .offset = 0, .size = sizeof(glm::mat4) * 2
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .offset = 0, .size = sizeof(glm::mat4) + sizeof(VkDeviceAddress) * 2
     };
 
-    VkDescriptorSetLayoutBinding descriptor_layout_binding = {
-        .binding            = 0,
-        .descriptorType     = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount    = 1,
-        .stageFlags         = VK_SHADER_STAGE_FRAGMENT_BIT,
-        .pImmutableSamplers = nullptr
+    std::vector<VkDescriptorSetLayoutBinding> descriptor_layout_bindings = {
+        {
+            .binding            = 0,
+            .descriptorType     = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount    = 1,
+            .stageFlags         = VK_SHADER_STAGE_VERTEX_BIT,
+            .pImmutableSamplers = nullptr,
+        },
+        {
+            .binding            = 1,
+            .descriptorType     = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount    = 10000,
+            .stageFlags         = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = nullptr,
+        }
+    };
+
+    VkDescriptorBindingFlags binding_flags[2] = {
+        0,
+        VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+    };
+
+    VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags_info = {
+        .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+        .bindingCount  = 2,
+        .pBindingFlags = binding_flags,
     };
 
     VkDescriptorSetLayoutCreateInfo descriptor_layout_info = {
         .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .pNext        = nullptr,
-        .flags        = 0,
-        .bindingCount = 1,
-        .pBindings    = &descriptor_layout_binding
+        .pNext        = &binding_flags_info,
+        .flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+        .bindingCount = static_cast<uint32_t>(descriptor_layout_bindings.size()),
+        .pBindings    = &descriptor_layout_bindings[0]
 
     };
 
@@ -1367,13 +1398,121 @@ int main() {
         VK_CHECK(vkDeviceWaitIdle(device));
     }
 
-    auto lantern =
-        load_model("data/models/lantern.glb", staging_buffer, vma_allocator, command_buffer, graphics_queue, device);
-    populate_materials(lantern, descriptor_pool, descriptor_layout, linear_sampler, device);
+    Buffer bindless_global_vertex_buffer = create_buffer(
+        1024 * 1024 * 128, // 128MB
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        vma_allocator
+    );
 
-    auto helmet =
-        load_model("data/models/helmet.glb", staging_buffer, vma_allocator, command_buffer, graphics_queue, device);
-    populate_materials(helmet, descriptor_pool, descriptor_layout, linear_sampler, device);
+    VkBufferDeviceAddressInfo address_info = {
+        .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = bindless_global_vertex_buffer.handle,
+    };
+    VkDeviceAddress global_vertex_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
+
+    Buffer bindless_global_index_buffer = create_buffer(
+        1024 * 1024 * 32, // 32MB
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        vma_allocator
+    );
+
+    address_info = {
+        .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = bindless_global_index_buffer.handle,
+    };
+    VkDeviceAddress global_index_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
+
+    Buffer bindless_render_command_buffer = create_buffer(
+        1024 * 1024 * 16, // 16MB
+        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+    std::vector<VkDrawIndexedIndirectCommand> bindless_render_cpu_command_buffer;
+
+    Buffer bindless_global_uniform_buffer = create_buffer(
+        1024 * 1024 * 64, // 64MB
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+    std::vector<DrawData> bindless_draw_data_cpu_buffer;
+
+    VkDeviceSize indirect_vertex_buffer_offset = 0;
+    VkDeviceSize indirect_index_buffer_offset  = 0;
+
+    uint32_t bindless_texture_count = 10000;
+
+    VkDescriptorSetVariableDescriptorCountAllocateInfo variable_count_info = {
+        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+        .descriptorSetCount = 1,
+        .pDescriptorCounts  = &bindless_texture_count,
+    };
+
+    VkDescriptorSetAllocateInfo bindless_uniform_buffer_descriptor_set_info = {
+        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .pNext              = &variable_count_info,
+        .descriptorPool     = descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts        = &descriptor_layout
+    };
+
+    VkDescriptorSet bindless_uniform_buffer_descriptor_set = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateDescriptorSets(
+        device, &bindless_uniform_buffer_descriptor_set_info, &bindless_uniform_buffer_descriptor_set
+    ));
+
+    VkDescriptorBufferInfo bindless_uniform_buffer_set_info = {
+        .buffer = bindless_global_uniform_buffer.handle,
+        .offset = 0,
+        .range  = bindless_global_uniform_buffer.size,
+    };
+
+    VkWriteDescriptorSet bindless_uniform_buffer_write_set = {
+        .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .pNext            = nullptr,
+        .dstSet           = bindless_uniform_buffer_descriptor_set,
+        .dstBinding       = 0,
+        .dstArrayElement  = 0,
+        .descriptorCount  = 1,
+        .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .pImageInfo       = nullptr,
+        .pBufferInfo      = &bindless_uniform_buffer_set_info,
+        .pTexelBufferView = nullptr
+    };
+    vkUpdateDescriptorSets(device, 1, &bindless_uniform_buffer_write_set, 0, nullptr);
+
+    uint32_t texture_index = 0;
+
+    auto lantern = load_model(
+        "data/models/lantern.glb",
+        staging_buffer,
+        bindless_global_vertex_buffer,
+        indirect_vertex_buffer_offset,
+        bindless_global_index_buffer,
+        indirect_index_buffer_offset,
+        vma_allocator,
+        command_buffer,
+        graphics_queue,
+        device
+    );
+    populate_materials(lantern, texture_index, bindless_uniform_buffer_descriptor_set, linear_sampler, device);
+
+    auto helmet = load_model(
+        "data/models/helmet.glb",
+        staging_buffer,
+        bindless_global_vertex_buffer,
+        indirect_vertex_buffer_offset,
+        bindless_global_index_buffer,
+        indirect_index_buffer_offset,
+        vma_allocator,
+        command_buffer,
+        graphics_queue,
+        device
+    );
+    populate_materials(helmet, texture_index, bindless_uniform_buffer_descriptor_set, linear_sampler, device);
     for (auto& m : helmet) {
         m.position = glm::vec3(10, 0, 0);
         m.scale    = 7;
@@ -1395,6 +1534,42 @@ int main() {
                 break;
             }
         }
+
+        bindless_render_cpu_command_buffer.clear();
+        bindless_draw_data_cpu_buffer.clear();
+        for (auto& mesh : meshes) {
+            uint32_t first_index   = static_cast<uint32_t>(mesh.index_buffer_offset / sizeof(uint32_t));
+            int32_t  vertex_offset = static_cast<int32_t>(mesh.vertex_buffer_offset / sizeof(Vertex));
+
+            VkDrawIndexedIndirectCommand command = {
+                .indexCount    = mesh.index_count,
+                .instanceCount = 1,
+                .firstIndex    = first_index,
+                .vertexOffset  = vertex_offset,
+                .firstInstance = 0
+            };
+            bindless_render_cpu_command_buffer.push_back(command);
+
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), mesh.position);
+            model           = glm::scale(model, glm::vec3(mesh.scale));
+            bindless_draw_data_cpu_buffer.push_back({model, mesh.material.albedo_index, first_index, vertex_offset});
+        }
+
+        void* bindless_command_ptr = nullptr;
+        VK_CHECK(vmaMapMemory(vma_allocator, bindless_render_command_buffer.allocation, &bindless_command_ptr));
+        memcpy(
+            bindless_command_ptr,
+            bindless_render_cpu_command_buffer.data(),
+            sizeof(VkDrawIndexedIndirectCommand) * bindless_render_cpu_command_buffer.size()
+        );
+
+        void* bindless_uniform_ptr = nullptr;
+        VK_CHECK(vmaMapMemory(vma_allocator, bindless_global_uniform_buffer.allocation, &bindless_uniform_ptr));
+        memcpy(
+            bindless_uniform_ptr,
+            bindless_draw_data_cpu_buffer.data(),
+            sizeof(DrawData) * bindless_draw_data_cpu_buffer.size()
+        );
 
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
@@ -1494,6 +1669,18 @@ int main() {
 
         vkCmdBeginRendering(command_buffer, &rendering_info);
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vkCmdBindDescriptorSets(
+            command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipeline_layout,
+            0,
+            1,
+            &bindless_uniform_buffer_descriptor_set,
+            0,
+            nullptr
+        );
+
+        vkCmdBindIndexBuffer(command_buffer, bindless_global_index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
 
         glm::vec3 position  = {10, 0, 20};
         glm::vec3 direction = {0, 0, -1};
@@ -1504,38 +1691,29 @@ int main() {
         proj[1][1] *= -1;
 
         struct {
-            glm::mat4 combined;
-            glm::mat4 model;
+            glm::mat4    combined;
+            VkDeviceSize vertex_buffer_address;
+            VkDeviceSize index_buffer_address;
         } push;
+        push.combined              = proj * view;
+        push.vertex_buffer_address = global_vertex_buffer_address;
+        push.index_buffer_address  = global_index_buffer_address;
 
-        push.combined = proj * view;
-
-        for (auto& mesh : meshes) {
-            VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(command_buffer, 0, 1, &mesh.vertex_buffer.handle, &offset);
-            vkCmdBindIndexBuffer(command_buffer, mesh.index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
-
-            vkCmdBindDescriptorSets(
-                command_buffer,
-                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                pipeline_layout,
-                0,
-                1,
-                &mesh.material.descriptor_set,
-                0,
-                nullptr
-            );
-
-            auto model = glm::translate(glm::mat4(1.0f), mesh.position);
-            model      = glm::scale(model, glm::vec3(mesh.scale));
-            push.model = model;
-
-            vkCmdPushConstants(
-                command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4) * 2, &push
-            );
-
-            vkCmdDrawIndexed(command_buffer, mesh.index_buffer.size / sizeof(uint32_t), 1, 0, 0, 0);
-        }
+        vkCmdPushConstants(
+            command_buffer,
+            pipeline_layout,
+            VK_SHADER_STAGE_VERTEX_BIT,
+            0,
+            sizeof(glm::mat4) + sizeof(VkDeviceSize) * 2,
+            &push
+        );
+        vkCmdDrawIndexedIndirect(
+            command_buffer,
+            bindless_render_command_buffer.handle,
+            0,
+            bindless_render_cpu_command_buffer.size(),
+            sizeof(VkDrawIndexedIndirectCommand)
+        );
 
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
 
@@ -1607,12 +1785,6 @@ int main() {
 
     ImGui_ImplSDL3_Shutdown();
     ImGui_ImplVulkan_Shutdown();
-    for (auto& mesh : meshes) {
-        destroy_image(mesh.material.image, device, vma_allocator);
-        vmaDestroyBuffer(vma_allocator, mesh.vertex_buffer.handle, mesh.vertex_buffer.allocation);
-        vmaDestroyBuffer(vma_allocator, mesh.index_buffer.handle, mesh.index_buffer.allocation);
-        vkFreeDescriptorSets(device, descriptor_pool, 1, &mesh.material.descriptor_set);
-    }
     vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
     destroy_image(depth_buffer, device, vma_allocator);
     vmaDestroyBuffer(vma_allocator, staging_buffer.handle, staging_buffer.allocation);
