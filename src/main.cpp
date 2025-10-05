@@ -34,10 +34,6 @@
 struct MeshletBounds {
     glm::vec3 center;
     float     radius;
-
-    glm::vec3 cone_apex;
-    glm::vec3 cone_axis;
-    float     cone_cutoff;
 };
 
 struct Vertex {
@@ -774,7 +770,6 @@ std::vector<Mesh> load_model(
             spdlog::info("Max meshlets {}", max_meshlets);
 
             std::vector<meshopt_Meshlet> meshlets(max_meshlets);
-            std::vector<MeshletBounds>   meshlet_bounds(max_meshlets);
             std::vector<unsigned int>    meshlet_vertices(max_meshlets * max_vertices);
             std::vector<unsigned char>   meshlet_triangles(max_meshlets * max_triangles * 3);
 
@@ -791,6 +786,12 @@ std::vector<Mesh> load_model(
                 max_triangles,
                 cone_weight
             );
+
+            auto& last_meshlet = meshlets[meshlet_count - 1];
+            meshlet_vertices.resize(last_meshlet.vertex_offset + last_meshlet.vertex_count);
+            meshlet_triangles.resize(last_meshlet.triangle_offset + ((last_meshlet.triangle_count * 3 + 3) & ~3));
+            meshlets.resize(meshlet_count);
+            std::vector<MeshletBounds> meshlet_bounds(meshlet_count);
 
             uint32_t idx = 0;
             for (auto& m : meshlets) {
@@ -810,6 +811,8 @@ std::vector<Mesh> load_model(
                     sizeof(Vertex)
                 );
 
+                spdlog::info("bounds x={} y={} z={}", bounds.center[0], bounds.center[1], bounds.center[2]);
+
                 meshlet_bounds[idx++] = MeshletBounds{
                     .center =
                         {
@@ -818,26 +821,8 @@ std::vector<Mesh> load_model(
                             bounds.center[2],
                         },
                     .radius = bounds.radius,
-                    .cone_apex =
-                        {
-                            bounds.cone_apex[0],
-                            bounds.cone_apex[1],
-                            bounds.cone_apex[2],
-                        },
-                    .cone_axis =
-                        {
-                            bounds.cone_axis[0],
-                            bounds.cone_axis[1],
-                            bounds.cone_axis[2],
-                        },
-                    .cone_cutoff = bounds.cone_cutoff
                 };
             }
-
-            auto& last_meshlet = meshlets[meshlet_count - 1];
-            meshlet_vertices.resize(last_meshlet.vertex_offset + last_meshlet.vertex_count);
-            meshlet_triangles.resize(last_meshlet.triangle_offset + ((last_meshlet.triangle_count * 3 + 3) & ~3));
-            meshlets.resize(meshlet_count);
 
             size_t global_vertex_indices_offset    = meshlet_vertex_indices_offset / sizeof(unsigned int);
             size_t global_primitive_indices_offset = meshlet_primitive_indices_offset;
