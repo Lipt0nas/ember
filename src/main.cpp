@@ -20,9 +20,11 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #define VK_CHECK(call)                                                                                                 \
@@ -106,6 +108,42 @@ struct Mesh {
     glm::vec3 position = glm::vec3(0.0f);
     float     scale    = 1.0f;
 };
+
+struct Camera {
+    float near_plane;
+    float far_plane;
+
+    float viewport_width;
+    float viewport_height;
+
+    float fov;
+
+    glm::vec3 position;
+    glm::vec3 direction;
+    glm::vec3 up = {0, 1, 0};
+
+    glm::mat4 projection_matrix;
+    glm::mat4 view_matrix;
+    glm::mat4 combined_matrix;
+};
+
+void update_camera(Camera& camera) {
+    camera.projection_matrix = glm::perspectiveFov(
+        glm::radians(camera.fov), camera.viewport_width, camera.viewport_height, camera.near_plane, camera.far_plane
+    );
+    camera.projection_matrix[1][1] *= -1;
+    camera.view_matrix = glm::lookAt(camera.position, camera.position + camera.direction, camera.up);
+
+    camera.combined_matrix = camera.projection_matrix * camera.view_matrix;
+}
+
+void move_camera(Camera& camera, glm::vec3 direction, float velocity) {
+    glm::vec3 temp = direction;
+    temp           = glm::normalize(temp);
+    temp           = temp * velocity;
+
+    camera.position += temp;
+}
 
 void image_pipeline_barrier(
     const Image&          image,
@@ -1867,8 +1905,32 @@ int main() {
 
     populate_materials(texture_cache, bindless_uniform_buffer_descriptor_set, linear_sampler, device);
 
+    Camera camera = {
+        .near_plane      = 0.1f,
+        .far_plane       = 100.0f,
+        .viewport_width  = static_cast<float>(swapchain_extent.width),
+        .viewport_height = static_cast<float>(swapchain_extent.height),
+        .fov             = 90.0f
+    };
+    camera.position  = {10, 0, 20};
+    camera.direction = {0, 0, -1};
+
+    float base_camera_speed        = 1.0;
+    float camera_mouse_sensitivity = 0.002f;
+    float camera_speed_mod         = 2.5f;
+    float camera_speed             = base_camera_speed;
+
+    bool      capturing_mouse = false;
+    glm::vec2 last_mouse_pos  = {};
+
+    bool pressed_keys[512] = {0};
+
+    float delta_time = 0.0f;
+
     bool running = true;
     while (running) {
+        auto frame_start_time = std::chrono::high_resolution_clock::now();
+
         SDL_Event window_event;
         while (SDL_PollEvent(&window_event)) {
             ImGui_ImplSDL3_ProcessEvent(&window_event);
@@ -1876,11 +1938,88 @@ int main() {
             case SDL_EVENT_QUIT:
                 running = false;
                 break;
+            case SDL_EVENT_KEY_DOWN:
+                pressed_keys[window_event.key.scancode] = true;
+                break;
+            case SDL_EVENT_KEY_UP:
+                pressed_keys[window_event.key.scancode] = false;
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                if (window_event.button.button == SDL_BUTTON_RIGHT) {
+                    SDL_SetWindowMouseGrab(window, true);
+                    SDL_SetWindowRelativeMouseMode(window, true);
+
+                    capturing_mouse = true;
+                }
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+                if (window_event.button.button == SDL_BUTTON_RIGHT) {
+                    SDL_SetWindowMouseGrab(window, false);
+                    SDL_SetWindowRelativeMouseMode(window, false);
+
+                    capturing_mouse = false;
+                }
+                break;
+            case SDL_EVENT_MOUSE_MOTION:
+                auto xrel = static_cast<float>(window_event.motion.xrel);
+                auto yrel = static_cast<float>(window_event.motion.yrel);
+
+                auto x = static_cast<float>(window_event.motion.x);
+                auto y = static_cast<float>(window_event.motion.y);
+
+                if (capturing_mouse) {
+                    glm::vec2 mouse_delta = {-xrel * camera_mouse_sensitivity, -yrel * camera_mouse_sensitivity};
+
+                    last_mouse_pos = {xrel, yrel};
+
+                    glm::mat4 rotation_mat(1.0f);
+                    rotation_mat     = glm::rotate(rotation_mat, mouse_delta.x, camera.up);
+                    camera.direction = glm::vec3(rotation_mat * glm::vec4(camera.direction, 1.0));
+
+                    glm::vec3 temp(camera.direction);
+                    temp             = glm::cross(temp, camera.up);
+                    temp             = glm::normalize(temp);
+                    rotation_mat     = glm::mat4(1.0f);
+                    rotation_mat     = glm::rotate(rotation_mat, mouse_delta.y, temp);
+                    camera.direction = glm::vec3(rotation_mat * glm::vec4(camera.direction, 1.0));
+                }
+                break;
             }
         }
 
-        // bindless_render_cpu_command_buffer.clear();
+        if (pressed_keys[SDL_SCANCODE_LSHIFT]) {
+            camera_speed = base_camera_speed * camera_speed_mod;
+        } else {
+            camera_speed = base_camera_speed;
+        }
 
+        if (pressed_keys[SDL_SCANCODE_W]) {
+            move_camera(camera, camera.direction, camera_speed * delta_time);
+        }
+
+        if (pressed_keys[SDL_SCANCODE_S]) {
+            move_camera(camera, camera.direction, -camera_speed * delta_time);
+        }
+
+        if (pressed_keys[SDL_SCANCODE_A]) {
+            move_camera(camera, glm::cross(camera.direction, camera.up), -camera_speed * delta_time);
+        }
+
+        if (pressed_keys[SDL_SCANCODE_D]) {
+            move_camera(camera, glm::cross(camera.direction, camera.up), camera_speed * delta_time);
+        }
+
+        if (pressed_keys[SDL_SCANCODE_Q]) {
+            move_camera(camera, camera.up, camera_speed * delta_time);
+        }
+
+        if (pressed_keys[SDL_SCANCODE_E]) {
+            move_camera(camera, camera.up, -camera_speed * delta_time);
+        }
+
+        update_camera(camera);
+
+        // bindless_render_cpu_command_buffer.clear();
         meshlet_draw_commands.clear();
         bindless_draw_data_cpu_buffer.clear();
         for (auto& mesh : meshes) {
@@ -2037,16 +2176,8 @@ int main() {
 
         // vkCmdBindIndexBuffer(command_buffer, bindless_global_index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
 
-        glm::vec3 position  = {10, 0, 20};
-        glm::vec3 direction = {0, 0, -1};
-        glm::vec3 up        = {0, 1, 0};
-
-        auto view = glm::lookAt(position, position + direction, up);
-        auto proj = glm::perspective(glm::radians(90.0f), 1280.0f / 720.0f, 0.1f, 50.0f);
-        proj[1][1] *= -1;
-
         PushConstants push;
-        push.combined                                 = proj * view;
+        push.combined                                 = camera.combined_matrix;
         push.vertex_buffer_address                    = global_vertex_buffer_address;
         push.index_buffer_address                     = global_index_buffer_address;
         push.meshlet_buffer_address                   = meshlet_buffer_address;
@@ -2144,6 +2275,11 @@ int main() {
         VK_CHECK(vkQueuePresentKHR(graphics_queue, &present_info));
 
         vkDeviceWaitIdle(device);
+
+        auto time_diff =
+            std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - frame_start_time)
+                .count();
+        delta_time = time_diff * 0.001f;
     }
 
     ImGui_ImplSDL3_Shutdown();
