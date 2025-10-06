@@ -1,0 +1,129 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+
+#include "common_post_process.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 1, binding = 0) uniform sampler2D textures[];
+
+layout(set = 0, binding = 0, rgba16f) uniform image2D out_color;
+
+vec3 reconstruct_world_position(vec2 uv, float depth) {
+    vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 world_pos = push_constants.inv_transform * ndc;
+
+    return world_pos.xyz / world_pos.w;
+}
+
+const float PI = 3.14159265359;
+
+// Trowbridge-Reitz GGX normal distribution
+float DistributionGGX(vec3 N, vec3 H, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+
+    float nom = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+
+    return nom / denom;
+}
+
+// Schlick-GGX geometry function
+float GeometrySchlickGGX(float NdotV, float roughness) {
+    float r = (roughness + 1.0);
+    float k = (r * r) / 8.0;
+
+    float nom = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+
+    return nom / denom;
+}
+
+// Smith's method for geometry obstruction
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+
+    return ggx1 * ggx2;
+}
+
+// Fresnel-Schlick approximation
+vec3 fresnelSchlick(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+void main() {
+    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 image_size = imageSize(out_color);
+
+    if (pixel_coord.x >= image_size.x || pixel_coord.y >= image_size.y) {
+        return;
+    }
+
+    vec2 uv = (vec2(pixel_coord) + 0.5) / vec2(image_size);
+
+    float depth = texture(textures[push_constants.depth_index], uv).r;
+
+    // TODO: not optimal
+    if (depth == 1.0) {
+        imageStore(out_color, pixel_coord, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    vec3 albedo = texture(textures[push_constants.albedo_index], uv).rgb;
+    vec3 normal = normalize(texture(textures[push_constants.normals_index], uv).rgb);
+    vec3 material = texture(textures[push_constants.material_index], uv).rgb;
+
+    float roughness = material.y;
+    float metallic = material.x;
+
+    vec3 world_pos = reconstruct_world_position(uv, depth);
+
+    vec3 light_pos = normalize(vec3(0.3, 0.8, 0.2));
+    vec3 light_color = vec3(1.0, 1.0, 1.0);
+    float light_intensity = 5.0;
+
+    vec3 V = normalize(push_constants.camera_position.xyz - world_pos);
+    vec3 L = normalize(light_pos);
+    vec3 H = normalize(V + L);
+
+    vec3 F0 = vec3(0.04);
+    F0 = mix(F0, albedo, metallic);
+
+    float NDF = DistributionGGX(normal, H, roughness);
+    float G = GeometrySmith(normal, V, L, roughness);
+    vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+
+    vec3 numerator = NDF * G * F;
+    float denominator = 4.0 * max(dot(normal, V), 0.0) * max(dot(normal, L), 0.0) + 0.0001;
+    vec3 specular = numerator / denominator;
+
+    vec3 kS = F;
+    vec3 kD = vec3(1.0) - kS;
+    kD *= 1.0 - metallic;
+
+    vec3 diffuse = kD * albedo / PI;
+
+    float distance = length(light_pos - world_pos);
+    float attenuation = 1.0 / (distance * distance);
+    vec3 radiance = light_color * light_intensity;
+
+    float NdotL = max(dot(normal, L), 0.0);
+    vec3 Lo = (diffuse + specular) * radiance * NdotL;
+
+    vec3 ambient = vec3(0.2) * albedo;
+    vec3 color = ambient + Lo;
+
+    imageStore(out_color, pixel_coord, vec4(color, 1.0));
+}

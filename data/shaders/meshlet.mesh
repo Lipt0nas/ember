@@ -4,93 +4,26 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+
+#include "common.glsl"
 
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 layout(triangles, max_vertices = 64, max_primitives = 124) out;
 
 layout(location = 0) out vec3 out_color[];
 layout(location = 1) out vec2 out_uv[];
-layout(location = 2) flat out uint out_albedo_index[];
-layout(location = 3) out vec3 out_meshlet_color[];
-
-struct TaskPayload {
-    uint draw_id;
-    uint meshlet_ids[32];
-    uint meshlet_count;
-};
+layout(location = 2) out vec3 out_meshlet_color[];
+layout(location = 3) flat out uint out_albedo_index[];
+layout(location = 4) flat out uint out_normals_index[];
+layout(location = 5) flat out uint out_material_index[];
+layout(location = 6) out vec3 out_world_pos[];
 
 taskPayloadSharedEXT TaskPayload payload;
-
-struct DrawData {
-    mat4 model;
-    uint albedo_index;
-    uint first_index;
-    int vertex_offset;
-    uint meshlet_offset;
-    uint meshlet_count;
-    float _pad0;
-    float _pad1;
-    float _pad2;
-};
-
-struct Meshlet {
-    uint vertex_offset;
-    uint triangle_offset;
-    uint vertex_count;
-    uint triangle_count;
-};
-
-struct MeshletBounds {
-    vec3 center;
-    float radius;
-};
-
-layout(buffer_reference, scalar) readonly buffer IndexBuffer {
-    uint indices[];
-};
-
-layout(buffer_reference, scalar) readonly buffer VertexBuffer {
-    float data[];
-};
-
-layout(buffer_reference, scalar) readonly buffer MeshletBuffer {
-    Meshlet meshlets[];
-};
-
-layout(buffer_reference, scalar) readonly buffer MeshletBoundsBuffer {
-    MeshletBounds bounds[];
-};
-
-layout(buffer_reference, scalar) readonly buffer MeshletVertexIndices {
-    uint indices[];
-};
-
-layout(buffer_reference, scalar) readonly buffer MeshletPrimitiveIndices {
-    uint8_t indices[];
-};
-
-layout(set = 0, binding = 0) readonly buffer DrawDataBuffer {
-    DrawData draw_data[];
-} uniforms;
-
-layout(push_constant, std430) uniform pc {
-    mat4 transform;
-    VertexBuffer vertex_buffer;
-    IndexBuffer index_buffer;
-    MeshletBuffer meshlet_buffer;
-    MeshletVertexIndices meshlet_vertex_indices;
-    MeshletPrimitiveIndices meshlet_primitive_indices;
-    MeshletBoundsBuffer meshlet_bounds_buffer;
-} push_constants;
 
 void main() {
     uint local_meshlet_id = gl_WorkGroupID.x;
     uint thread_id = gl_LocalInvocationIndex;
-
-    // TODO: Shouldn't happen
-    // if (local_meshlet_id >= payload.meshlet_count) {
-    //     return;
-    // }
 
     uint meshlet_id = payload.meshlet_ids[local_meshlet_id];
 
@@ -127,11 +60,16 @@ void main() {
                 float((hash >> 16) & 0xFF) / 255.0
             );
 
-        gl_MeshVerticesEXT[thread_id].gl_Position = push_constants.transform * draw.model * vec4(position, 1.0);
+        vec4 world_pos = push_constants.transform * draw.model * vec4(position, 1.0);
+
+        gl_MeshVerticesEXT[thread_id].gl_Position = world_pos;
         out_color[thread_id] = normal;
         out_uv[thread_id] = uv;
-        out_albedo_index[thread_id] = draw.albedo_index;
         out_meshlet_color[thread_id] = meshlet_color;
+        out_albedo_index[thread_id] = draw.albedo_index;
+        out_normals_index[thread_id] = draw.normals_index;
+        out_material_index[thread_id] = draw.material_index;
+        out_world_pos[thread_id] = world_pos.xyz;
     }
 
     if (thread_id < m.triangle_count) {

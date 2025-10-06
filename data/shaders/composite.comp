@@ -1,0 +1,40 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+
+#include "common_post_process.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 1, binding = 0) uniform sampler2D textures[];
+
+layout(set = 0, binding = 0, rgba8) uniform image2D out_color;
+
+vec3 aces_film(vec3 x) {
+    float a = 2.51;
+    float b = 0.03;
+    float c = 2.43;
+    float d = 0.59;
+    float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+void main() {
+    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 image_size = imageSize(out_color);
+
+    if (pixel_coord.x >= image_size.x || pixel_coord.y >= image_size.y) {
+        return;
+    }
+
+    vec2 uv = (vec2(pixel_coord) + 0.5) / vec2(image_size);
+
+    vec3 hdr_color = texture(textures[push_constants.lightpass_index], uv).rgb;
+    vec3 tonemapped = aces_film(hdr_color);
+
+    imageStore(out_color, pixel_coord, vec4(tonemapped, 1.0));
+}
