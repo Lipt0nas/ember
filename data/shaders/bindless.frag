@@ -9,7 +9,7 @@ layout(location = 4) flat in uint in_normals_index;
 layout(location = 5) flat in uint in_material_index;
 layout(location = 6) in vec3 in_world_pos;
 
-layout(set = 1, binding = 0) uniform sampler2D textures[];
+layout(set = 1, binding = 1) uniform sampler2D textures[];
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_normal;

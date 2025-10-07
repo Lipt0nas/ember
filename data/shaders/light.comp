@@ -6,11 +6,12 @@
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_nonuniform_qualifier : enable
 
+#include "common.glsl"
 #include "common_post_process.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-layout(set = 1, binding = 0) uniform sampler2D textures[];
+layout(set = 1, binding = 1) uniform sampler2D textures[];
 
 layout(set = 0, binding = 0, rgba16f) uniform image2D out_color;
 

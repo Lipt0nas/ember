@@ -7,6 +7,7 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "common.glsl"
+#include "common_geometry.glsl"
 
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 layout(triangles, max_vertices = 64, max_primitives = 124) out;
@@ -22,10 +23,10 @@ layout(location = 6) out vec3 out_world_pos[];
 taskPayloadSharedEXT TaskPayload payload;
 
 void main() {
-    uint local_meshlet_id = gl_WorkGroupID.x;
+    uint local_meshlet_id = payload.meshlet_indices[gl_WorkGroupID.x];
     uint thread_id = gl_LocalInvocationIndex;
 
-    uint meshlet_id = payload.meshlet_ids[local_meshlet_id];
+    uint meshlet_id = payload.meshlet_offset + local_meshlet_id;
 
     DrawData draw = uniforms.draw_data[payload.draw_id];
 
@@ -60,7 +61,7 @@ void main() {
                 float((hash >> 16) & 0xFF) / 255.0
             );
 
-        vec4 world_pos = push_constants.transform * draw.model * vec4(position, 1.0);
+        vec4 world_pos = scene.view_proj * draw.model * vec4(position, 1.0);
 
         gl_MeshVerticesEXT[thread_id].gl_Position = world_pos;
         out_color[thread_id] = normal;

@@ -33,6 +33,70 @@
         assert(result_ == VK_SUCCESS);                                                                                 \
     } while (0)
 
+struct FrustumPlanes {
+    glm::vec4 left;
+    glm::vec4 right;
+    glm::vec4 bottom;
+    glm::vec4 top;
+    glm::vec4 near;
+    glm::vec4 far;
+};
+
+FrustumPlanes extract_frustum_planes(const glm::mat4& view_proj) {
+    FrustumPlanes planes;
+
+    planes.left = glm::vec4(
+        view_proj[0][3] + view_proj[0][0],
+        view_proj[1][3] + view_proj[1][0],
+        view_proj[2][3] + view_proj[2][0],
+        view_proj[3][3] + view_proj[3][0]
+    );
+
+    planes.right = glm::vec4(
+        view_proj[0][3] - view_proj[0][0],
+        view_proj[1][3] - view_proj[1][0],
+        view_proj[2][3] - view_proj[2][0],
+        view_proj[3][3] - view_proj[3][0]
+    );
+
+    planes.bottom = glm::vec4(
+        view_proj[0][3] + view_proj[0][1],
+        view_proj[1][3] + view_proj[1][1],
+        view_proj[2][3] + view_proj[2][1],
+        view_proj[3][3] + view_proj[3][1]
+    );
+
+    planes.top = glm::vec4(
+        view_proj[0][3] - view_proj[0][1],
+        view_proj[1][3] - view_proj[1][1],
+        view_proj[2][3] - view_proj[2][1],
+        view_proj[3][3] - view_proj[3][1]
+    );
+
+    planes.near = glm::vec4(
+        view_proj[0][3] + view_proj[0][2],
+        view_proj[1][3] + view_proj[1][2],
+        view_proj[2][3] + view_proj[2][2],
+        view_proj[3][3] + view_proj[3][2]
+    );
+
+    planes.far = glm::vec4(
+        view_proj[0][3] - view_proj[0][2],
+        view_proj[1][3] - view_proj[1][2],
+        view_proj[2][3] - view_proj[2][2],
+        view_proj[3][3] - view_proj[3][2]
+    );
+
+    planes.left /= glm::length(glm::vec3(planes.left));
+    planes.right /= glm::length(glm::vec3(planes.right));
+    planes.bottom /= glm::length(glm::vec3(planes.bottom));
+    planes.top /= glm::length(glm::vec3(planes.top));
+    planes.near /= glm::length(glm::vec3(planes.near));
+    planes.far /= glm::length(glm::vec3(planes.far));
+
+    return planes;
+}
+
 struct MeshletBounds {
     glm::vec3 center;
     float     radius;
@@ -54,11 +118,19 @@ struct Vertex {
     }
 };
 
-struct PushConstants {
-    glm::mat4 combined;
-    glm::mat4 inv_combined;
+struct SceneUBO {
+    glm::mat4 view_proj;
+    glm::vec4 planes[6];
     glm::vec4 camera_position;
 
+    glm::mat4 frozen_view_proj;
+    glm::vec4 frozen_planes[6];
+    glm::vec4 frozen_camera_position;
+
+    uint32_t debug_frustum;
+};
+
+struct PushConstants {
     VkDeviceSize vertex_buffer_address;
     VkDeviceSize index_buffer_address;
     VkDeviceSize meshlet_buffer_address;
@@ -83,7 +155,6 @@ struct PostProcesPushConstants {
 struct DrawData {
     glm::mat4 model_matrix;
 
-    uint32_t albedo_index;
     // Vertex pulling
     uint32_t first_index;
     int32_t  vertex_offset;
@@ -92,6 +163,7 @@ struct DrawData {
     uint32_t meshlet_offset;
     uint32_t meshlet_count;
 
+    uint32_t albedo_index;
     uint32_t normals_index;
     uint32_t material_index;
     float    _pad[1];
@@ -550,7 +622,8 @@ get_swapchain_settings(SDL_Window* window, VkPhysicalDevice physical_device, VkS
 
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     for (const auto& mode : present_modes) {
-        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+        // if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+        if (mode == VK_PRESENT_MODE_FIFO_KHR) {
             present_mode = mode;
             break;
         }
@@ -1058,7 +1131,7 @@ void populate_materials(
             .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .pNext            = nullptr,
             .dstSet           = descriptor_set,
-            .dstBinding       = 0,
+            .dstBinding       = 1,
             .dstArrayElement  = slot,
             .descriptorCount  = 1,
             .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1376,6 +1449,10 @@ int main() {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             .descriptorCount = 100,
         },
+        {
+            .type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 100,
+        },
     };
 
     VkDescriptorPoolCreateInfo descriptor_pool_info = {
@@ -1561,16 +1638,24 @@ int main() {
         .size       = sizeof(PushConstants)
     };
 
-    std::vector<VkDescriptorSetLayoutBinding> descriptor_layout_bindings = {
+    VkDescriptorSetLayoutBinding draw_data_binding = {
+        .binding            = 0,
+        .descriptorType     = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount    = 1,
+        .stageFlags         = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT,
+        .pImmutableSamplers = nullptr,
+    };
+
+    std::vector<VkDescriptorSetLayoutBinding> texture_ubo_bindings = {
         {
             .binding            = 0,
-            .descriptorType     = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorType     = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             .descriptorCount    = 1,
-            .stageFlags         = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT,
+            .stageFlags         = VK_SHADER_STAGE_ALL,
             .pImmutableSamplers = nullptr,
         },
         {
-            .binding            = 0,
+            .binding            = 1,
             .descriptorType     = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount    = 10000,
             .stageFlags         = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
@@ -1578,14 +1663,16 @@ int main() {
         }
     };
 
-    VkDescriptorBindingFlags bindless_flags = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
-                                              VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-                                              VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+    std::vector<VkDescriptorBindingFlags> bindless_flags = {
+        0,
+        VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+    };
 
     VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_binding_flags_info = {
         .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-        .bindingCount  = 1,
-        .pBindingFlags = &bindless_flags,
+        .bindingCount  = static_cast<uint32_t>(bindless_flags.size()),
+        .pBindingFlags = bindless_flags.data(),
     };
 
     VkDescriptorSetLayoutCreateInfo uniform_descriptor_layout_info = {
@@ -1593,7 +1680,7 @@ int main() {
         .pNext        = nullptr,
         .flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
         .bindingCount = 1,
-        .pBindings    = &descriptor_layout_bindings[0]
+        .pBindings    = &draw_data_binding
     };
 
     VkDescriptorSetLayout uniform_descriptor_layout = VK_NULL_HANDLE;
@@ -1603,8 +1690,8 @@ int main() {
         .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
         .pNext        = &bindless_binding_flags_info,
         .flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-        .bindingCount = 1,
-        .pBindings    = &descriptor_layout_bindings[1]
+        .bindingCount = static_cast<uint32_t>(texture_ubo_bindings.size()),
+        .pBindings    = texture_ubo_bindings.data()
     };
 
     VkDescriptorSetLayout bindless_descriptor_layout = VK_NULL_HANDLE;
@@ -2132,6 +2219,13 @@ int main() {
     };
     VkDeviceAddress meshlet_bounds_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
 
+    Buffer scene_ubo_buffer = create_buffer(
+        sizeof(SceneUBO),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+
     VkDeviceSize meshlet_buffer_offset                   = 0;
     VkDeviceSize meshlet_vertex_indices_offset           = 0;
     VkDeviceSize meshlet_vertex_primitive_indices_offset = 0;
@@ -2171,6 +2265,26 @@ int main() {
     VK_CHECK(
         vkAllocateDescriptorSets(device, &bindless_texture_descriptor_set_info, &bindless_textures_descriptor_set)
     );
+
+    VkDescriptorBufferInfo scene_ubo_set_info = {
+        .buffer = scene_ubo_buffer.handle,
+        .offset = 0,
+        .range  = scene_ubo_buffer.size,
+    };
+
+    VkWriteDescriptorSet scene_ubo_write_set = {
+        .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .pNext            = nullptr,
+        .dstSet           = bindless_textures_descriptor_set,
+        .dstBinding       = 0,
+        .dstArrayElement  = 0,
+        .descriptorCount  = 1,
+        .descriptorType   = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .pImageInfo       = nullptr,
+        .pBufferInfo      = &scene_ubo_set_info,
+        .pTexelBufferView = nullptr
+    };
+    vkUpdateDescriptorSets(device, 1, &scene_ubo_write_set, 0, nullptr);
 
     VkDescriptorBufferInfo bindless_uniform_buffer_set_info = {
         .buffer = bindless_global_uniform_buffer.handle,
@@ -2352,6 +2466,14 @@ int main() {
 
     float delta_time = 0.0f;
 
+    float    time_passed = 0.0f;
+    uint32_t fps         = 0;
+
+    glm::mat4     frozen_view_proj;
+    glm::vec4     frozen_camera_position;
+    FrustumPlanes frozen_planes;
+    bool          debug_frustum = false;
+
     bool running = true;
     while (running) {
         auto frame_start_time = std::chrono::high_resolution_clock::now();
@@ -2443,6 +2565,34 @@ int main() {
         }
 
         update_camera(camera);
+        auto planes = extract_frustum_planes(camera.combined_matrix);
+
+        SceneUBO scene_ubo         = {};
+        scene_ubo.view_proj        = camera.combined_matrix;
+        scene_ubo.frozen_view_proj = frozen_view_proj;
+
+        scene_ubo.camera_position        = glm::vec4(camera.position, 1.0);
+        scene_ubo.frozen_camera_position = frozen_camera_position;
+
+        scene_ubo.planes[0] = planes.left;
+        scene_ubo.planes[1] = planes.right;
+        scene_ubo.planes[2] = planes.bottom;
+        scene_ubo.planes[3] = planes.top;
+        scene_ubo.planes[4] = planes.near;
+        scene_ubo.planes[5] = planes.far;
+
+        scene_ubo.frozen_planes[0] = frozen_planes.left;
+        scene_ubo.frozen_planes[1] = frozen_planes.right;
+        scene_ubo.frozen_planes[2] = frozen_planes.bottom;
+        scene_ubo.frozen_planes[3] = frozen_planes.top;
+        scene_ubo.frozen_planes[4] = frozen_planes.near;
+        scene_ubo.frozen_planes[5] = frozen_planes.far;
+
+        scene_ubo.debug_frustum = debug_frustum;
+
+        void* scene_ubo_ptr = nullptr;
+        VK_CHECK(vmaMapMemory(vma_allocator, scene_ubo_buffer.allocation, &scene_ubo_ptr));
+        memcpy(scene_ubo_ptr, &scene_ubo, sizeof(SceneUBO));
 
         // bindless_render_cpu_command_buffer.clear();
         meshlet_draw_commands.clear();
@@ -2474,11 +2624,11 @@ int main() {
             bindless_draw_data_cpu_buffer.push_back(
                 DrawData{
                     .model_matrix   = model,
-                    .albedo_index   = mesh.material.albedo_index,
                     .first_index    = first_index,
                     .vertex_offset  = vertex_offset,
                     .meshlet_offset = mesh.meshlet_offset,
                     .meshlet_count  = mesh.meshlet_count,
+                    .albedo_index   = mesh.material.albedo_index,
                     .normals_index  = mesh.material.normals_index,
                     .material_index = mesh.material.material_index,
                 }
@@ -2505,7 +2655,13 @@ int main() {
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::ShowDemoWindow();
+        ImGui::Begin("Debug");
+        if (ImGui::Checkbox("Freeze frustum", &debug_frustum)) {
+            frozen_camera_position = glm::vec4(camera.position, 1.0);
+            frozen_planes          = planes;
+            frozen_view_proj       = camera.combined_matrix;
+        }
+        ImGui::End();
 
         ImGui::Render();
         ImGui::UpdatePlatformWindows();
@@ -2597,13 +2753,7 @@ int main() {
             command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 2, sets, 0, nullptr
         );
 
-        // vkCmdBindIndexBuffer(command_buffer, bindless_global_index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
-
         PushConstants push;
-        push.combined        = camera.combined_matrix;
-        push.inv_combined    = glm::inverse(camera.combined_matrix);
-        push.camera_position = glm::vec4(camera.position, 1.0);
-
         push.vertex_buffer_address                    = global_vertex_buffer_address;
         push.index_buffer_address                     = global_index_buffer_address;
         push.meshlet_buffer_address                   = meshlet_buffer_address;
@@ -2847,34 +2997,68 @@ int main() {
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
         );
 
-        // VkRenderingAttachmentInfo swapchain_attachment_info = {
-        //     .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        //     .pNext              = nullptr,
-        //     .imageView          = swapchain_image_views[image_index],
-        //     .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        //     .resolveMode        = VK_RESOLVE_MODE_NONE,
-        //     .resolveImageView   = VK_NULL_HANDLE,
-        //     .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        //     .loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        //     .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-        //     .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
-        // };
-        //
-        // VkRenderingInfo imgui_rendering_info = {
-        //     .sType                = VK_STRUCTURE_TYPE_RENDERING_INFO,
-        //     .pNext                = nullptr,
-        //     .flags                = 0,
-        //     .renderArea           = {.offset = {.x = 0, .y = 0}, .extent = swapchain_extent},
-        //     .layerCount           = 1,
-        //     .viewMask             = 0,
-        //     .colorAttachmentCount = 1,
-        //     .pColorAttachments    = &swapchain_attachment_info,
-        //     .pDepthAttachment     = nullptr,
-        //     .pStencilAttachment   = nullptr
-        // };
-        // vkCmdBeginRendering(command_buffer, &imgui_rendering_info);
-        // ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
-        // vkCmdEndRendering(command_buffer);
+        VkImageMemoryBarrier2 to_render_barrier = {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext               = nullptr,
+            .srcStageMask        = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .srcAccessMask       = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+            .dstStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = swapchain_images[image_index],
+            .subresourceRange    = {
+                   .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                   .baseMipLevel   = 0,
+                   .levelCount     = 1,
+                   .baseArrayLayer = 0,
+                   .layerCount     = 1
+            }
+        };
+
+        VkDependencyInfo to_render_dependency = {
+            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext                    = nullptr,
+            .dependencyFlags          = 0,
+            .memoryBarrierCount       = 0,
+            .pMemoryBarriers          = nullptr,
+            .bufferMemoryBarrierCount = 0,
+            .pBufferMemoryBarriers    = nullptr,
+            .imageMemoryBarrierCount  = 1,
+            .pImageMemoryBarriers     = &to_render_barrier
+        };
+        vkCmdPipelineBarrier2(command_buffer, &to_render_dependency);
+
+        VkRenderingAttachmentInfo swapchain_attachment_info = {
+            .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .pNext              = nullptr,
+            .imageView          = swapchain_image_views[image_index],
+            .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .resolveMode        = VK_RESOLVE_MODE_NONE,
+            .resolveImageView   = VK_NULL_HANDLE,
+            .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+            .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+        };
+
+        VkRenderingInfo imgui_rendering_info = {
+            .sType                = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .pNext                = nullptr,
+            .flags                = 0,
+            .renderArea           = {.offset = {.x = 0, .y = 0}, .extent = swapchain_extent},
+            .layerCount           = 1,
+            .viewMask             = 0,
+            .colorAttachmentCount = 1,
+            .pColorAttachments    = &swapchain_attachment_info,
+            .pDepthAttachment     = nullptr,
+            .pStencilAttachment   = nullptr
+        };
+        vkCmdBeginRendering(command_buffer, &imgui_rendering_info);
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
+        vkCmdEndRendering(command_buffer);
 
         VkImageMemoryBarrier2 to_present_barrier = {
             .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -2883,7 +3067,7 @@ int main() {
             .srcAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
             .dstStageMask        = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
             .dstAccessMask       = 0,
-            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             .newLayout           = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -2943,6 +3127,15 @@ int main() {
             std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - frame_start_time)
                 .count();
         delta_time = time_diff * 0.001f;
+        fps++;
+
+        time_passed += delta_time;
+        if (time_passed >= 1.0f) {
+            SDL_SetWindowTitle(window, std::to_string(fps).c_str());
+
+            fps         = 0;
+            time_passed = 0.0f;
+        }
     }
 
     ImGui_ImplSDL3_Shutdown();

@@ -10,14 +10,13 @@ layout(location = 2) flat out uint out_albedo_index;
 struct DrawData {
     mat4 model;
 
-    uint albedo_index;
-
     uint first_index;
     int vertex_offset;
 
     uint meshlet_offset;
     uint meshlet_count;
 
+    uint albedo_index;
     float _pad0;
     float _pad1;
     float _pad2;
