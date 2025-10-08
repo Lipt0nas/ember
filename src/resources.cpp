@@ -145,6 +145,7 @@ Image create_image(
         .width      = width,
         .height     = height,
         .format     = format,
+        .aspect     = aspect,
         .handle     = handle,
         .view       = view,
         .allocation = allocation,
@@ -160,7 +161,6 @@ void destroy_image(const Image& image, VkDevice device, VmaAllocator allocator) 
 
 void image_pipeline_barrier(
     const Image&          image,
-    VkImageAspectFlagBits aspect,
     VkCommandBuffer       command_buffer,
     VkImageLayout         old_layout,
     VkImageLayout         new_layout,
@@ -182,7 +182,7 @@ void image_pipeline_barrier(
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image               = image.handle,
         .subresourceRange    = {
-               .aspectMask     = aspect,
+               .aspectMask     = image.aspect,
                .baseMipLevel   = 0,
                .levelCount     = 1,
                .baseArrayLayer = 0,

@@ -8,4 +8,5 @@ layout(set = 1, binding = 0) uniform SceneUBO {
     vec4 frozen_camera_position;
 
     uint debug_frustum;
+    uint disable_culling;
 } scene;

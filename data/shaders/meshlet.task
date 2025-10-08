@@ -68,6 +68,10 @@ void main() {
         }
     }
 
+    if (scene.disable_culling == 1) {
+        is_visible = true;
+    }
+
     if (is_visible) {
         uint index = atomicAdd(visible_count, 1);
         visible_meshlet_indices[index] = thread_id;

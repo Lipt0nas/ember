@@ -92,6 +92,7 @@ set(SOURCES
     "src/resources.cpp"
     "src/swapchain.cpp"
     "src/device.cpp"
+    "src/pipeline.cpp"
 )
 add_executable(Ember ${SOURCES})
 

@@ -11,7 +11,9 @@ struct Buffer {
 struct Image {
     uint32_t width;
     uint32_t height;
-    VkFormat format;
+
+    VkFormat           format;
+    VkImageAspectFlags aspect;
 
     VkImage       handle;
     VkImageView   view;
@@ -48,7 +50,6 @@ Image create_image(
 void destroy_image(const Image& image, VkDevice device, VmaAllocator allocator);
 void image_pipeline_barrier(
     const Image&          image,
-    VkImageAspectFlagBits aspect,
     VkCommandBuffer       command_buffer,
     VkImageLayout         old_layout,
     VkImageLayout         new_layout,
