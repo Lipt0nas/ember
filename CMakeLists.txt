@@ -87,7 +87,11 @@ endif()
 
 set(SOURCES
     "src/main.cpp"
-    "src/implementations.cpp"
+    "src/ember.cpp"
+    "src/camera.cpp"
+    "src/resources.cpp"
+    "src/swapchain.cpp"
+    "src/device.cpp"
 )
 add_executable(Ember ${SOURCES})
 
