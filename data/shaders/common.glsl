@@ -9,4 +9,7 @@ layout(set = 1, binding = 0) uniform SceneUBO {
 
     uint debug_frustum;
     uint disable_culling;
+
+    uint _pad0;
+    uint _pad1;
 } scene;
