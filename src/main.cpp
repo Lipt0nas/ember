@@ -595,6 +595,7 @@ int main() {
         return 1;
     }
 
+    bool use_meshlets      = true;
     bool enable_validation = true;
 
     spdlog::info("Creating Vulkan instance");
@@ -608,7 +609,7 @@ int main() {
     spdlog::info("Queue index that supports graphics operations: {}", graphics_family_index);
 
     spdlog::info("Creating device");
-    VkDevice device = create_device(instance, physical_device, graphics_family_index, enable_validation);
+    VkDevice device = create_device(instance, physical_device, graphics_family_index, enable_validation, use_meshlets);
     volkLoadDevice(device);
 
     VmaAllocatorCreateInfo allocator_info = {
@@ -700,9 +701,15 @@ int main() {
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
     VK_CHECK(vkCreateDescriptorPool(device, &descriptor_pool_info, nullptr, &descriptor_pool));
 
+    VkShaderModule mesh_module =
+        use_meshlets ? shader_module_from_file(device, "data/shaders/meshlet.mesh.spv") : VK_NULL_HANDLE;
+    VkShaderModule task_module =
+        use_meshlets ? shader_module_from_file(device, "data/shaders/meshlet.task.spv") : VK_NULL_HANDLE;
+
+    VkShaderModule vertex_module =
+        use_meshlets ? VK_NULL_HANDLE : shader_module_from_file(device, "data/shaders/bindless.vert.spv");
+
     VkShaderModule fragment_module = shader_module_from_file(device, "data/shaders/bindless.frag.spv");
-    VkShaderModule mesh_module     = shader_module_from_file(device, "data/shaders/meshlet.mesh.spv");
-    VkShaderModule task_module     = shader_module_from_file(device, "data/shaders/meshlet.task.spv");
 
     VkShaderModule light_compute_module     = shader_module_from_file(device, "data/shaders/light.comp.spv");
     VkShaderModule composite_compute_module = shader_module_from_file(device, "data/shaders/composite.comp.spv");
@@ -713,7 +720,7 @@ int main() {
             .binding     = 0,
             .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .count       = 1,
-            .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT,
+            .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
             .bindless    = false
         }}
     );
@@ -736,30 +743,41 @@ int main() {
          }}
     );
 
+    VkShaderStageFlags geometry_pipeline_stage_flags =
+        use_meshlets ? VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
     VkPipelineLayout geometry_pipeline_layout = create_pipeline_layout(
         device,
         {draw_data_descriptor_layout, scene_ubo_texture_descriptor_layout},
-        VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT,
+        geometry_pipeline_stage_flags,
         sizeof(PushConstants)
     );
+
+    std::vector<Shader> geometry_pipeline_shaders;
+    if (use_meshlets) {
+        geometry_pipeline_shaders.push_back({
+            .module = task_module,
+            .stage  = VK_SHADER_STAGE_TASK_BIT_EXT,
+        });
+
+        geometry_pipeline_shaders.push_back({
+            .module = mesh_module,
+            .stage  = VK_SHADER_STAGE_MESH_BIT_EXT,
+        });
+    } else {
+        geometry_pipeline_shaders.push_back({
+            .module = vertex_module,
+            .stage  = VK_SHADER_STAGE_VERTEX_BIT,
+        });
+    }
+    geometry_pipeline_shaders.push_back({
+        .module = fragment_module,
+        .stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
+    });
 
     VkPipeline geometry_pipeline = create_graphics_pipeline(
         device,
         geometry_pipeline_layout,
-        {
-            {
-                .module = task_module,
-                .stage  = VK_SHADER_STAGE_TASK_BIT_EXT,
-            },
-            {
-                .module = mesh_module,
-                .stage  = VK_SHADER_STAGE_MESH_BIT_EXT,
-            },
-            {
-                .module = fragment_module,
-                .stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
-            },
-        },
+        geometry_pipeline_shaders,
         {
             VK_FORMAT_R8G8B8A8_UNORM,
             VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -1069,7 +1087,7 @@ int main() {
         VK_CHECK(vkDeviceWaitIdle(device));
     }
 
-    Buffer bindless_global_vertex_buffer = create_buffer(
+    Buffer global_vertex_buffer = create_buffer(
         1024 * 1024 * 128, // 128MB
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -1078,12 +1096,12 @@ int main() {
 
     VkBufferDeviceAddressInfo address_info = {
         .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = bindless_global_vertex_buffer.handle,
+        .buffer = global_vertex_buffer.handle,
     };
     VkDeviceAddress global_vertex_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
 
-    Buffer bindless_global_index_buffer = create_buffer(
-        1024 * 1024 * 64, // 32MB
+    Buffer global_index_buffer = create_buffer(
+        1024 * 1024 * 64, // 64MB
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         vma_allocator
@@ -1091,17 +1109,17 @@ int main() {
 
     address_info = {
         .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = bindless_global_index_buffer.handle,
+        .buffer = global_index_buffer.handle,
     };
     VkDeviceAddress global_index_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
 
-    Buffer bindless_render_command_buffer = create_buffer(
+    Buffer indirect_command_buffer = create_buffer(
         1024 * 1024 * 16, // 16MB
         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
-    std::vector<VkDrawIndexedIndirectCommand> bindless_render_cpu_command_buffer;
+    std::vector<VkDrawIndexedIndirectCommand> indirect_draw_commands;
 
     Buffer draw_data_buffer = create_buffer(
         1024 * 1024 * 64, // 64MB
@@ -1123,7 +1141,7 @@ int main() {
     };
     VkDeviceAddress meshlet_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
 
-    std::vector<VkDrawMeshTasksIndirectCommandEXT> meshlet_draw_commands;
+    std::vector<VkDrawMeshTasksIndirectCommandEXT> meshlet_indirect_draw_commands;
 
     Buffer meshlet_vertex_indices_buffer = create_buffer(
         1024 * 1024 * 64, // 32MB
@@ -1316,9 +1334,9 @@ int main() {
     auto lantern = load_model(
         "data/models/lion/lion.gltf",
         staging_buffer,
-        bindless_global_vertex_buffer,
+        global_vertex_buffer,
         indirect_vertex_buffer_offset,
-        bindless_global_index_buffer,
+        global_index_buffer,
         indirect_index_buffer_offset,
         meshlet_buffer,
         meshlet_buffer_offset,
@@ -1343,9 +1361,9 @@ int main() {
     auto helmet = load_model(
         "data/models/horse/horse.gltf",
         staging_buffer,
-        bindless_global_vertex_buffer,
+        global_vertex_buffer,
         indirect_vertex_buffer_offset,
-        bindless_global_index_buffer,
+        global_index_buffer,
         indirect_index_buffer_offset,
         meshlet_buffer,
         meshlet_buffer_offset,
@@ -1572,30 +1590,32 @@ int main() {
         VK_CHECK(vmaMapMemory(vma_allocator, scene_ubo_buffer.allocation, &scene_ubo_ptr));
         memcpy(scene_ubo_ptr, &scene_ubo, sizeof(SceneUBO));
 
-        // bindless_render_cpu_command_buffer.clear();
-        meshlet_draw_commands.clear();
+        indirect_draw_commands.clear();
+        meshlet_indirect_draw_commands.clear();
+
         bindless_draw_data_cpu_buffer.clear();
+
         for (auto& mesh : meshes) {
             uint32_t first_index   = static_cast<uint32_t>(mesh.index_buffer_offset / sizeof(uint32_t));
             int32_t  vertex_offset = static_cast<int32_t>(mesh.vertex_buffer_offset / sizeof(Vertex));
 
             uint32_t group_count = (mesh.meshlet_count + 31) / 32;
 
-            VkDrawMeshTasksIndirectCommandEXT command = {
-                .groupCountX = group_count,
-                .groupCountY = 1,
-                .groupCountZ = 1,
-            };
-            meshlet_draw_commands.push_back(command);
-
-            // VkDrawIndexedIndirectCommand command = {
-            //     .indexCount    = mesh.index_count,
-            //     .instanceCount = 1,
-            //     .firstIndex    = first_index,
-            //     .vertexOffset  = vertex_offset,
-            //     .firstInstance = 0
-            // };
-            // bindless_render_cpu_command_buffer.push_back(command);
+            if (use_meshlets) {
+                meshlet_indirect_draw_commands.push_back({
+                    .groupCountX = group_count,
+                    .groupCountY = 1,
+                    .groupCountZ = 1,
+                });
+            } else {
+                indirect_draw_commands.push_back({
+                    .indexCount    = mesh.index_count,
+                    .instanceCount = 1,
+                    .firstIndex    = first_index,
+                    .vertexOffset  = vertex_offset,
+                    .firstInstance = 0,
+                });
+            }
 
             glm::mat4 model = glm::translate(glm::mat4(1.0f), mesh.position);
             model           = glm::scale(model, glm::vec3(mesh.scale));
@@ -1614,12 +1634,21 @@ int main() {
         }
 
         void* bindless_command_ptr = nullptr;
-        VK_CHECK(vmaMapMemory(vma_allocator, bindless_render_command_buffer.allocation, &bindless_command_ptr));
-        memcpy(
-            bindless_command_ptr,
-            meshlet_draw_commands.data(),
-            sizeof(VkDrawMeshTasksIndirectCommandEXT) * meshlet_draw_commands.size()
-        );
+        if (use_meshlets) {
+            VK_CHECK(vmaMapMemory(vma_allocator, indirect_command_buffer.allocation, &bindless_command_ptr));
+            memcpy(
+                bindless_command_ptr,
+                meshlet_indirect_draw_commands.data(),
+                sizeof(VkDrawMeshTasksIndirectCommandEXT) * meshlet_indirect_draw_commands.size()
+            );
+        } else {
+            VK_CHECK(vmaMapMemory(vma_allocator, indirect_command_buffer.allocation, &bindless_command_ptr));
+            memcpy(
+                bindless_command_ptr,
+                indirect_draw_commands.data(),
+                sizeof(VkDrawIndexedIndirectCommand) * indirect_draw_commands.size()
+            );
+        }
 
         void* bindless_uniform_ptr = nullptr;
         VK_CHECK(vmaMapMemory(vma_allocator, draw_data_buffer.allocation, &bindless_uniform_ptr));
@@ -1634,6 +1663,9 @@ int main() {
         ImGui::NewFrame();
 
         ImGui::Begin("Debug");
+        ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
+        ImGui::Separator();
+
         if (ImGui::Checkbox("Freeze frustum", &debug_frustum)) {
             frozen_camera_position = glm::vec4(camera.position, 1.0);
             frozen_planes          = camera.planes;
@@ -1776,28 +1808,28 @@ int main() {
         push.meshlet_bounds_buffer_address            = meshlet_bounds_buffer_address;
 
         vkCmdPushConstants(
-            command_buffer,
-            geometry_pipeline_layout,
-            VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT,
-            0,
-            sizeof(PushConstants),
-            &push
+            command_buffer, geometry_pipeline_layout, geometry_pipeline_stage_flags, 0, sizeof(PushConstants), &push
         );
-        // vkCmdDrawIndexedIndirect(
-        //     command_buffer,
-        //     bindless_render_command_buffer.handle,
-        //     0,
-        //     bindless_render_cpu_command_buffer.size(),
-        //     sizeof(VkDrawIndexedIndirectCommand)
-        // );
 
-        vkCmdDrawMeshTasksIndirectEXT(
-            command_buffer,
-            bindless_render_command_buffer.handle,
-            0,
-            meshlet_draw_commands.size(),
-            sizeof(VkDrawMeshTasksIndirectCommandEXT)
-        );
+        if (use_meshlets) {
+            vkCmdDrawMeshTasksIndirectEXT(
+                command_buffer,
+                indirect_command_buffer.handle,
+                0,
+                meshlet_indirect_draw_commands.size(),
+                sizeof(VkDrawMeshTasksIndirectCommandEXT)
+            );
+        } else {
+            vkCmdBindIndexBuffer(command_buffer, global_index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
+
+            vkCmdDrawIndexedIndirect(
+                command_buffer,
+                indirect_command_buffer.handle,
+                0,
+                indirect_draw_commands.size(),
+                sizeof(VkDrawIndexedIndirectCommand)
+            );
+        }
 
         vkCmdEndRendering(command_buffer);
 
@@ -2075,10 +2107,10 @@ int main() {
 
     destroy_swapchain(swapchain, window, instance, device);
     destroy_buffer(staging_buffer, device, vma_allocator);
-    destroy_buffer(bindless_global_index_buffer, device, vma_allocator);
-    destroy_buffer(bindless_global_vertex_buffer, device, vma_allocator);
+    destroy_buffer(global_index_buffer, device, vma_allocator);
+    destroy_buffer(global_vertex_buffer, device, vma_allocator);
     destroy_buffer(draw_data_buffer, device, vma_allocator);
-    destroy_buffer(bindless_render_command_buffer, device, vma_allocator);
+    destroy_buffer(indirect_command_buffer, device, vma_allocator);
     destroy_buffer(meshlet_bounds_buffer, device, vma_allocator);
     destroy_buffer(meshlet_primitive_indices_buffer, device, vma_allocator);
     destroy_buffer(meshlet_vertex_indices_buffer, device, vma_allocator);
@@ -2107,11 +2139,18 @@ int main() {
     vkDestroySampler(device, linear_sampler, nullptr);
     vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
     vkDestroyDescriptorPool(device, imgui_descriptor_pool, nullptr);
+    if (mesh_module != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(device, mesh_module, nullptr);
+    }
+    if (task_module != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(device, task_module, nullptr);
+    }
     vkDestroyShaderModule(device, fragment_module, nullptr);
-    vkDestroyShaderModule(device, mesh_module, nullptr);
-    vkDestroyShaderModule(device, task_module, nullptr);
     vkDestroyShaderModule(device, composite_compute_module, nullptr);
     vkDestroyShaderModule(device, light_compute_module, nullptr);
+    if (vertex_module != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(device, vertex_module, nullptr);
+    }
     vkDestroyPipelineLayout(device, geometry_pipeline_layout, nullptr);
     vkDestroyPipeline(device, geometry_pipeline, nullptr);
     vkDestroyCommandPool(device, command_pool, nullptr);

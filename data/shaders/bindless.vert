@@ -3,71 +3,16 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 
-layout(location = 0) out vec3 out_color;
+layout(location = 0) out vec3 out_normal;
 layout(location = 1) out vec2 out_uv;
-layout(location = 2) flat out uint out_albedo_index;
+layout(location = 2) out vec3 out_meshlet_color;
+layout(location = 3) flat out uint out_albedo_index;
+layout(location = 4) flat out uint out_normals_index;
+layout(location = 5) flat out uint out_material_index;
+layout(location = 6) out vec3 out_world_pos;
 
-struct DrawData {
-    mat4 model;
-
-    uint first_index;
-    int vertex_offset;
-
-    uint meshlet_offset;
-    uint meshlet_count;
-
-    uint albedo_index;
-    float _pad0;
-    float _pad1;
-    float _pad2;
-};
-
-struct Vertex {
-    vec3 position;
-    vec3 normal;
-    vec2 uv;
-};
-
-struct Meshlet {
-    uint vertex_offset;
-    uint triangle_offset;
-
-    uint vertex_count;
-    uint triangle_count;
-};
-
-layout(buffer_reference, scalar) readonly buffer IndexBuffer {
-    uint indices[];
-};
-
-layout(buffer_reference, scalar) readonly buffer VertexBuffer {
-    float data[];
-};
-
-layout(buffer_reference, scalar) readonly buffer MeshletBuffer {
-    Meshlet meshlets[];
-};
-
-layout(buffer_reference, scalar) readonly buffer MeshletVertexIndices {
-    uint indices[];
-};
-
-layout(buffer_reference, scalar) readonly buffer MeshletPrimitiveIndices {
-    uint8_t indices[];
-};
-
-layout(set = 0, binding = 0) readonly buffer DrawDataBuffer {
-    DrawData draw_data[];
-} uniforms;
-
-layout(push_constant, std430) uniform pc {
-    mat4 transform;
-    VertexBuffer vertex_buffer;
-    IndexBuffer index_buffer;
-    MeshletBuffer meshlet_buffer;
-    MeshletVertexIndices meshlet_vertex_indices;
-    MeshletPrimitiveIndices meshlet_primitive_indices;
-} push_constants;
+#include "common.glsl"
+#include "common_geometry.glsl"
 
 void main() {
     DrawData draw = uniforms.draw_data[gl_DrawID];
@@ -88,9 +33,15 @@ void main() {
             push_constants.vertex_buffer.data[base + 7]
         );
 
-    out_color = normal;
-    out_uv = uv;
-    out_albedo_index = draw.albedo_index;
+    vec4 world_pos = scene.view_proj * draw.model * vec4(position, 1.0);
+    vec3 meshlet_color = vec3(1.0);
 
-    gl_Position = push_constants.transform * draw.model * vec4(position, 1.0);
+    gl_Position = world_pos;
+    out_normal = normal;
+    out_uv = uv;
+    out_meshlet_color = meshlet_color;
+    out_albedo_index = draw.albedo_index;
+    out_normals_index = draw.normals_index;
+    out_material_index = draw.material_index;
+    out_world_pos = world_pos.xyz;
 }

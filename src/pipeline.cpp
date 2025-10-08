@@ -52,6 +52,14 @@ VkPipeline create_graphics_pipeline(
         .flags = 0,
     };
 
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
+        .sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .pNext                  = nullptr,
+        .flags                  = 0,
+        .topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = VK_FALSE,
+    };
+
     // Left to dynamic states
     VkViewport viewport = {.x = 0, .y = 0, .width = 0, .height = 0, .minDepth = 0.0f, .maxDepth = 1.0f};
     VkRect2D   scissor  = {.offset = {.x = 0, .y = 0}, .extent = {.width = 0, .height = 0}};
@@ -167,8 +175,8 @@ VkPipeline create_graphics_pipeline(
         .flags               = 0,
         .stageCount          = static_cast<uint32_t>(shader_stage_infos.size()),
         .pStages             = &shader_stage_infos[0],
-        .pVertexInputState   = nullptr,
-        .pInputAssemblyState = nullptr,
+        .pVertexInputState   = &vertex_input_state,
+        .pInputAssemblyState = &input_assembly_state,
         .pTessellationState  = nullptr,
         .pViewportState      = &viewport_state,
         .pRasterizationState = &rasterization_state,

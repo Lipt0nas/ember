@@ -12,7 +12,7 @@
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 layout(triangles, max_vertices = 64, max_primitives = 124) out;
 
-layout(location = 0) out vec3 out_color[];
+layout(location = 0) out vec3 out_normal[];
 layout(location = 1) out vec2 out_uv[];
 layout(location = 2) out vec3 out_meshlet_color[];
 layout(location = 3) flat out uint out_albedo_index[];
@@ -54,17 +54,18 @@ void main() {
                 push_constants.vertex_buffer.data[base + 7]
             );
 
-        uint hash = draw_meshlet_id * 747796405u + 2891336453u;
-        vec3 meshlet_color = vec3(
-                float((hash >> 0) & 0xFF) / 255.0,
-                float((hash >> 8) & 0xFF) / 255.0,
-                float((hash >> 16) & 0xFF) / 255.0
-            );
+        // uint hash = draw_meshlet_id * 747796405u + 2891336453u;
+        // vec3 meshlet_color = vec3(
+        //         float((hash >> 0) & 0xFF) / 255.0,
+        //         float((hash >> 8) & 0xFF) / 255.0,
+        //         float((hash >> 16) & 0xFF) / 255.0
+        //     );
+        vec3 meshlet_color = vec3(1.0);
 
         vec4 world_pos = scene.view_proj * draw.model * vec4(position, 1.0);
 
         gl_MeshVerticesEXT[thread_id].gl_Position = world_pos;
-        out_color[thread_id] = normal;
+        out_normal[thread_id] = normal;
         out_uv[thread_id] = uv;
         out_meshlet_color[thread_id] = meshlet_color;
         out_albedo_index[thread_id] = draw.albedo_index;

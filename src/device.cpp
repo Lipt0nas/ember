@@ -130,14 +130,21 @@ uint32_t get_graphics_family_index(VkPhysicalDevice physical_device) {
 }
 
 VkDevice create_device(
-    VkInstance instance, VkPhysicalDevice physical_device, uint32_t graphics_family_index, bool enable_validation
+    VkInstance       instance,
+    VkPhysicalDevice physical_device,
+    uint32_t         graphics_family_index,
+    bool             enable_validation,
+    bool             use_meshlets
 ) {
     std::vector<const char*> device_extensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_KHR_SPIRV_1_4_EXTENSION_NAME,
-        VK_EXT_MESH_SHADER_EXTENSION_NAME,
         VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME,
     };
+
+    if (use_meshlets) {
+        device_extensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+    }
 
     float                   queue_prorities   = 1.0f;
     VkDeviceQueueCreateInfo device_queue_info = {
@@ -149,13 +156,23 @@ VkDevice create_device(
         .pQueuePriorities = &queue_prorities
     };
 
+    VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features = {
+        .sType                                  = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+        .pNext                                  = nullptr,
+        .taskShader                             = VK_TRUE,
+        .meshShader                             = VK_TRUE,
+        .multiviewMeshShader                    = VK_FALSE,
+        .primitiveFragmentShadingRateMeshShader = VK_FALSE,
+        .meshShaderQueries                      = VK_FALSE
+    };
+
     VkPhysicalDeviceFeatures features = {};
     features.samplerAnisotropy        = VK_TRUE;
     features.multiDrawIndirect        = VK_TRUE;
 
     VkPhysicalDeviceVulkan11Features vulkan_features_11{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-        .pNext = nullptr,
+        .pNext = use_meshlets ? &mesh_shader_features : nullptr,
     };
     vulkan_features_11.shaderDrawParameters = VK_TRUE;
 
@@ -183,19 +200,9 @@ VkDevice create_device(
     enabled_features_13.dynamicRendering = VK_TRUE;
     enabled_features_13.synchronization2 = VK_TRUE;
 
-    VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features = {
-        .sType                                  = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
-        .pNext                                  = &enabled_features_13,
-        .taskShader                             = VK_TRUE,
-        .meshShader                             = VK_TRUE,
-        .multiviewMeshShader                    = VK_FALSE,
-        .primitiveFragmentShadingRateMeshShader = VK_FALSE,
-        .meshShaderQueries                      = VK_FALSE
-    };
-
     VkDeviceCreateInfo device_info = {
         .sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext                   = &mesh_shader_features,
+        .pNext                   = &enabled_features_13,
         .flags                   = 0,
         .queueCreateInfoCount    = 1,
         .pQueueCreateInfos       = &device_queue_info,
