@@ -10,6 +10,15 @@ PFN_vkVoidFunction imgui_load_function(const char* function_name, void* user_dat
     return vkGetInstanceProcAddr((VkInstance)user_data, function_name);
 }
 
+uint32_t aligned_size(uint32_t size, uint32_t alignment) {
+    uint32_t aligned = size;
+    if (alignment > 0) {
+        aligned = (aligned + alignment - 1) & ~(alignment - 1);
+    }
+
+    return aligned;
+}
+
 struct SceneUBO {
     glm::mat4 view_proj;
     glm::vec4 planes[6];
@@ -608,6 +617,9 @@ int main() {
     spdlog::info("Picking physical device");
     VkPhysicalDevice physical_device       = pick_physical_device(instance);
     uint32_t         graphics_family_index = get_graphics_family_index(physical_device);
+
+    VkPhysicalDeviceProperties physical_device_properties;
+    vkGetPhysicalDeviceProperties(physical_device, &physical_device_properties);
 
     spdlog::info("Queue index that supports graphics operations: {}", graphics_family_index);
 
@@ -1209,7 +1221,8 @@ int main() {
     VkDeviceAddress meshlet_bounds_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
 
     Buffer scene_ubo_buffer = create_buffer(
-        sizeof(SceneUBO) * FRAMES_IN_FLIGHT,
+        aligned_size(sizeof(SceneUBO), physical_device_properties.limits.minUniformBufferOffsetAlignment) *
+            FRAMES_IN_FLIGHT,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
@@ -1500,8 +1513,9 @@ int main() {
 
     float delta_time = 0.0f;
 
-    float    time_passed = 0.0f;
-    uint32_t fps         = 0;
+    float    time_passed     = 0.0f;
+    uint32_t accumulated_fps = 0;
+    uint32_t fps             = 0;
 
     glm::mat4     frozen_view_proj;
     glm::vec4     frozen_camera_position;
@@ -1608,6 +1622,7 @@ int main() {
 
         ImGui::Begin("Debug");
         ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
+        ImGui::Text("FPS: %u", fps);
         ImGui::Separator();
 
         ImGui::Text("Camera pos: %.2f, %.2f, %.2f", camera.position.x, camera.position.y, camera.position.z);
@@ -1632,7 +1647,7 @@ int main() {
         vkAcquireNextImageKHR(
             device, swapchain.handle, UINT64_MAX, image_available_semaphores[frame_index], VK_NULL_HANDLE, &image_index
         );
-        vmaSetCurrentFrameIndex(vma_allocator, image_index);
+        vmaSetCurrentFrameIndex(vma_allocator, frame_index);
         VK_CHECK(vkResetFences(device, 1, &frame_fences[frame_index]));
 
         SceneUBO scene_ubo         = {};
@@ -1743,18 +1758,6 @@ int main() {
 
         VkCommandBuffer command_buffer = command_buffers[frame_index];
         vkBeginCommandBuffer(command_buffer, &begin_info);
-
-        image_pipeline_barrier(
-            swapchain.images[image_index],
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            0,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT
-        );
 
         VkViewport viewport = {
             .x        = 0,
@@ -1904,7 +1907,7 @@ int main() {
             command_buffer,
             VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
@@ -2003,7 +2006,7 @@ int main() {
             VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
         );
 
@@ -2027,6 +2030,18 @@ int main() {
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
             VK_PIPELINE_STAGE_2_TRANSFER_BIT,
             VK_ACCESS_2_TRANSFER_READ_BIT
+        );
+
+        image_pipeline_barrier(
+            swapchain.images[image_index],
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT
         );
 
         VkImageBlit blit_region = {
@@ -2081,7 +2096,7 @@ int main() {
             VK_PIPELINE_STAGE_2_TRANSFER_BIT,
             VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
         );
 
         VkRenderingAttachmentInfo swapchain_attachment_info = {
@@ -2125,7 +2140,7 @@ int main() {
             VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0,
             0
         );
         VK_CHECK(vkEndCommandBuffer(command_buffer));
@@ -2160,14 +2175,14 @@ int main() {
             std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - frame_start_time)
                 .count();
         delta_time = time_diff * 0.001f;
-        fps++;
+        accumulated_fps++;
 
         time_passed += delta_time;
         if (time_passed >= 1.0f) {
-            SDL_SetWindowTitle(window, std::to_string(fps).c_str());
+            fps = accumulated_fps;
 
-            fps         = 0;
-            time_passed = 0.0f;
+            accumulated_fps = 0;
+            time_passed     = 0.0f;
         }
 
         frame_index = (frame_index + 1) % FRAMES_IN_FLIGHT;
