@@ -48,6 +48,19 @@ Image create_image(
     VkDevice              device
 );
 void destroy_image(const Image& image, VkDevice device, VmaAllocator allocator);
+
+void image_pipeline_barrier(
+    VkImage               handle,
+    VkImageAspectFlags    aspect,
+    VkCommandBuffer       command_buffer,
+    VkImageLayout         old_layout,
+    VkImageLayout         new_layout,
+    VkPipelineStageFlags2 src_stage_mask,
+    VkAccessFlags2        src_access_mask,
+    VkPipelineStageFlags2 dst_stage_mask,
+    VkAccessFlags2        dst_access_mask
+);
+
 void image_pipeline_barrier(
     const Image&          image,
     VkCommandBuffer       command_buffer,
@@ -58,6 +71,7 @@ void image_pipeline_barrier(
     VkPipelineStageFlags2 dst_stage_mask,
     VkAccessFlags2        dst_access_mask
 );
+
 void copy_image(
     const Buffer& src_buffer, const Image& dst_image, VkCommandBuffer command_buffer, VkQueue queue, VkDevice device
 );

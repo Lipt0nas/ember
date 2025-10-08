@@ -1661,6 +1661,18 @@ int main() {
         };
         vkBeginCommandBuffer(command_buffer, &begin_info);
 
+        image_pipeline_barrier(
+            swapchain.images[image_index],
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT
+        );
+
         VkViewport viewport = {
             .x        = 0,
             .y        = 0,
@@ -1687,7 +1699,7 @@ int main() {
                 .resolveMode        = VK_RESOLVE_MODE_NONE,
                 .resolveImageView   = VK_NULL_HANDLE,
                 .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                 .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
                 .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
             },
@@ -1699,7 +1711,7 @@ int main() {
                 .resolveMode        = VK_RESOLVE_MODE_NONE,
                 .resolveImageView   = VK_NULL_HANDLE,
                 .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                 .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
                 .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
             },
@@ -1711,7 +1723,7 @@ int main() {
                 .resolveMode        = VK_RESOLVE_MODE_NONE,
                 .resolveImageView   = VK_NULL_HANDLE,
                 .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                 .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
                 .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
             },
@@ -1914,40 +1926,6 @@ int main() {
             VK_ACCESS_2_TRANSFER_READ_BIT
         );
 
-        VkImageMemoryBarrier2 to_transfer_barrier = {
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            .srcAccessMask       = 0,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = swapchain.images[image_index],
-            .subresourceRange    = {
-                   .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                   .baseMipLevel   = 0,
-                   .levelCount     = 1,
-                   .baseArrayLayer = 0,
-                   .layerCount     = 1
-            }
-        };
-
-        VkDependencyInfo to_dependency = {
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &to_transfer_barrier
-        };
-        vkCmdPipelineBarrier2(command_buffer, &to_dependency);
-
         VkImageBlit blit_region = {
             .srcSubresource =
                 {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
@@ -1991,39 +1969,17 @@ int main() {
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
         );
 
-        VkImageMemoryBarrier2 to_render_barrier = {
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            .srcAccessMask       = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .dstAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = swapchain.images[image_index],
-            .subresourceRange    = {
-                   .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                   .baseMipLevel   = 0,
-                   .levelCount     = 1,
-                   .baseArrayLayer = 0,
-                   .layerCount     = 1
-            }
-        };
-
-        VkDependencyInfo to_render_dependency = {
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &to_render_barrier
-        };
-        vkCmdPipelineBarrier2(command_buffer, &to_render_dependency);
+        image_pipeline_barrier(
+            swapchain.images[image_index],
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            command_buffer,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+        );
 
         VkRenderingAttachmentInfo swapchain_attachment_info = {
             .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -2058,52 +2014,30 @@ int main() {
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
         vkCmdEndRendering(command_buffer);
 
-        VkImageMemoryBarrier2 to_present_barrier = {
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .srcAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-            .dstAccessMask       = 0,
-            .oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .newLayout           = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = swapchain.images[image_index],
-            .subresourceRange    = {
-                   .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                   .baseMipLevel   = 0,
-                   .levelCount     = 1,
-                   .baseArrayLayer = 0,
-                   .layerCount     = 1
-            }
-        };
-
-        VkDependencyInfo present_dependency = {
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &to_present_barrier
-        };
-        vkCmdPipelineBarrier2(command_buffer, &present_dependency);
+        image_pipeline_barrier(
+            swapchain.images[image_index],
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            command_buffer,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
         VK_CHECK(vkEndCommandBuffer(command_buffer));
 
-        VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        VkSubmitInfo         submit_info   = {
-                      .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                      .pNext                = nullptr,
-                      .waitSemaphoreCount   = 1,
-                      .pWaitSemaphores      = &image_available_semaphore,
-                      .pWaitDstStageMask    = &wait_stages[0],
-                      .commandBufferCount   = 1,
-                      .pCommandBuffers      = &command_buffer,
-                      .signalSemaphoreCount = 1,
-                      .pSignalSemaphores    = &render_finished_semaphore
+        VkPipelineStageFlags wait_stage  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        VkSubmitInfo         submit_info = {
+                    .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                    .pNext                = nullptr,
+                    .waitSemaphoreCount   = 1,
+                    .pWaitSemaphores      = &image_available_semaphore,
+                    .pWaitDstStageMask    = &wait_stage,
+                    .commandBufferCount   = 1,
+                    .pCommandBuffers      = &command_buffer,
+                    .signalSemaphoreCount = 1,
+                    .pSignalSemaphores    = &render_finished_semaphore
         };
         VK_CHECK(vkQueueSubmit(graphics_queue, 1, &submit_info, VK_NULL_HANDLE));
 

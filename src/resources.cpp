@@ -160,7 +160,8 @@ void destroy_image(const Image& image, VkDevice device, VmaAllocator allocator) 
 }
 
 void image_pipeline_barrier(
-    const Image&          image,
+    VkImage               handle,
+    VkImageAspectFlags    aspect,
     VkCommandBuffer       command_buffer,
     VkImageLayout         old_layout,
     VkImageLayout         new_layout,
@@ -180,9 +181,9 @@ void image_pipeline_barrier(
         .newLayout           = new_layout,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image               = image.handle,
+        .image               = handle,
         .subresourceRange    = {
-               .aspectMask     = image.aspect,
+               .aspectMask     = aspect,
                .baseMipLevel   = 0,
                .levelCount     = 1,
                .baseArrayLayer = 0,
@@ -202,6 +203,29 @@ void image_pipeline_barrier(
         .pImageMemoryBarriers     = &barrier
     };
     vkCmdPipelineBarrier2(command_buffer, &dependency);
+}
+
+void image_pipeline_barrier(
+    const Image&          image,
+    VkCommandBuffer       command_buffer,
+    VkImageLayout         old_layout,
+    VkImageLayout         new_layout,
+    VkPipelineStageFlags2 src_stage_mask,
+    VkAccessFlags2        src_access_mask,
+    VkPipelineStageFlags2 dst_stage_mask,
+    VkAccessFlags2        dst_access_mask
+) {
+    image_pipeline_barrier(
+        image.handle,
+        image.aspect,
+        command_buffer,
+        old_layout,
+        new_layout,
+        src_stage_mask,
+        src_access_mask,
+        dst_stage_mask,
+        dst_access_mask
+    );
 }
 
 void copy_image(
