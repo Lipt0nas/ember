@@ -41,6 +41,7 @@ struct Vertex {
 
 layout(set = 1, binding = 0) uniform SceneUBO {
     mat4 view_proj;
+    mat4 inverse_view_proj;
     vec4 planes[6];
     vec4 camera_position;
 

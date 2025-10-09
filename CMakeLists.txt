@@ -126,7 +126,7 @@ foreach(SHADER_SOURCE ${SHADER_SOURCES})
     
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
-        COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT} --target-spv=spv1.4 -g
+        COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT} --target-env=vulkan1.4 --target-spv=spv1.6 -g
         DEPENDS ${SHADER_SOURCE}
         COMMENT "Compiling shader: ${SHADER_SOURCE}"
         VERBATIM

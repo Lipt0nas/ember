@@ -21,6 +21,7 @@ uint32_t aligned_size(uint32_t size, uint32_t alignment) {
 
 struct SceneUBO {
     glm::mat4 view_proj;
+    glm::mat4 inverse_view_proj;
     glm::vec4 planes[6];
     glm::vec4 camera_position;
 
@@ -38,10 +39,6 @@ struct PushConstants {
 };
 
 struct PostProcesPushConstants {
-    glm::mat4 combined;
-    glm::mat4 inv_combined;
-    glm::vec4 camera_position;
-
     uint32_t depth_index;
     uint32_t albedo_index;
     uint32_t normals_index;
@@ -1066,7 +1063,7 @@ int main() {
         VK_FORMAT_R16G16B16A16_SFLOAT,
         swapchain.width,
         swapchain.height,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
         vma_allocator,
         device
@@ -1076,8 +1073,7 @@ int main() {
         VK_FORMAT_R8G8B8A8_UNORM,
         swapchain.width,
         swapchain.height,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
         vma_allocator,
         device
@@ -1642,6 +1638,7 @@ int main() {
     bool disable_culling = false;
 
     bool running = true;
+
     while (running) {
         auto frame_start_time = std::chrono::high_resolution_clock::now();
 
@@ -1767,9 +1764,10 @@ int main() {
         vmaSetCurrentFrameIndex(vma_allocator, frame_index);
         VK_CHECK(vkResetFences(device, 1, &frame_fences[frame_index]));
 
-        SceneUBO scene_ubo         = {};
-        scene_ubo.view_proj        = camera.combined_matrix;
-        scene_ubo.frozen_view_proj = frozen_view_proj;
+        SceneUBO scene_ubo          = {};
+        scene_ubo.view_proj         = camera.combined_matrix;
+        scene_ubo.inverse_view_proj = glm::inverse(camera.combined_matrix);
+        scene_ubo.frozen_view_proj  = frozen_view_proj;
 
         scene_ubo.camera_position        = glm::vec4(camera.position, 1.0);
         scene_ubo.frozen_camera_position = frozen_camera_position;
@@ -2040,9 +2038,6 @@ int main() {
         );
 
         PostProcesPushConstants post_process_push = {
-            .combined        = camera.combined_matrix,
-            .inv_combined    = glm::inverse(camera.combined_matrix),
-            .camera_position = glm::vec4(camera.position, 1.0),
             .depth_index     = depth_index,
             .albedo_index    = albedo_index,
             .normals_index   = normals_index,

@@ -33,7 +33,7 @@ VkInstance create_instance(bool enable_validation, VkDebugUtilsMessengerEXT& deb
 
     spdlog::debug("SDL requires {} extensions", sdl_extension_count);
 
-    std::vector<const char*> instance_extensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
+    std::vector<const char*> instance_extensions = {};
     for (uint32_t i = 0; i < sdl_extension_count; i++) {
         instance_extensions.push_back(sdl_extensions[i]);
     }
@@ -150,8 +150,6 @@ VkDevice create_device(
 ) {
     std::vector<const char*> device_extensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-        VK_KHR_SPIRV_1_4_EXTENSION_NAME,
-        VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME,
     };
 
     if (use_meshlets) {
@@ -211,6 +209,7 @@ VkDevice create_device(
     };
     enabled_features_13.dynamicRendering = VK_TRUE;
     enabled_features_13.synchronization2 = VK_TRUE;
+    enabled_features_13.maintenance4     = VK_TRUE;
 
     VkDeviceCreateInfo device_info = {
         .sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
