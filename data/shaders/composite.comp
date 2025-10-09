@@ -6,7 +6,6 @@
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_nonuniform_qualifier : enable
 
-#include "common.glsl"
 #include "common_post_process.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;

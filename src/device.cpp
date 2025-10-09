@@ -38,14 +38,16 @@ VkInstance create_instance(bool enable_validation, VkDebugUtilsMessengerEXT& deb
         instance_extensions.push_back(sdl_extensions[i]);
     }
 
-    VkValidationFeatureEnableEXT validation_enables[] = {VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
-    VkValidationFeaturesEXT      validation_features  = {
-              .sType                          = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
-              .pNext                          = nullptr,
-              .enabledValidationFeatureCount  = 1,
-              .pEnabledValidationFeatures     = validation_enables,
-              .disabledValidationFeatureCount = 0,
-              .pDisabledValidationFeatures    = nullptr
+    VkValidationFeatureEnableEXT validation_enables[] = {
+        VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT, VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT
+    };
+    VkValidationFeaturesEXT validation_features = {
+        .sType                          = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+        .pNext                          = nullptr,
+        .enabledValidationFeatureCount  = 2,
+        .pEnabledValidationFeatures     = validation_enables,
+        .disabledValidationFeatureCount = 0,
+        .pDisabledValidationFeatures    = nullptr
     };
 
     VkDebugUtilsMessengerCreateInfoEXT debug_messenger_info = {

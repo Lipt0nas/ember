@@ -6,7 +6,6 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 #extension GL_GOOGLE_include_directive : enable
 
-#include "common.glsl"
 #include "common_geometry.glsl"
 
 layout(local_size_x = MESHLETS_PER_TASK, local_size_y = 1, local_size_z = 1) in;
@@ -47,7 +46,7 @@ void main() {
     bool is_visible = false;
     if (meshlet_id < draw.meshlet_count) {
         uint global_meshlet_id = draw.meshlet_offset + meshlet_id;
-        MeshletBounds bounds = push_constants.meshlet_bounds_buffer.bounds[global_meshlet_id];
+        MeshletBounds bounds = meshlet_bounds.bounds[global_meshlet_id];
 
         vec3 camera_position = scene.camera_position.xyz;
         vec4[6] planes = scene.planes;
@@ -66,10 +65,10 @@ void main() {
             vec3 apex_to_camera = normalize(camera_position - world_cone_apex);
             is_visible = !(dot(apex_to_camera, world_cone_axis) >= bounds.cone_cutoff);
         }
-    }
 
-    if (scene.disable_culling == 1) {
-        is_visible = true;
+        if (scene.disable_culling == 1) {
+            is_visible = true;
+        }
     }
 
     if (is_visible) {

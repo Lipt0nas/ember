@@ -6,7 +6,6 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 #extension GL_GOOGLE_include_directive : enable
 
-#include "common.glsl"
 #include "common_geometry.glsl"
 
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
@@ -31,28 +30,15 @@ void main() {
     DrawData draw = uniforms.draw_data[payload.draw_id];
 
     uint draw_meshlet_id = draw.meshlet_offset + meshlet_id;
-    Meshlet m = push_constants.meshlet_buffer.meshlets[draw_meshlet_id];
+    Meshlet m = meshlets.meshlets[draw_meshlet_id];
 
     SetMeshOutputsEXT(m.vertex_count, m.triangle_count);
 
     if (thread_id < m.vertex_count) {
-        uint global_vertex_index = push_constants.meshlet_vertex_indices.indices[m.vertex_offset + thread_id];
+        uint global_vertex_index = meshlet_vertex_indices.indices[m.vertex_offset + thread_id];
 
-        uint base = global_vertex_index * 8;
-        vec3 position = vec3(
-                push_constants.vertex_buffer.data[base + 0],
-                push_constants.vertex_buffer.data[base + 1],
-                push_constants.vertex_buffer.data[base + 2]
-            );
-        vec3 normal = vec3(
-                push_constants.vertex_buffer.data[base + 3],
-                push_constants.vertex_buffer.data[base + 4],
-                push_constants.vertex_buffer.data[base + 5]
-            );
-        vec2 uv = vec2(
-                push_constants.vertex_buffer.data[base + 6],
-                push_constants.vertex_buffer.data[base + 7]
-            );
+        uint base = global_vertex_index;
+        Vertex vertex = global_vertices.vertices[base];
 
         // uint hash = draw_meshlet_id * 747796405u + 2891336453u;
         // vec3 meshlet_color = vec3(
@@ -62,11 +48,11 @@ void main() {
         //     );
         vec3 meshlet_color = vec3(1.0);
 
-        vec4 world_pos = scene.view_proj * draw.model * vec4(position, 1.0);
+        vec4 world_pos = scene.view_proj * draw.model * vec4(vertex.position, 1.0);
 
         gl_MeshVerticesEXT[thread_id].gl_Position = world_pos;
-        out_normal[thread_id] = normal;
-        out_uv[thread_id] = uv;
+        out_normal[thread_id] = vertex.normal;
+        out_uv[thread_id] = vertex.uv;
         out_meshlet_color[thread_id] = meshlet_color;
         out_albedo_index[thread_id] = draw.albedo_index;
         out_normals_index[thread_id] = draw.normals_index;
@@ -77,9 +63,9 @@ void main() {
     if (thread_id < m.triangle_count) {
         uint prim_base = m.triangle_offset + thread_id * 3;
 
-        uint i_0 = uint(push_constants.meshlet_primitive_indices.indices[prim_base + 0]);
-        uint i_1 = uint(push_constants.meshlet_primitive_indices.indices[prim_base + 1]);
-        uint i_2 = uint(push_constants.meshlet_primitive_indices.indices[prim_base + 2]);
+        uint i_0 = uint(meshlet_primitive_indices.indices[prim_base + 0]);
+        uint i_1 = uint(meshlet_primitive_indices.indices[prim_base + 1]);
+        uint i_2 = uint(meshlet_primitive_indices.indices[prim_base + 2]);
 
         gl_PrimitiveTriangleIndicesEXT[thread_id] = uvec3(i_0, i_1, i_2);
     }

@@ -11,34 +11,20 @@ layout(location = 4) flat out uint out_normals_index;
 layout(location = 5) flat out uint out_material_index;
 layout(location = 6) out vec3 out_world_pos;
 
-#include "common.glsl"
 #include "common_geometry.glsl"
 
 void main() {
     DrawData draw = uniforms.draw_data[gl_DrawID];
 
-    uint base = gl_VertexIndex * 8;
-    vec3 position = vec3(
-            push_constants.vertex_buffer.data[base + 0],
-            push_constants.vertex_buffer.data[base + 1],
-            push_constants.vertex_buffer.data[base + 2]
-        );
-    vec3 normal = vec3(
-            push_constants.vertex_buffer.data[base + 3],
-            push_constants.vertex_buffer.data[base + 4],
-            push_constants.vertex_buffer.data[base + 5]
-        );
-    vec2 uv = vec2(
-            push_constants.vertex_buffer.data[base + 6],
-            push_constants.vertex_buffer.data[base + 7]
-        );
+    uint base = gl_VertexIndex;
+    Vertex vertex = global_vertices.vertices[base];
 
-    vec4 world_pos = scene.view_proj * draw.model * vec4(position, 1.0);
+    vec4 world_pos = scene.view_proj * draw.model * vec4(vertex.position, 1.0);
     vec3 meshlet_color = vec3(1.0);
 
     gl_Position = world_pos;
-    out_normal = normal;
-    out_uv = uv;
+    out_normal = vertex.normal;
+    out_uv = vertex.uv;
     out_meshlet_color = meshlet_color;
     out_albedo_index = draw.albedo_index;
     out_normals_index = draw.normals_index;

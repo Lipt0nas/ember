@@ -1,73 +1,35 @@
-#define MESHLETS_PER_TASK 32
+#include "common.glsl"
 
-struct DrawData {
-    mat4 model;
-
-    uint first_index;
-    int vertex_offset;
-
-    uint meshlet_offset;
-    uint meshlet_count;
-
-    uint albedo_index;
-    uint normals_index;
-    uint material_index;
-    float _pad0;
-};
-
-struct Meshlet {
-    uint vertex_offset;
-    uint triangle_offset;
-    uint vertex_count;
-    uint triangle_count;
-};
-
-struct MeshletBounds {
-    vec3 center;
-    float radius;
-
-    vec3 cone_axis;
-    float cone_cutoff;
-
-    vec3 cone_apex;
-    float _pad;
-};
-
-layout(buffer_reference, scalar) readonly buffer IndexBuffer {
-    uint indices[];
-};
-
-layout(buffer_reference, scalar) readonly buffer VertexBuffer {
-    float data[];
-};
-
-layout(buffer_reference, scalar) readonly buffer MeshletBuffer {
-    Meshlet meshlets[];
-};
-
-layout(buffer_reference, scalar) readonly buffer MeshletBoundsBuffer {
-    MeshletBounds bounds[];
-};
-
-layout(buffer_reference, scalar) readonly buffer MeshletVertexIndices {
-    uint indices[];
-};
-
-layout(buffer_reference, scalar) readonly buffer MeshletPrimitiveIndices {
-    uint8_t indices[];
-};
-
-layout(set = 0, binding = 0) readonly buffer DrawDataBuffer {
+layout(scalar, set = 0, binding = 0) readonly buffer DrawDataBuffer {
     DrawData draw_data[];
 } uniforms;
 
+layout(scalar, set = 0, binding = 1) readonly buffer IndexBuffer {
+    uint indices[];
+} global_indices;
+
+layout(scalar, set = 0, binding = 2) readonly buffer VertexBuffer {
+    Vertex vertices[];
+} global_vertices;
+
+layout(scalar, set = 0, binding = 3) readonly buffer MeshletBuffer {
+    Meshlet meshlets[];
+} meshlets;
+
+layout(scalar, set = 0, binding = 4) readonly buffer MeshletBoundsBuffer {
+    MeshletBounds bounds[];
+} meshlet_bounds;
+
+layout(scalar, set = 0, binding = 5) readonly buffer MeshletVertexIndices {
+    uint indices[];
+} meshlet_vertex_indices;
+
+layout(scalar, set = 0, binding = 6) readonly buffer MeshletPrimitiveIndices {
+    uint8_t indices[];
+} meshlet_primitive_indices;
+
 layout(push_constant, std430) uniform pc {
-    VertexBuffer vertex_buffer;
-    IndexBuffer index_buffer;
-    MeshletBuffer meshlet_buffer;
-    MeshletVertexIndices meshlet_vertex_indices;
-    MeshletPrimitiveIndices meshlet_primitive_indices;
-    MeshletBoundsBuffer meshlet_bounds_buffer;
+    vec4 dummy;
 } push_constants;
 
 struct TaskPayload {

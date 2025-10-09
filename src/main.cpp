@@ -34,12 +34,7 @@ struct SceneUBO {
 };
 
 struct PushConstants {
-    VkDeviceSize vertex_buffer_address;
-    VkDeviceSize index_buffer_address;
-    VkDeviceSize meshlet_buffer_address;
-    VkDeviceSize meshlet_vertex_buffer_indices_address;
-    VkDeviceSize meshlet_primitive_indices_buffer_address;
-    VkDeviceSize meshlet_bounds_buffer_address;
+    glm::vec4 dummy;
 };
 
 struct PostProcesPushConstants {
@@ -608,7 +603,7 @@ int main() {
     const int FRAMES_IN_FLIGHT = 2;
 
     bool use_meshlets      = true;
-    bool enable_validation = true;
+    bool enable_validation = false;
 
     spdlog::info("Creating Vulkan instance");
     VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
@@ -747,6 +742,48 @@ int main() {
         {
             {
                 .binding     = 0,
+                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
+                .bindless    = false,
+            },
+            {
+                .binding     = 1,
+                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
+                .bindless    = false,
+            },
+            {
+                .binding     = 2,
+                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
+                .bindless    = false,
+            },
+            {
+                .binding     = 3,
+                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
+                .bindless    = false,
+            },
+            {
+                .binding     = 4,
+                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
+                .bindless    = false,
+            },
+            {
+                .binding     = 5,
+                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
+                .bindless    = false,
+            },
+            {
+                .binding     = 6,
                 .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .count       = 1,
                 .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
@@ -1130,29 +1167,15 @@ int main() {
 
     Buffer global_vertex_buffer = create_buffer(
         1024 * 1024 * 128, // 128MB
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator
     );
-
-    VkBufferDeviceAddressInfo address_info = {
-        .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = global_vertex_buffer.handle,
-    };
-    VkDeviceAddress global_vertex_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
 
     Buffer global_index_buffer = create_buffer(
         1024 * 1024 * 64, // 64MB
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator
     );
-
-    address_info = {
-        .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = global_index_buffer.handle,
-    };
-    VkDeviceAddress global_index_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
 
     Buffer indirect_command_buffer = create_buffer(
         1024 * 1024 * 16, // 16MB
@@ -1172,53 +1195,28 @@ int main() {
 
     Buffer meshlet_buffer = create_buffer(
         1024 * 1024 * 64, // 32MB
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator
     );
-    address_info = {
-        .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = meshlet_buffer.handle,
-    };
-    VkDeviceAddress meshlet_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
-
     std::vector<VkDrawMeshTasksIndirectCommandEXT> meshlet_indirect_draw_commands;
 
     Buffer meshlet_vertex_indices_buffer = create_buffer(
         1024 * 1024 * 64, // 32MB
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator
     );
-    address_info = {
-        .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = meshlet_vertex_indices_buffer.handle,
-    };
-    VkDeviceAddress meshlet_vertex_buffer_indices_address = vkGetBufferDeviceAddress(device, &address_info);
 
     Buffer meshlet_primitive_indices_buffer = create_buffer(
         1024 * 1024 * 64, // 32MB
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator
     );
-    address_info = {
-        .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = meshlet_primitive_indices_buffer.handle,
-    };
-    VkDeviceAddress meshlet_primitive_indices_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
 
     Buffer meshlet_bounds_buffer = create_buffer(
         1024 * 1024 * 64, // 32MB
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator
     );
-    address_info = {
-        .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = meshlet_bounds_buffer.handle,
-    };
-    VkDeviceAddress meshlet_bounds_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
 
     Buffer scene_ubo_buffer = create_buffer(
         aligned_size(sizeof(SceneUBO), physical_device_properties.limits.minUniformBufferOffsetAlignment) *
@@ -1297,25 +1295,144 @@ int main() {
     };
     vkUpdateDescriptorSets(device, 1, &scene_ubo_write_set, 0, nullptr);
 
-    VkDescriptorBufferInfo draw_data_descriptor_buffer_set_info = {
-        .buffer = draw_data_buffer.handle,
-        .offset = 0,
-        .range  = draw_data_buffer.size,
+    std::vector<VkDescriptorBufferInfo> draw_data_descriptor_buffer_set_infos = {
+        {
+            .buffer = draw_data_buffer.handle,
+            .offset = 0,
+            .range  = draw_data_buffer.size,
+        },
+
+        {
+            .buffer = global_index_buffer.handle,
+            .offset = 0,
+            .range  = global_index_buffer.size,
+        },
+
+        {
+            .buffer = global_vertex_buffer.handle,
+            .offset = 0,
+            .range  = global_vertex_buffer.size,
+        },
+
+        {
+            .buffer = meshlet_buffer.handle,
+            .offset = 0,
+            .range  = meshlet_buffer.size,
+        },
+
+        {
+            .buffer = meshlet_bounds_buffer.handle,
+            .offset = 0,
+            .range  = meshlet_bounds_buffer.size,
+        },
+
+        {
+            .buffer = meshlet_vertex_indices_buffer.handle,
+            .offset = 0,
+            .range  = meshlet_vertex_indices_buffer.size,
+        },
+
+        {
+            .buffer = meshlet_primitive_indices_buffer.handle,
+            .offset = 0,
+            .range  = meshlet_primitive_indices_buffer.size,
+        },
+
     };
 
-    VkWriteDescriptorSet draw_data_buffer_write_set = {
-        .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .pNext            = nullptr,
-        .dstSet           = draw_data_descriptor_set,
-        .dstBinding       = 0,
-        .dstArrayElement  = 0,
-        .descriptorCount  = 1,
-        .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        .pImageInfo       = nullptr,
-        .pBufferInfo      = &draw_data_descriptor_buffer_set_info,
-        .pTexelBufferView = nullptr
+    std::vector<VkWriteDescriptorSet> draw_data_buffer_write_sets = {
+        {
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = draw_data_descriptor_set,
+            .dstBinding       = 0,
+            .dstArrayElement  = 0,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pImageInfo       = nullptr,
+            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[0],
+            .pTexelBufferView = nullptr,
+        },
+        {
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = draw_data_descriptor_set,
+            .dstBinding       = 1,
+            .dstArrayElement  = 0,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pImageInfo       = nullptr,
+            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[1],
+            .pTexelBufferView = nullptr,
+        },
+        {
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = draw_data_descriptor_set,
+            .dstBinding       = 2,
+            .dstArrayElement  = 0,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pImageInfo       = nullptr,
+            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[2],
+            .pTexelBufferView = nullptr,
+        },
+        {
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = draw_data_descriptor_set,
+            .dstBinding       = 3,
+            .dstArrayElement  = 0,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pImageInfo       = nullptr,
+            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[3],
+            .pTexelBufferView = nullptr,
+        },
+        {
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = draw_data_descriptor_set,
+            .dstBinding       = 4,
+            .dstArrayElement  = 0,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pImageInfo       = nullptr,
+            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[4],
+            .pTexelBufferView = nullptr,
+        },
+        {
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = draw_data_descriptor_set,
+            .dstBinding       = 5,
+            .dstArrayElement  = 0,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pImageInfo       = nullptr,
+            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[5],
+            .pTexelBufferView = nullptr,
+        },
+        {
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = draw_data_descriptor_set,
+            .dstBinding       = 6,
+            .dstArrayElement  = 0,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pImageInfo       = nullptr,
+            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[6],
+            .pTexelBufferView = nullptr,
+        },
     };
-    vkUpdateDescriptorSets(device, 1, &draw_data_buffer_write_set, 0, nullptr);
+    vkUpdateDescriptorSets(
+        device,
+        static_cast<uint32_t>(draw_data_buffer_write_sets.size()),
+        draw_data_buffer_write_sets.data(),
+        0,
+        nullptr
+    );
 
     VkDescriptorSetAllocateInfo compute_descriptor_set_info = {
         .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -1855,13 +1972,7 @@ int main() {
             command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, geometry_pipeline_layout, 0, 3, sets, 1, &dynamic_offset
         );
 
-        PushConstants push;
-        push.vertex_buffer_address                    = global_vertex_buffer_address;
-        push.index_buffer_address                     = global_index_buffer_address;
-        push.meshlet_buffer_address                   = meshlet_buffer_address;
-        push.meshlet_vertex_buffer_indices_address    = meshlet_vertex_buffer_indices_address;
-        push.meshlet_primitive_indices_buffer_address = meshlet_primitive_indices_buffer_address;
-        push.meshlet_bounds_buffer_address            = meshlet_bounds_buffer_address;
+        PushConstants push = {};
 
         vkCmdPushConstants(
             command_buffer, geometry_pipeline_layout, geometry_pipeline_stage_flags, 0, sizeof(PushConstants), &push
@@ -1871,7 +1982,7 @@ int main() {
             vkCmdDrawMeshTasksIndirectEXT(
                 command_buffer,
                 indirect_command_buffer.handle,
-                0,
+                command_ptr_frame_offset,
                 meshlet_indirect_draw_commands.size(),
                 sizeof(VkDrawMeshTasksIndirectCommandEXT)
             );
@@ -1881,7 +1992,7 @@ int main() {
             vkCmdDrawIndexedIndirect(
                 command_buffer,
                 indirect_command_buffer.handle,
-                0,
+                command_ptr_frame_offset,
                 indirect_draw_commands.size(),
                 sizeof(VkDrawIndexedIndirectCommand)
             );
