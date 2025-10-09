@@ -1,5 +1,7 @@
 #include "resources.hpp"
 
+#include <stb_image.h>
+
 Buffer create_buffer(
     VkDeviceSize size, VkBufferUsageFlags usage_flags, VmaAllocator allocator, VmaAllocationCreateFlags allocation_flags
 ) {
@@ -83,15 +85,54 @@ void copy_buffer(
     VK_CHECK(vkDeviceWaitIdle(device));
 }
 
+Image load_image(
+    const std::filesystem::path& path,
+    VkFormat                     format,
+    bool                         generate_mipmaps,
+    const Buffer&                staging_buffer,
+    VkCommandBuffer              command_buffer,
+    VkQueue                      queue,
+    VmaAllocator                 allocator,
+    VkDevice                     device
+) {
+    int32_t        width;
+    int32_t        height;
+    int32_t        channels;
+    unsigned char* texture_data = stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+
+    void* staging_buffer_ptr = nullptr;
+    VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
+    memcpy(staging_buffer_ptr, texture_data, sizeof(unsigned char) * width * height * 4);
+
+    Image image = create_image(
+        format,
+        width,
+        height,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        generate_mipmaps,
+        allocator,
+        device
+    );
+
+    copy_image(staging_buffer, image, generate_mipmaps, command_buffer, queue, device);
+
+    return image;
+}
+
 Image create_image(
     VkFormat              format,
     uint32_t              width,
     uint32_t              height,
     VkImageUsageFlags     usage,
     VkImageAspectFlagBits aspect,
+    bool                  generate_mipmaps,
     VmaAllocator          allocator,
     VkDevice              device
 ) {
+    uint32_t mip_levels =
+        generate_mipmaps ? static_cast<uint32_t>(glm::floor(glm::log2((float)glm::max(width, height))) + 1) : 1;
+
     VkImageCreateInfo image_info = {
         .sType                 = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .pNext                 = nullptr,
@@ -99,11 +140,11 @@ Image create_image(
         .imageType             = VK_IMAGE_TYPE_2D,
         .format                = format,
         .extent                = {.width = width, .height = height, .depth = 1},
-        .mipLevels             = 1,
+        .mipLevels             = mip_levels,
         .arrayLayers           = 1,
         .samples               = VK_SAMPLE_COUNT_1_BIT,
         .tiling                = VK_IMAGE_TILING_OPTIMAL,
-        .usage                 = usage,
+        .usage                 = usage | (generate_mipmaps ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0),
         .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = 0,
         .pQueueFamilyIndices   = nullptr,
@@ -132,7 +173,7 @@ Image create_image(
         .subresourceRange = {
             .aspectMask     = aspect,
             .baseMipLevel   = 0,
-            .levelCount     = 1,
+            .levelCount     = mip_levels,
             .baseArrayLayer = 0,
             .layerCount     = 1,
         }
@@ -144,6 +185,7 @@ Image create_image(
     return {
         .width      = width,
         .height     = height,
+        .levels     = mip_levels,
         .format     = format,
         .aspect     = aspect,
         .handle     = handle,
@@ -160,15 +202,15 @@ void destroy_image(const Image& image, VkDevice device, VmaAllocator allocator) 
 }
 
 void image_pipeline_barrier(
-    VkImage               handle,
-    VkImageAspectFlags    aspect,
-    VkCommandBuffer       command_buffer,
-    VkImageLayout         old_layout,
-    VkImageLayout         new_layout,
-    VkPipelineStageFlags2 src_stage_mask,
-    VkAccessFlags2        src_access_mask,
-    VkPipelineStageFlags2 dst_stage_mask,
-    VkAccessFlags2        dst_access_mask
+    VkImage                 handle,
+    VkCommandBuffer         command_buffer,
+    VkImageLayout           old_layout,
+    VkImageLayout           new_layout,
+    VkPipelineStageFlags2   src_stage_mask,
+    VkAccessFlags2          src_access_mask,
+    VkPipelineStageFlags2   dst_stage_mask,
+    VkAccessFlags2          dst_access_mask,
+    VkImageSubresourceRange subresource
 ) {
     VkImageMemoryBarrier2 barrier = {
         .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -182,13 +224,7 @@ void image_pipeline_barrier(
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image               = handle,
-        .subresourceRange    = {
-               .aspectMask     = aspect,
-               .baseMipLevel   = 0,
-               .levelCount     = 1,
-               .baseArrayLayer = 0,
-               .layerCount     = 1,
-        }
+        .subresourceRange    = subresource
     };
 
     VkDependencyInfo dependency = {
@@ -217,19 +253,30 @@ void image_pipeline_barrier(
 ) {
     image_pipeline_barrier(
         image.handle,
-        image.aspect,
         command_buffer,
         old_layout,
         new_layout,
         src_stage_mask,
         src_access_mask,
         dst_stage_mask,
-        dst_access_mask
+        dst_access_mask,
+        {
+            .aspectMask     = image.aspect,
+            .baseMipLevel   = 0,
+            .levelCount     = image.levels,
+            .baseArrayLayer = 0,
+            .layerCount     = 1,
+        }
     );
 }
 
 void copy_image(
-    const Buffer& src_buffer, const Image& dst_image, VkCommandBuffer command_buffer, VkQueue queue, VkDevice device
+    const Buffer&   src_buffer,
+    const Image&    dst_image,
+    bool            generate_mipmaps,
+    VkCommandBuffer command_buffer,
+    VkQueue         queue,
+    VkDevice        device
 ) {
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .pNext = nullptr, .flags = 0, .pInheritanceInfo = nullptr
@@ -243,77 +290,123 @@ void copy_image(
          .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1
     };
 
-    VkImageMemoryBarrier2 to_transfer_dst_barrier = {
-        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .pNext               = nullptr,
-        .srcStageMask        = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-        .srcAccessMask       = 0,
-        .dstStageMask        = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        .dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image               = dst_image.handle,
-        .subresourceRange    = {
-               .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-               .baseMipLevel   = 0,
-               .levelCount     = 1,
-               .baseArrayLayer = 0,
-               .layerCount     = 1
-        }
-    };
-
-    VkDependencyInfo to_dst_dependency = {
-        .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .pNext                    = nullptr,
-        .dependencyFlags          = 0,
-        .memoryBarrierCount       = 0,
-        .pMemoryBarriers          = nullptr,
-        .bufferMemoryBarrierCount = 0,
-        .pBufferMemoryBarriers    = nullptr,
-        .imageMemoryBarrierCount  = 1,
-        .pImageMemoryBarriers     = &to_transfer_dst_barrier
-    };
-    vkCmdPipelineBarrier2(command_buffer, &to_dst_dependency);
+    image_pipeline_barrier(
+        dst_image,
+        command_buffer,
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        VK_ACCESS_2_TRANSFER_READ_BIT,
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT
+    );
 
     vkCmdCopyBufferToImage(
         command_buffer, src_buffer.handle, dst_image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region
     );
 
-    VkImageMemoryBarrier2 to_shader_read_barrier = {
-        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .pNext               = nullptr,
-        .srcStageMask        = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask        = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-        .dstAccessMask       = 0,
-        .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image               = dst_image.handle,
-        .subresourceRange    = {
-               .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-               .baseMipLevel   = 0,
-               .levelCount     = 1,
-               .baseArrayLayer = 0,
-               .layerCount     = 1
-        }
-    };
+    if (dst_image.levels > 1) {
+        VkImageSubresourceRange mip_range = {};
+        mip_range.aspectMask              = VK_IMAGE_ASPECT_COLOR_BIT;
+        mip_range.baseMipLevel            = 0;
+        mip_range.baseArrayLayer          = 0;
+        mip_range.levelCount              = 1;
+        mip_range.layerCount              = 1;
 
-    VkDependencyInfo shader_read_dependency = {
-        .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .pNext                    = nullptr,
-        .dependencyFlags          = 0,
-        .memoryBarrierCount       = 0,
-        .pMemoryBarriers          = nullptr,
-        .bufferMemoryBarrierCount = 0,
-        .pBufferMemoryBarriers    = nullptr,
-        .imageMemoryBarrierCount  = 1,
-        .pImageMemoryBarriers     = &to_shader_read_barrier
-    };
-    vkCmdPipelineBarrier2(command_buffer, &shader_read_dependency);
+        image_pipeline_barrier(
+            dst_image.handle,
+            command_buffer,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_BLIT_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT,
+            {
+                .aspectMask     = dst_image.aspect,
+                .baseMipLevel   = 0,
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            }
+        );
+
+        for (int i = 1; i < dst_image.levels; i++) {
+            VkImageBlit blit_info = {
+                .srcSubresource =
+                    {
+                        .aspectMask     = dst_image.aspect,
+                        .mipLevel       = static_cast<uint32_t>(i - 1),
+                        .baseArrayLayer = 0,
+                        .layerCount     = 1,
+                    },
+                .srcOffsets =
+                    {
+                        {.x = 0, .y = 0, .z = 0},
+                        {
+                            .x = glm::max(int32_t(dst_image.width >> (i - 1)), 1),
+                            .y = glm::max(int32_t(dst_image.height >> (i - 1)), 1),
+                            .z = 1,
+                        },
+                    },
+                .dstSubresource =
+                    {
+                        .aspectMask     = dst_image.aspect,
+                        .mipLevel       = static_cast<uint32_t>(i),
+                        .baseArrayLayer = 0,
+                        .layerCount     = 1,
+                    },
+                .dstOffsets = {
+                    {.x = 0, .y = 0, .z = 0},
+                    {
+                        .x = glm::max(int32_t(dst_image.width >> i), 1),
+                        .y = glm::max(int32_t(dst_image.height >> i), 1),
+                        .z = 1,
+                    },
+                },
+            };
+
+            vkCmdBlitImage(
+                command_buffer,
+                dst_image.handle,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                dst_image.handle,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1,
+                &blit_info,
+                VK_FILTER_LINEAR
+            );
+
+            image_pipeline_barrier(
+                dst_image.handle,
+                command_buffer,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_BLIT_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT,
+                {
+                    .aspectMask     = dst_image.aspect,
+                    .baseMipLevel   = static_cast<uint32_t>(i),
+                    .levelCount     = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount     = 1,
+                }
+            );
+        }
+    }
+
+    image_pipeline_barrier(
+        dst_image,
+        command_buffer,
+        generate_mipmaps ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        generate_mipmaps ? VK_ACCESS_2_TRANSFER_READ_BIT : VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+        0
+    );
 
     VK_CHECK(vkEndCommandBuffer(command_buffer));
 

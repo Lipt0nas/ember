@@ -60,7 +60,7 @@ void main() {
 
         if (is_visible) {
             vec3 world_cone_apex = (draw.model * vec4(bounds.cone_apex, 1.0)).xyz;
-            vec3 world_cone_axis = normalize(mat3(draw.model) * bounds.cone_axis);
+            vec3 world_cone_axis = normalize(mat3(draw.normal_matrix) * bounds.cone_axis);
 
             vec3 apex_to_camera = normalize(camera_position - world_cone_apex);
             is_visible = !(dot(apex_to_camera, world_cone_axis) >= bounds.cone_cutoff);

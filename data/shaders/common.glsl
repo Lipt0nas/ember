@@ -2,6 +2,7 @@
 
 struct DrawData {
     mat4 model;
+    mat4 normal_matrix;
 
     uint first_index;
     int vertex_offset;

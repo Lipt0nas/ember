@@ -15,7 +15,6 @@ layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_material;
 
-// TODO: meshes should come with tangents
 vec3 world_normal(vec3 normal_map, vec3 vertex_normal, vec3 world_pos, vec2 uv) {
     vec3 dp1 = dFdx(world_pos);
     vec3 dp2 = dFdy(world_pos);

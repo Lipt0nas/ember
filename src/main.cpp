@@ -5,10 +5,7 @@
 #include "pipeline.hpp"
 #include "resources.hpp"
 #include "swapchain.hpp"
-
-PFN_vkVoidFunction imgui_load_function(const char* function_name, void* user_data) {
-    return vkGetInstanceProcAddr((VkInstance)user_data, function_name);
-}
+#include "ui.hpp"
 
 uint32_t aligned_size(uint32_t size, uint32_t alignment) {
     uint32_t aligned = size;
@@ -49,6 +46,7 @@ struct PostProcesPushConstants {
 
 struct DrawData {
     glm::mat4 model_matrix;
+    glm::mat4 normal_matrix;
 
     // --- INDIRECT VERTEX PIPELINE ---
     uint32_t first_index;
@@ -106,6 +104,11 @@ struct Mesh {
     glm::vec3 position = glm::vec3(0.0f);
     float     scale    = 1.0f;
 };
+
+// TODO: is not nice
+uint32_t missing_albedo_index   = 0;
+uint32_t missing_normals_index  = 0;
+uint32_t missing_material_index = 0;
 
 std::vector<Mesh> load_model(
     const std::filesystem::path&         path,
@@ -286,9 +289,10 @@ std::vector<Mesh> load_model(
             );
             indirect_index_buffer_offset += sizeof(uint32_t) * indices.size();
 
-            uint32_t albedo_index   = 0;
-            uint32_t normals_index  = 0;
-            uint32_t material_index = 0;
+            uint32_t albedo_index   = missing_albedo_index;
+            uint32_t normals_index  = missing_normals_index;
+            uint32_t material_index = missing_material_index;
+
             if (primitive.material >= 0) {
                 const tinygltf::Material& material = model.materials[primitive.material];
 
@@ -309,6 +313,7 @@ std::vector<Mesh> load_model(
                                 static_cast<uint32_t>(img.height),
                                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                                 VK_IMAGE_ASPECT_COLOR_BIT,
+                                true,
                                 allocator,
                                 device
                             );
@@ -323,7 +328,7 @@ std::vector<Mesh> load_model(
                             }
 
                             memcpy(staging_buffer_ptr, &img.image.at(0), img.image.size());
-                            copy_image(staging_buffer, image, command_buffer, queue, device);
+                            copy_image(staging_buffer, image, true, command_buffer, queue, device);
 
                             uint32_t index = global_texture_cache.size();
                             global_texture_cache.insert({index, image});
@@ -661,8 +666,9 @@ int main() {
     };
 
     VkFence frame_fences[FRAMES_IN_FLIGHT] = {VK_NULL_HANDLE};
-    VK_CHECK(vkCreateFence(device, &fence_info, nullptr, &frame_fences[0]));
-    VK_CHECK(vkCreateFence(device, &fence_info, nullptr, &frame_fences[1]));
+    for (int i = 0; i < FRAMES_IN_FLIGHT; i++) {
+        VK_CHECK(vkCreateFence(device, &fence_info, nullptr, &frame_fences[i]));
+    }
 
     VkCommandPoolCreateInfo command_pool_info = {
         .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -916,78 +922,6 @@ int main() {
         }
     );
 
-    VkDescriptorPoolSize imgui_pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, IMGUI_IMPL_VULKAN_MINIMUM_IMAGE_SAMPLER_POOL_SIZE}
-    };
-
-    uint32_t max_imgui_sets = 0;
-    for (VkDescriptorPoolSize& size : imgui_pool_sizes) {
-        max_imgui_sets += size.descriptorCount;
-    }
-
-    VkDescriptorPoolCreateInfo imgui_pool_info = {
-        .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .pNext         = nullptr,
-        .flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        .maxSets       = max_imgui_sets,
-        .poolSizeCount = static_cast<uint32_t>(IM_ARRAYSIZE(imgui_pool_sizes)),
-        .pPoolSizes    = imgui_pool_sizes
-
-    };
-
-    VkDescriptorPool imgui_descriptor_pool = VK_NULL_HANDLE;
-    VK_CHECK(vkCreateDescriptorPool(device, &imgui_pool_info, nullptr, &imgui_descriptor_pool));
-
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-
-    ImGui::StyleColorsDark();
-
-    ImGuiStyle& style          = ImGui::GetStyle();
-    io.ConfigDpiScaleFonts     = true;
-    io.ConfigDpiScaleViewports = true;
-
-    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-        style.WindowRounding              = 0.0f;
-        style.Colors[ImGuiCol_WindowBg].w = 1.0f;
-    }
-
-    VkPipelineRenderingCreateInfo imgui_rendering_info = {
-        .sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-        .pNext                   = nullptr,
-        .viewMask                = 0,
-        .colorAttachmentCount    = 1,
-        .pColorAttachmentFormats = &swapchain.format,
-        .depthAttachmentFormat   = VK_FORMAT_UNDEFINED,
-        .stencilAttachmentFormat = VK_FORMAT_UNDEFINED
-    };
-
-    ImGui_ImplSDL3_InitForVulkan(window);
-    ImGui_ImplVulkan_InitInfo init_info   = {};
-    init_info.Instance                    = instance;
-    init_info.PhysicalDevice              = physical_device;
-    init_info.Device                      = device;
-    init_info.QueueFamily                 = graphics_family_index;
-    init_info.Queue                       = graphics_queue;
-    init_info.PipelineCache               = nullptr;
-    init_info.DescriptorPool              = imgui_descriptor_pool;
-    init_info.MinImageCount               = 2;
-    init_info.ImageCount                  = static_cast<uint32_t>(swapchain.images.size());
-    init_info.Subpass                     = 0;
-    init_info.MSAASamples                 = VK_SAMPLE_COUNT_1_BIT;
-    init_info.Allocator                   = nullptr;
-    init_info.UseDynamicRendering         = true;
-    init_info.RenderPass                  = VK_NULL_HANDLE;
-    init_info.PipelineRenderingCreateInfo = imgui_rendering_info;
-    init_info.CheckVkResultFn             = nullptr;
-    ImGui_ImplVulkan_LoadFunctions(VK_API_VERSION_1_3, imgui_load_function, instance);
-    ImGui_ImplVulkan_Init(&init_info);
-
     VkSamplerCreateInfo sampler_info = {
         .sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .pNext                   = nullptr,
@@ -999,12 +933,12 @@ int main() {
         .addressModeV            = VK_SAMPLER_ADDRESS_MODE_REPEAT,
         .addressModeW            = VK_SAMPLER_ADDRESS_MODE_REPEAT,
         .mipLodBias              = 0.0f,
-        .anisotropyEnable        = VK_FALSE,
-        .maxAnisotropy           = 0.0f,
+        .anisotropyEnable        = VK_TRUE,
+        .maxAnisotropy           = 16.0f,
         .compareEnable           = VK_FALSE,
         .compareOp               = VK_COMPARE_OP_ALWAYS,
         .minLod                  = 0.0f,
-        .maxLod                  = 0.0f,
+        .maxLod                  = VK_LOD_CLAMP_NONE,
         .borderColor             = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
         .unnormalizedCoordinates = VK_FALSE
     };
@@ -1025,6 +959,7 @@ int main() {
         swapchain.height,
         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_DEPTH_BIT,
+        false,
         vma_allocator,
         device
     );
@@ -1035,6 +970,7 @@ int main() {
         swapchain.height,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
         vma_allocator,
         device
     );
@@ -1045,6 +981,7 @@ int main() {
         swapchain.height,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
         vma_allocator,
         device
     );
@@ -1055,6 +992,7 @@ int main() {
         swapchain.height,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
         vma_allocator,
         device
     );
@@ -1065,6 +1003,7 @@ int main() {
         swapchain.height,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
         vma_allocator,
         device
     );
@@ -1075,6 +1014,7 @@ int main() {
         swapchain.height,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
         vma_allocator,
         device
     );
@@ -1495,8 +1435,53 @@ int main() {
     std::unordered_map<uint32_t, Image> texture_cache;
     std::vector<Image>                  loaded_images;
 
+    Image missing_albedo = load_image(
+        "data/textures/missing_albedo.png",
+        VK_FORMAT_R8G8B8A8_SRGB,
+        false,
+        staging_buffer,
+        command_buffers[0],
+        graphics_queue,
+        vma_allocator,
+        device
+    );
+
+    missing_albedo_index = texture_cache.size();
+    texture_cache.insert({missing_albedo_index, missing_albedo});
+    loaded_images.push_back(missing_albedo);
+
+    Image missing_normals = load_image(
+        "data/textures/missing_normals.png",
+        VK_FORMAT_R8G8B8A8_UNORM,
+        false,
+        staging_buffer,
+        command_buffers[0],
+        graphics_queue,
+        vma_allocator,
+        device
+    );
+
+    missing_normals_index = texture_cache.size();
+    texture_cache.insert({missing_normals_index, missing_normals});
+    loaded_images.push_back(missing_normals);
+
+    Image missing_material = load_image(
+        "data/textures/missing_material.png",
+        VK_FORMAT_R8G8B8A8_UNORM,
+        false,
+        staging_buffer,
+        command_buffers[0],
+        graphics_queue,
+        vma_allocator,
+        device
+    );
+
+    missing_material_index = texture_cache.size();
+    texture_cache.insert({missing_material_index, missing_material});
+    loaded_images.push_back(missing_material);
+
     auto lantern = load_model(
-        "data/models/lion/lion.gltf",
+        "data/models/spheres.glb",
         staging_buffer,
         global_vertex_buffer,
         indirect_vertex_buffer_offset,
@@ -1519,7 +1504,7 @@ int main() {
     );
     for (auto& m : lantern) {
         m.position = glm::vec3(10, -4, 13);
-        m.scale    = 10;
+        m.scale    = 1;
     }
 
     auto helmet = load_model(
@@ -1602,9 +1587,19 @@ int main() {
 
     populate_materials(texture_cache, global_texture_descriptor_set, linear_sampler, device);
 
+    VkDescriptorPool imgui_descriptor_pool = init_imgui(
+        window,
+        instance,
+        physical_device,
+        device,
+        swapchain.format,
+        graphics_family_index,
+        graphics_queue,
+        FRAMES_IN_FLIGHT
+    );
+
     Camera camera = {
-        .near_plane      = 0.1f,
-        .far_plane       = 100.0f,
+        .near_plane      = 0.01f,
         .viewport_width  = static_cast<float>(swapchain.width),
         .viewport_height = static_cast<float>(swapchain.height),
         .fov             = 90.0f
@@ -1823,9 +1818,13 @@ int main() {
 
             glm::mat4 model = glm::translate(glm::mat4(1.0f), mesh.position);
             model           = glm::scale(model, glm::vec3(mesh.scale));
+
+            glm::mat3 normal_matrix = glm::transpose(glm::inverse(glm::mat3(model)));
+
             bindless_draw_data_cpu_buffer.push_back(
                 DrawData{
                     .model_matrix   = model,
+                    .normal_matrix  = glm::mat4(normal_matrix),
                     .first_index    = first_index,
                     .vertex_offset  = vertex_offset,
                     .meshlet_offset = mesh.meshlet_offset,
@@ -1876,17 +1875,13 @@ int main() {
 
         VkViewport viewport = {
             .x        = 0,
-            .y        = 0,
+            .y        = static_cast<float>(swapchain.height),
             .width    = static_cast<float>(swapchain.width),
-            .height   = static_cast<float>(swapchain.height),
+            .height   = -static_cast<float>(swapchain.height),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
         };
-
-        VkRect2D scissor = {
-            .offset = {.x = 0, .y = 0},
-            .extent = {static_cast<uint32_t>(viewport.width), static_cast<uint32_t>(viewport.height)}
-        };
+        VkRect2D scissor = {.offset = {.x = 0, .y = 0}, .extent = {swapchain.width, swapchain.height}};
 
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
@@ -1940,7 +1935,7 @@ int main() {
             .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
             .loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR,
             .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-            .clearValue         = {.depthStencil = {.depth = 1.0f, .stencil = 0}}
+            .clearValue         = {.depthStencil = {.depth = 0.0f, .stencil = 0}}
         };
 
         VkRenderingInfo rendering_info = {
@@ -2140,14 +2135,20 @@ int main() {
 
         image_pipeline_barrier(
             swapchain.images[image_index],
-            VK_IMAGE_ASPECT_COLOR_BIT,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             0,
             VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel   = 0,
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            }
         );
 
         VkImageBlit blit_region = {
@@ -2195,14 +2196,20 @@ int main() {
 
         image_pipeline_barrier(
             swapchain.images[image_index],
-            VK_IMAGE_ASPECT_COLOR_BIT,
             command_buffer,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_PIPELINE_STAGE_2_TRANSFER_BIT,
             VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+            {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel   = 0,
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            }
         );
 
         VkRenderingAttachmentInfo swapchain_attachment_info = {
@@ -2240,14 +2247,20 @@ int main() {
 
         image_pipeline_barrier(
             swapchain.images[image_index],
-            VK_IMAGE_ASPECT_COLOR_BIT,
             command_buffer,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
             0,
-            0
+            0,
+            {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel   = 0,
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            }
         );
         VK_CHECK(vkEndCommandBuffer(command_buffer));
 

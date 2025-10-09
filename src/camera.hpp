@@ -15,7 +15,6 @@ FrustumPlanes extract_frustum_planes(const glm::mat4& view_proj);
 
 struct Camera {
     float near_plane;
-    float far_plane;
 
     float viewport_width;
     float viewport_height;

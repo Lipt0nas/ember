@@ -61,7 +61,12 @@ FetchContent_Declare(meshoptimizer
     GIT_SHALLOW TRUE
 )
 
-FetchContent_MakeAvailable(glm sdl vma spdlog volk tinygltf meshoptimizer)
+FetchContent_Declare(stb
+  GIT_REPOSITORY https://github.com/nothings/stb
+  GIT_TAG 5c205738c191bcb0abc65c4febfa9bd25ff35234
+)
+
+FetchContent_MakeAvailable(glm sdl vma spdlog volk tinygltf meshoptimizer stb)
 
 FetchContent_GetProperties(imgui)
 if(NOT imgui_POPULATED)
@@ -85,6 +90,9 @@ if(NOT imgui_POPULATED)
     target_link_libraries(imgui PUBLIC SDL3::SDL3-static Vulkan::Vulkan)
 endif()
 
+add_library(stb INTERFACE)
+target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
+
 set(SOURCES
     "src/main.cpp"
     "src/ember.cpp"
@@ -93,6 +101,7 @@ set(SOURCES
     "src/swapchain.cpp"
     "src/device.cpp"
     "src/pipeline.cpp"
+    "src/ui.cpp"
 )
 add_executable(Ember ${SOURCES})
 
@@ -106,6 +115,7 @@ target_link_libraries(Ember PRIVATE
     volk
     tinygltf
     meshoptimizer
+    stb
 )
 
 # TODO: temporary convenience

@@ -56,15 +56,30 @@ FrustumPlanes extract_frustum_planes(const glm::mat4& view_proj) {
 }
 
 void update_camera(Camera& camera) {
-    camera.projection_matrix = glm::perspectiveFov(
-        glm::radians(camera.fov), camera.viewport_width, camera.viewport_height, camera.near_plane, camera.far_plane
+    float f = 1.0f / glm::tan(glm::radians(camera.fov / 2.0f));
+
+    camera.projection_matrix = glm::mat4(
+        f / (camera.viewport_width / camera.viewport_height),
+        0.0f,
+        0.0f,
+        0.0f,
+        0.0f,
+        f,
+        0.0f,
+        0.0f,
+        0.0f,
+        0.0f,
+        0.0f,
+        -1.0f,
+        0.0f,
+        0.0f,
+        camera.near_plane,
+        0.0f
     );
-    camera.projection_matrix[1][1] *= -1;
-    camera.view_matrix = glm::lookAt(camera.position, camera.position + camera.direction, camera.up);
 
+    camera.view_matrix     = glm::lookAt(camera.position, camera.position + camera.direction, camera.up);
     camera.combined_matrix = camera.projection_matrix * camera.view_matrix;
-
-    camera.planes = extract_frustum_planes(camera.combined_matrix);
+    camera.planes          = extract_frustum_planes(camera.combined_matrix);
 }
 
 void move_camera(Camera& camera, glm::vec3 direction, float distance) {
