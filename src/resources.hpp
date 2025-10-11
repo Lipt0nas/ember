@@ -40,6 +40,17 @@ void copy_buffer(
     VkDeviceSize    dst_buffer_offset = 0
 );
 
+void buffer_pipeline_barrier(
+    const Buffer&         buffer,
+    VkCommandBuffer       command_buffer,
+    VkPipelineStageFlags2 src_stage_mask,
+    VkAccessFlags2        src_access_mask,
+    VkPipelineStageFlags2 dst_stage_mask,
+    VkAccessFlags2        dst_access_mask,
+    VkDeviceSize          offset,
+    VkDeviceSize          size
+);
+
 Image load_image(
     const std::filesystem::path& path,
     VkFormat                     format,

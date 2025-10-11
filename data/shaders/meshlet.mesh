@@ -48,10 +48,10 @@ void main() {
         //     );
         vec3 meshlet_color = vec3(1.0);
 
-        vec4 world_pos = scene.view_proj * draw.model * vec4(vertex.position, 1.0);
+        vec4 world_pos = draw.model * vec4(vertex.position, 1.0);
 
-        gl_MeshVerticesEXT[thread_id].gl_Position = world_pos;
-        out_normal[thread_id] = vertex.normal;
+        gl_MeshVerticesEXT[thread_id].gl_Position = scene.view_proj * world_pos;
+        out_normal[thread_id] = normalize(mat3(draw.normal_matrix) * vertex.normal);
         out_uv[thread_id] = vertex.uv;
         out_meshlet_color[thread_id] = meshlet_color;
         out_albedo_index[thread_id] = draw.albedo_index;

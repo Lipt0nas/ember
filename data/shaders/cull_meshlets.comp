@@ -10,10 +10,10 @@
 
 layout(local_size_x = 256) in;
 
-layout(scalar, set = 2, binding = 0) buffer IndexedDrawCommands {
+layout(scalar, set = 2, binding = 0) buffer MeshDrawCommands {
     uint culled_count;
-    IndexedDrawCommand cmds[];
-} commands;
+    MeshDrawCommand cmds[];
+} draw_commands;
 
 layout(push_constant, std430) uniform pc {
     uint draw_count;
@@ -42,12 +42,11 @@ void main() {
     }
 
     if (is_visible) {
-        uint cmd_index = atomicAdd(commands.culled_count, 1);
+        uint cmd_index = atomicAdd(draw_commands.culled_count, 1);
 
-        commands.cmds[cmd_index].index_count = draw_data.index_count;
-        commands.cmds[cmd_index].instance_count = 1;
-        commands.cmds[cmd_index].first_index = draw_data.first_index;
-        commands.cmds[cmd_index].vertex_offset = draw_data.vertex_offset;
-        commands.cmds[cmd_index].first_instance = object_id;
+        draw_commands.cmds[cmd_index].group_count_x = (draw_data.meshlet_count + MESHLETS_PER_TASK - 1) / MESHLETS_PER_TASK;
+        draw_commands.cmds[cmd_index].group_count_y = 1;
+        draw_commands.cmds[cmd_index].group_count_z = 1;
+        draw_commands.cmds[cmd_index].object_id = object_id;
     }
 }

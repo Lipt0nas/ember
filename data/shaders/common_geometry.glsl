@@ -1,5 +1,20 @@
 #include "common.glsl"
 
+struct IndexedDrawCommand {
+    uint index_count;
+    uint instance_count;
+    uint first_index;
+    uint vertex_offset;
+    uint first_instance;
+};
+
+struct MeshDrawCommand {
+    uint group_count_x;
+    uint group_count_y;
+    uint group_count_z;
+    uint object_id;
+};
+
 layout(scalar, set = 0, binding = 0) readonly buffer DrawDataBuffer {
     DrawData draw_data[];
 } uniforms;

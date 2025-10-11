@@ -424,3 +424,40 @@ void copy_image(
     VK_CHECK(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE));
     VK_CHECK(vkDeviceWaitIdle(device));
 }
+void buffer_pipeline_barrier(
+    const Buffer&         buffer,
+    VkCommandBuffer       command_buffer,
+    VkPipelineStageFlags2 src_stage_mask,
+    VkAccessFlags2        src_access_mask,
+    VkPipelineStageFlags2 dst_stage_mask,
+    VkAccessFlags2        dst_access_mask,
+    VkDeviceSize          offset,
+    VkDeviceSize          size
+) {
+    VkBufferMemoryBarrier2 barrier = {
+        .sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .pNext               = nullptr,
+        .srcStageMask        = src_stage_mask,
+        .srcAccessMask       = src_access_mask,
+        .dstStageMask        = dst_stage_mask,
+        .dstAccessMask       = dst_access_mask,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer              = buffer.handle,
+        .offset              = offset,
+        .size                = size
+    };
+
+    VkDependencyInfo dependency = {
+        .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .pNext                    = nullptr,
+        .dependencyFlags          = 0,
+        .memoryBarrierCount       = 0,
+        .pMemoryBarriers          = nullptr,
+        .bufferMemoryBarrierCount = 1,
+        .pBufferMemoryBarriers    = &barrier,
+        .imageMemoryBarrierCount  = 0,
+        .pImageMemoryBarriers     = nullptr,
+    };
+    vkCmdPipelineBarrier2(command_buffer, &dependency);
+}

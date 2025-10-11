@@ -15,13 +15,19 @@ taskPayloadSharedEXT TaskPayload payload;
 shared uint visible_count;
 shared uint visible_meshlet_indices[MESHLETS_PER_TASK];
 
+layout(scalar, set = 3, binding = 0) readonly buffer MeshDrawCommands {
+    uint culled_count;
+    MeshDrawCommand cmds[];
+} draw_commands;
+
 void main() {
     uint thread_id = gl_LocalInvocationIndex;
     uint base_meshlet_id = gl_WorkGroupID.x * MESHLETS_PER_TASK;
     uint meshlet_id = base_meshlet_id + thread_id;
 
-    DrawData draw = uniforms.draw_data[gl_DrawID];
-    payload.draw_id = gl_DrawID;
+    uint object_id = draw_commands.cmds[gl_DrawID].object_id;
+    DrawData draw = uniforms.draw_data[object_id];
+    payload.draw_id = object_id;
 
     if (thread_id == 0) {
         visible_count = 0;
@@ -42,13 +48,13 @@ void main() {
             planes = scene.frozen_planes;
         }
 
-        is_visible = is_sphere_in_frustum(bounds.center, bounds.radius, draw.model, planes);
+        is_visible = is_sphere_in_frustum(bounds.center, bounds.radius * 1.05, draw.model, planes);
 
         if (is_visible) {
             vec3 world_cone_apex = (draw.model * vec4(bounds.cone_apex, 1.0)).xyz;
             vec3 world_cone_axis = normalize(mat3(draw.normal_matrix) * bounds.cone_axis);
 
-            vec3 apex_to_camera = normalize(camera_position - world_cone_apex);
+            vec3 apex_to_camera = normalize(world_cone_apex - camera_position);
             is_visible = !(dot(apex_to_camera, world_cone_axis) >= bounds.cone_cutoff);
         }
 
