@@ -31,8 +31,9 @@ struct SceneUBO {
     uint32_t _pad[2];
 };
 
-struct PushConstants {
-    glm::vec4 dummy;
+struct CullPassPushConstants {
+    uint32_t draw_count;
+    uint32_t command_count_offset;
 };
 
 struct PostProcesPushConstants {
@@ -48,7 +49,11 @@ struct DrawData {
     glm::mat4 model_matrix;
     glm::mat4 normal_matrix;
 
+    glm::vec3 center;
+    float     radius;
+
     // --- INDIRECT VERTEX PIPELINE ---
+    uint32_t index_count;
     uint32_t first_index;
     int32_t  vertex_offset;
 
@@ -59,7 +64,6 @@ struct DrawData {
     uint32_t albedo_index;
     uint32_t normals_index;
     uint32_t material_index;
-    float    _pad[1];
 };
 
 struct MeshletBounds {
@@ -101,7 +105,10 @@ struct Mesh {
 
     Material material;
 
-    glm::vec3 position = glm::vec3(0.0f);
+    glm::vec3 center = {};
+    float     radius = 0.0f;
+
+    glm::vec3 position = {};
     float     scale    = 1.0f;
 };
 
@@ -194,15 +201,31 @@ std::vector<Mesh> load_model(
                 &texcoord_buffer.data[texcoord_view.byteOffset + texcoord_accessor.byteOffset]
             );
 
+            glm::vec3 axis_min = glm::vec3(FLT_MAX);
+            glm::vec3 axis_max = glm::vec3(FLT_MIN);
+
             for (size_t i = 0; i < vertex_count; i++) {
+                glm::vec3 position = {
+                    positions[i * 3 + 2],
+                    positions[i * 3 + 1],
+                    positions[i * 3 + 0],
+                };
+
+                axis_min = {
+                    glm::min(axis_min.x, position.x),
+                    glm::min(axis_min.y, position.y),
+                    glm::min(axis_min.z, position.z),
+                };
+
+                axis_max = {
+                    glm::max(axis_max.x, position.x),
+                    glm::max(axis_max.y, position.y),
+                    glm::max(axis_max.z, position.z),
+                };
+
                 vertices.emplace_back(
                     Vertex{
-                        .position =
-                            {
-                                positions[i * 3 + 2],
-                                positions[i * 3 + 1],
-                                positions[i * 3 + 0],
-                            },
+                        .position = position,
                         .normal =
                             {
                                 normals[i * 3 + 0],
@@ -216,6 +239,12 @@ std::vector<Mesh> load_model(
                     }
                 );
             }
+
+            float bounds_min = glm::min(glm::min(axis_min.x, axis_min.y), axis_min.z);
+            float bounds_max = glm::min(glm::min(axis_max.x, axis_max.y), axis_max.z);
+
+            glm::vec3 center = (axis_min + axis_max) / 2.0f;
+            float     radius = (bounds_max - bounds_min) / 2.0f;
 
             if (primitive.indices >= 0) {
                 const tinygltf::Accessor&   index_accessor = model.accessors[primitive.indices];
@@ -549,7 +578,9 @@ std::vector<Mesh> load_model(
                     .albedo_index   = albedo_index,
                     .normals_index  = normals_index,
                     .material_index = material_index,
-                }
+                },
+                center,
+                radius
             );
         }
     }
@@ -604,7 +635,7 @@ int main() {
 
     const int FRAMES_IN_FLIGHT = 2;
 
-    bool use_meshlets      = true;
+    bool use_meshlets      = false;
     bool enable_validation = false;
 
     spdlog::info("Creating Vulkan instance");
@@ -701,6 +732,10 @@ int main() {
             .descriptorCount = 20,
         },
         {
+            .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+            .descriptorCount = 20,
+        },
+        {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             .descriptorCount = 50,
         },
@@ -734,6 +769,8 @@ int main() {
 
     VkShaderModule vertex_module =
         use_meshlets ? VK_NULL_HANDLE : shader_module_from_file(device, "data/shaders/bindless.vert.spv");
+    VkShaderModule compute_cull_module =
+        use_meshlets ? VK_NULL_HANDLE : shader_module_from_file(device, "data/shaders/cull.comp.spv");
 
     VkShaderModule fragment_module = shader_module_from_file(device, "data/shaders/bindless.frag.spv");
 
@@ -745,10 +782,11 @@ int main() {
         {
             {
                 .binding     = 0,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
                 .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
-                .bindless    = false,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
+                .bindless = false,
             },
             {
                 .binding     = 1,
@@ -824,10 +862,7 @@ int main() {
     VkShaderStageFlags geometry_pipeline_stage_flags =
         use_meshlets ? VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
     VkPipelineLayout geometry_pipeline_layout = create_pipeline_layout(
-        device,
-        {draw_data_descriptor_layout, scene_ubo_descriptor_layout, global_texture_descriptor_layout},
-        geometry_pipeline_stage_flags,
-        sizeof(PushConstants)
+        device, {draw_data_descriptor_layout, scene_ubo_descriptor_layout, global_texture_descriptor_layout}
     );
 
     std::vector<Shader> geometry_pipeline_shaders;
@@ -918,6 +953,35 @@ int main() {
         composite_pipeline_layout,
         {
             .module = composite_compute_module,
+            .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
+        }
+    );
+
+    VkDescriptorSetLayout compute_cull_decriptor_layout = create_descriptor_set_layout(
+        device,
+        {
+            {
+                .binding     = 0,
+                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
+                .bindless    = false,
+            },
+        }
+    );
+
+    VkPipelineLayout compute_cull_pipeline_layout = create_pipeline_layout(
+        device,
+        {draw_data_descriptor_layout, scene_ubo_descriptor_layout, compute_cull_decriptor_layout},
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        sizeof(CullPassPushConstants)
+    );
+
+    VkPipeline compute_cull_pipeline = create_compute_pipeline(
+        device,
+        compute_cull_pipeline_layout,
+        {
+            .module = compute_cull_module,
             .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
         }
     );
@@ -1102,27 +1166,25 @@ int main() {
     }
 
     Buffer global_vertex_buffer = create_buffer(
-        1024 * 1024 * 128, // 128MB
+        1024 * 1024 * 128,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator
     );
 
     Buffer global_index_buffer = create_buffer(
-        1024 * 1024 * 64, // 64MB
+        1024 * 1024 * 64,
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator
     );
 
     Buffer indirect_command_buffer = create_buffer(
-        1024 * 1024 * 16, // 16MB
+        1024 * 1024 * 16,
         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        vma_allocator,
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+        vma_allocator
     );
-    std::vector<VkDrawIndexedIndirectCommand> indirect_draw_commands;
 
     Buffer draw_data_buffer = create_buffer(
-        1024 * 1024 * 64, // 64MB
+        1024 * 1024 * 32,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
@@ -1130,28 +1192,20 @@ int main() {
     std::vector<DrawData> bindless_draw_data_cpu_buffer;
 
     Buffer meshlet_buffer = create_buffer(
-        1024 * 1024 * 64, // 32MB
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        vma_allocator
+        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
     std::vector<VkDrawMeshTasksIndirectCommandEXT> meshlet_indirect_draw_commands;
 
     Buffer meshlet_vertex_indices_buffer = create_buffer(
-        1024 * 1024 * 64, // 32MB
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        vma_allocator
+        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer meshlet_primitive_indices_buffer = create_buffer(
-        1024 * 1024 * 64, // 32MB
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        vma_allocator
+        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer meshlet_bounds_buffer = create_buffer(
-        1024 * 1024 * 64, // 32MB
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        vma_allocator
+        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer scene_ubo_buffer = create_buffer(
@@ -1235,7 +1289,7 @@ int main() {
         {
             .buffer = draw_data_buffer.handle,
             .offset = 0,
-            .range  = draw_data_buffer.size,
+            .range  = (draw_data_buffer.size / FRAMES_IN_FLIGHT),
         },
 
         {
@@ -1284,7 +1338,7 @@ int main() {
             .dstBinding       = 0,
             .dstArrayElement  = 0,
             .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
             .pImageInfo       = nullptr,
             .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[0],
             .pTexelBufferView = nullptr,
@@ -1432,6 +1486,37 @@ int main() {
     };
     vkUpdateDescriptorSets(device, 1, &composite_write_set, 0, nullptr);
 
+    VkDescriptorSetAllocateInfo compute_cull_descriptor_set_info = {
+        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .pNext              = nullptr,
+        .descriptorPool     = descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts        = &compute_cull_decriptor_layout
+    };
+
+    VkDescriptorSet compute_cull_descriptor_set = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateDescriptorSets(device, &compute_cull_descriptor_set_info, &compute_cull_descriptor_set));
+
+    VkDescriptorBufferInfo compute_cull_command_buffer_info = {
+        .buffer = indirect_command_buffer.handle,
+        .offset = 0,
+        .range  = (indirect_command_buffer.size / FRAMES_IN_FLIGHT)
+    };
+
+    VkWriteDescriptorSet compute_cull_write_set = {
+        .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .pNext            = nullptr,
+        .dstSet           = compute_cull_descriptor_set,
+        .dstBinding       = 0,
+        .dstArrayElement  = 0,
+        .descriptorCount  = 1,
+        .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+        .pImageInfo       = nullptr,
+        .pBufferInfo      = &compute_cull_command_buffer_info,
+        .pTexelBufferView = nullptr
+    };
+    vkUpdateDescriptorSets(device, 1, &compute_cull_write_set, 0, nullptr);
+
     std::unordered_map<uint32_t, Image> texture_cache;
     std::vector<Image>                  loaded_images;
 
@@ -1481,7 +1566,7 @@ int main() {
     loaded_images.push_back(missing_material);
 
     auto lantern = load_model(
-        "data/models/spheres.glb",
+        "data/models/lantern.glb",
         staging_buffer,
         global_vertex_buffer,
         indirect_vertex_buffer_offset,
@@ -1502,13 +1587,9 @@ int main() {
         graphics_queue,
         device
     );
-    for (auto& m : lantern) {
-        m.position = glm::vec3(10, -4, 13);
-        m.scale    = 1;
-    }
 
     auto helmet = load_model(
-        "data/models/horse/horse.gltf",
+        "data/models/helmet.glb",
         staging_buffer,
         global_vertex_buffer,
         indirect_vertex_buffer_offset,
@@ -1529,15 +1610,8 @@ int main() {
         graphics_queue,
         device
     );
-    for (auto& m : helmet) {
-        m.position = glm::vec3(10, -4, 13);
-        m.scale    = 80;
-    }
 
     std::vector<Mesh> meshes;
-    meshes.reserve(lantern.size() + helmet.size());
-    meshes.insert(meshes.end(), lantern.begin(), lantern.end());
-    meshes.insert(meshes.end(), helmet.begin(), helmet.end());
 
     // Stress test
     {
@@ -1553,6 +1627,14 @@ int main() {
             for (auto mesh : helmet) {
                 auto clone     = mesh;
                 clone.position = glm::vec3(row * spacing * 0.6, t * spacing, col * spacing * 0.5);
+                clone.scale    = 4;
+                meshes.push_back(clone);
+            }
+
+            for (auto mesh : lantern) {
+                auto clone     = mesh;
+                clone.position = glm::vec3(5 + row * spacing * 0.6, t * spacing, col * spacing * 0.5 - 5);
+                clone.scale    = 0.5f;
                 meshes.push_back(clone);
             }
 
@@ -1789,9 +1871,7 @@ int main() {
         VK_CHECK(vmaMapMemory(vma_allocator, scene_ubo_buffer.allocation, &scene_ubo_ptr));
         memcpy(reinterpret_cast<char*>(scene_ubo_ptr) + ubo_ptr_offset, &scene_ubo, sizeof(SceneUBO));
 
-        indirect_draw_commands.clear();
         meshlet_indirect_draw_commands.clear();
-
         bindless_draw_data_cpu_buffer.clear();
 
         for (auto& mesh : meshes) {
@@ -1806,14 +1886,6 @@ int main() {
                     .groupCountY = 1,
                     .groupCountZ = 1,
                 });
-            } else {
-                indirect_draw_commands.push_back({
-                    .indexCount    = mesh.index_count,
-                    .instanceCount = 1,
-                    .firstIndex    = first_index,
-                    .vertexOffset  = vertex_offset,
-                    .firstInstance = 0,
-                });
             }
 
             glm::mat4 model = glm::translate(glm::mat4(1.0f), mesh.position);
@@ -1825,6 +1897,9 @@ int main() {
                 DrawData{
                     .model_matrix   = model,
                     .normal_matrix  = glm::mat4(normal_matrix),
+                    .center         = mesh.center,
+                    .radius         = mesh.radius,
+                    .index_count    = mesh.index_count,
                     .first_index    = first_index,
                     .vertex_offset  = vertex_offset,
                     .meshlet_offset = mesh.meshlet_offset,
@@ -1835,25 +1910,6 @@ int main() {
                 }
             );
         }
-
-        void*  bindless_command_ptr     = nullptr;
-        size_t command_ptr_frame_offset = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-        if (use_meshlets) {
-            VK_CHECK(vmaMapMemory(vma_allocator, indirect_command_buffer.allocation, &bindless_command_ptr));
-            memcpy(
-                reinterpret_cast<char*>(bindless_command_ptr) + command_ptr_frame_offset,
-                meshlet_indirect_draw_commands.data(),
-                sizeof(VkDrawMeshTasksIndirectCommandEXT) * meshlet_indirect_draw_commands.size()
-            );
-        } else {
-            VK_CHECK(vmaMapMemory(vma_allocator, indirect_command_buffer.allocation, &bindless_command_ptr));
-            memcpy(
-                reinterpret_cast<char*>(bindless_command_ptr) + command_ptr_frame_offset,
-                indirect_draw_commands.data(),
-                sizeof(VkDrawIndexedIndirectCommand) * indirect_draw_commands.size()
-            );
-        }
-
         void*  bindless_uniform_ptr       = nullptr;
         size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         VK_CHECK(vmaMapMemory(vma_allocator, draw_data_buffer.allocation, &bindless_uniform_ptr));
@@ -1862,6 +1918,9 @@ int main() {
             bindless_draw_data_cpu_buffer.data(),
             sizeof(DrawData) * bindless_draw_data_cpu_buffer.size()
         );
+
+        void*  bindless_command_ptr     = nullptr;
+        size_t command_ptr_frame_offset = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
 
         VkCommandBufferBeginInfo begin_info = {
             .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1885,6 +1944,47 @@ int main() {
 
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+        if (!use_meshlets) {
+            vkCmdFillBuffer(
+                command_buffer, indirect_command_buffer.handle, command_ptr_frame_offset, sizeof(uint32_t), 0
+            );
+        }
+
+        std::vector<uint32_t> dynamic_offsets = {
+            static_cast<uint32_t>(draw_data_ptr_frame_offset),
+            static_cast<uint32_t>(ubo_ptr_offset),
+            static_cast<uint32_t>(command_ptr_frame_offset),
+        };
+
+        VkDescriptorSet cull_sets[] = {draw_data_descriptor_set, scene_ubo_descriptor_set, compute_cull_descriptor_set};
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_cull_pipeline);
+        vkCmdBindDescriptorSets(
+            command_buffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            compute_cull_pipeline_layout,
+            0,
+            3,
+            cull_sets,
+            3,
+            dynamic_offsets.data()
+        );
+
+        CullPassPushConstants cull_constants = {
+            .draw_count           = static_cast<uint32_t>(bindless_draw_data_cpu_buffer.size()),
+            .command_count_offset = 0,
+        };
+
+        vkCmdPushConstants(
+            command_buffer,
+            compute_cull_pipeline_layout,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0,
+            sizeof(CullPassPushConstants),
+            &cull_constants
+        );
+
+        vkCmdDispatch(command_buffer, (bindless_draw_data_cpu_buffer.size() + 255) / 256, 1, 1);
 
         std::vector<VkRenderingAttachmentInfo> gbuffer_color_attachments{
             {
@@ -1958,17 +2058,17 @@ int main() {
         vkCmdBeginRendering(command_buffer, &rendering_info);
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, geometry_pipeline);
 
-        uint32_t        dynamic_offset = {static_cast<uint32_t>(ubo_ptr_offset)};
         VkDescriptorSet sets[] = {draw_data_descriptor_set, scene_ubo_descriptor_set, global_texture_descriptor_set};
 
         vkCmdBindDescriptorSets(
-            command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, geometry_pipeline_layout, 0, 3, sets, 1, &dynamic_offset
-        );
-
-        PushConstants push = {};
-
-        vkCmdPushConstants(
-            command_buffer, geometry_pipeline_layout, geometry_pipeline_stage_flags, 0, sizeof(PushConstants), &push
+            command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            geometry_pipeline_layout,
+            0,
+            3,
+            sets,
+            2,
+            &dynamic_offsets[0]
         );
 
         if (use_meshlets) {
@@ -1982,11 +2082,13 @@ int main() {
         } else {
             vkCmdBindIndexBuffer(command_buffer, global_index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
 
-            vkCmdDrawIndexedIndirect(
+            vkCmdDrawIndexedIndirectCount(
                 command_buffer,
                 indirect_command_buffer.handle,
+                command_ptr_frame_offset + sizeof(uint32_t),
+                indirect_command_buffer.handle,
                 command_ptr_frame_offset,
-                indirect_draw_commands.size(),
+                bindless_draw_data_cpu_buffer.size(),
                 sizeof(VkDrawIndexedIndirectCommand)
             );
         }
@@ -2029,7 +2131,7 @@ int main() {
             3,
             compute_sets,
             1,
-            &dynamic_offset
+            &dynamic_offsets[1]
         );
 
         PostProcesPushConstants post_process_push = {
@@ -2074,7 +2176,7 @@ int main() {
             3,
             composite_sets,
             1,
-            &dynamic_offset
+            &dynamic_offsets[1]
         );
         vkCmdPushConstants(
             command_buffer,
@@ -2340,6 +2442,7 @@ int main() {
     vkDestroyDescriptorSetLayout(device, draw_data_descriptor_layout, nullptr);
     vkDestroyDescriptorSetLayout(device, compute_descriptor_layout, nullptr);
     vkDestroyDescriptorSetLayout(device, composite_descriptor_layout, nullptr);
+    vkDestroyDescriptorSetLayout(device, compute_cull_decriptor_layout, nullptr);
     vkDestroyPipelineLayout(device, compute_pipeline_layout, nullptr);
     vkDestroyPipelineLayout(device, composite_pipeline_layout, nullptr);
     vkDestroyPipeline(device, lightpass_pipeline, nullptr);
@@ -2359,8 +2462,11 @@ int main() {
     if (vertex_module != VK_NULL_HANDLE) {
         vkDestroyShaderModule(device, vertex_module, nullptr);
     }
+    vkDestroyShaderModule(device, compute_cull_module, nullptr);
+    vkDestroyPipelineLayout(device, compute_cull_pipeline_layout, nullptr);
     vkDestroyPipelineLayout(device, geometry_pipeline_layout, nullptr);
     vkDestroyPipeline(device, geometry_pipeline, nullptr);
+    vkDestroyPipeline(device, compute_cull_pipeline, nullptr);
     vkDestroyCommandPool(device, command_pool, nullptr);
     for (int i = 0; i < swapchain.images.size(); i++) {
         vkDestroySemaphore(device, image_available_semaphores[i], nullptr);

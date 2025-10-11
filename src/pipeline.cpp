@@ -260,14 +260,16 @@ VkPipelineLayout create_pipeline_layout(
         .size       = push_constants_size,
     };
 
+    bool push_constants_present = (push_constants_size > 0 && push_constants_stages != 0);
+
     VkPipelineLayoutCreateInfo layout_info = {
         .sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .pNext                  = nullptr,
         .flags                  = 0,
         .setLayoutCount         = static_cast<uint32_t>(descriptor_set_layouts.size()),
         .pSetLayouts            = descriptor_set_layouts.data(),
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges    = &push_constants_range
+        .pushConstantRangeCount = static_cast<uint32_t>(push_constants_present ? 1 : 0),
+        .pPushConstantRanges    = push_constants_present ? &push_constants_range : nullptr
     };
 
     VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;

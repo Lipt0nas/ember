@@ -14,7 +14,7 @@ layout(location = 6) out vec3 out_world_pos;
 #include "common_geometry.glsl"
 
 void main() {
-    DrawData draw = uniforms.draw_data[gl_DrawID];
+    DrawData draw = uniforms.draw_data[gl_BaseInstance];
 
     uint base = gl_VertexIndex;
     Vertex vertex = global_vertices.vertices[base];

@@ -20,8 +20,8 @@ VkShaderModule shader_module_from_file(VkDevice device, const std::filesystem::p
 VkPipelineLayout create_pipeline_layout(
     VkDevice                                  device,
     const std::vector<VkDescriptorSetLayout>& descriptor_set_layouts,
-    VkShaderStageFlags                        push_constants_stages,
-    uint32_t                                  push_constants_size = 0
+    VkShaderStageFlags                        push_constants_stages = 0,
+    uint32_t                                  push_constants_size   = 0
 );
 
 VkPipeline create_graphics_pipeline(

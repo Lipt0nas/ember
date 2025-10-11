@@ -28,10 +28,6 @@ layout(scalar, set = 0, binding = 6) readonly buffer MeshletPrimitiveIndices {
     uint8_t indices[];
 } meshlet_primitive_indices;
 
-layout(push_constant, std430) uniform pc {
-    vec4 dummy;
-} push_constants;
-
 struct TaskPayload {
     uint draw_id;
     uint meshlet_offset;
