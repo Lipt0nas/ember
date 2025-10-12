@@ -137,13 +137,5 @@ void main() {
 
     vec3 output_color = color.rgb;
 
-    if (scene.debug_frustum == 1) {
-        output_color = gi.rgb;
-    }
-
-    if (scene.disable_culling == 1) {
-        output_color = Lo;
-    }
-
     imageStore(out_color, pixel_coord, vec4(output_color, 1.0));
 }
