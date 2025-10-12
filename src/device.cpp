@@ -146,14 +146,20 @@ VkDevice create_device(
     VkPhysicalDevice physical_device,
     uint32_t         graphics_family_index,
     bool             enable_validation,
-    bool             use_meshlets
+    bool             use_meshlets,
+    bool             use_hardware_rt
 ) {
-    std::vector<const char*> device_extensions = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-    };
+    std::vector<const char*> device_extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
     if (use_meshlets) {
         device_extensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+    }
+
+    if (use_hardware_rt) {
+        device_extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        device_extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+
+        device_extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
     }
 
     float                   queue_prorities   = 1.0f;
@@ -166,9 +172,20 @@ VkDevice create_device(
         .pQueuePriorities = &queue_prorities
     };
 
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR ray_tracing_pipeline_features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
+    };
+    ray_tracing_pipeline_features.rayTracingPipeline = VK_TRUE;
+
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
+        .pNext = &ray_tracing_pipeline_features,
+    };
+    acceleration_structure_features.accelerationStructure = VK_TRUE;
+
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features = {
         .sType                                  = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
-        .pNext                                  = nullptr,
+        .pNext                                  = use_hardware_rt ? &acceleration_structure_features : nullptr,
         .taskShader                             = VK_TRUE,
         .meshShader                             = VK_TRUE,
         .multiviewMeshShader                    = VK_FALSE,
@@ -176,18 +193,21 @@ VkDevice create_device(
         .meshShaderQueries                      = VK_FALSE
     };
 
+    void* feature_chain =
+        (use_meshlets ? (void*)&mesh_shader_features : (use_hardware_rt ? &acceleration_structure_features : nullptr));
+
     VkPhysicalDeviceFeatures features  = {};
     features.samplerAnisotropy         = VK_TRUE;
     features.multiDrawIndirect         = VK_TRUE;
     features.drawIndirectFirstInstance = VK_TRUE;
 
-    VkPhysicalDeviceVulkan11Features vulkan_features_11{
+    VkPhysicalDeviceVulkan11Features vulkan_features_11 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-        .pNext = use_meshlets ? &mesh_shader_features : nullptr,
+        .pNext = feature_chain,
     };
     vulkan_features_11.shaderDrawParameters = VK_TRUE;
 
-    VkPhysicalDeviceVulkan12Features vulkan_features_12{
+    VkPhysicalDeviceVulkan12Features vulkan_features_12 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .pNext = &vulkan_features_11,
     };
@@ -204,17 +224,23 @@ VkDevice create_device(
     vulkan_features_12.hostQueryReset                               = VK_TRUE;
     vulkan_features_12.uniformAndStorageBuffer8BitAccess            = VK_TRUE;
 
-    VkPhysicalDeviceVulkan13Features enabled_features_13 = {
+    VkPhysicalDeviceVulkan13Features vulkan_features_13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
         .pNext = &vulkan_features_12,
     };
-    enabled_features_13.dynamicRendering = VK_TRUE;
-    enabled_features_13.synchronization2 = VK_TRUE;
-    enabled_features_13.maintenance4     = VK_TRUE;
+    vulkan_features_13.dynamicRendering = VK_TRUE;
+    vulkan_features_13.synchronization2 = VK_TRUE;
+    vulkan_features_13.maintenance4     = VK_TRUE;
+
+    VkPhysicalDeviceVulkan14Features enabled_features_14 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
+        .pNext = &vulkan_features_13,
+    };
+    enabled_features_14.pushDescriptor = VK_TRUE;
 
     VkDeviceCreateInfo device_info = {
         .sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext                   = &enabled_features_13,
+        .pNext                   = &enabled_features_14,
         .flags                   = 0,
         .queueCreateInfoCount    = 1,
         .pQueueCreateInfos       = &device_queue_info,

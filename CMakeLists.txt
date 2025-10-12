@@ -102,6 +102,7 @@ set(SOURCES
     "src/device.cpp"
     "src/pipeline.cpp"
     "src/ui.cpp"
+    "src/rt_scene.cpp"
 )
 add_executable(Ember ${SOURCES})
 

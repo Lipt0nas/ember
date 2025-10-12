@@ -14,6 +14,18 @@ layout(set = 2, binding = 0) uniform sampler2D textures[];
 
 layout(set = 0, binding = 0, rgba8) uniform image2D out_color;
 
+layout(push_constant, std430) uniform pc {
+    uint depth_index;
+    uint albedo_index;
+    uint normals_index;
+    uint material_index;
+
+    uint lightpass_index;
+    uint rt_index;
+
+    uint frame_index;
+} push_constants;
+
 vec3 aces_film(vec3 x) {
     float a = 2.51;
     float b = 0.03;
@@ -36,5 +48,5 @@ void main() {
     vec3 hdr_color = texture(textures[push_constants.lightpass_index], uv).rgb;
     vec3 tonemapped = aces_film(hdr_color);
 
-    imageStore(out_color, pixel_coord, vec4(hdr_color, 1.0));
+    imageStore(out_color, pixel_coord, vec4(tonemapped, 1.0));
 }

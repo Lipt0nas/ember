@@ -3,7 +3,11 @@
 #include <stb_image.h>
 
 Buffer create_buffer(
-    VkDeviceSize size, VkBufferUsageFlags usage_flags, VmaAllocator allocator, VmaAllocationCreateFlags allocation_flags
+    VkDeviceSize             size,
+    VkBufferUsageFlags       usage_flags,
+    VmaAllocator             allocator,
+    VmaAllocationCreateFlags allocation_flags,
+    size_t                   alignment
 ) {
     VkBufferCreateInfo buffer_info = {
         .sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -22,7 +26,13 @@ Buffer create_buffer(
 
     VkBuffer      handle = VK_NULL_HANDLE;
     VmaAllocation allocation;
-    VK_CHECK(vmaCreateBuffer(allocator, &buffer_info, &allocation_info, &handle, &allocation, nullptr));
+    if (alignment == 0) {
+        VK_CHECK(vmaCreateBuffer(allocator, &buffer_info, &allocation_info, &handle, &allocation, nullptr));
+    } else {
+        VK_CHECK(vmaCreateBufferWithAlignment(
+            allocator, &buffer_info, &allocation_info, alignment, &handle, &allocation, nullptr
+        ));
+    }
 
     return {
         .handle     = handle,
@@ -460,4 +470,32 @@ void buffer_pipeline_barrier(
         .pImageMemoryBarriers     = nullptr,
     };
     vkCmdPipelineBarrier2(command_buffer, &dependency);
+}
+uint64_t get_buffer_device_address(const Buffer& buffer, VkDevice device) {
+    VkBufferDeviceAddressInfo address_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = buffer.handle
+    };
+
+    return vkGetBufferDeviceAddress(device, &address_info);
+}
+void copy_to_buffer(const Buffer& dst_buffer, VmaAllocator allocator, void* src_ptr, size_t size) {
+    void* buffer_ptr = nullptr;
+    VK_CHECK(vmaMapMemory(allocator, dst_buffer.allocation, &buffer_ptr));
+
+    if (buffer_ptr == nullptr) {
+        spdlog::error("Failed to map buffer for copy");
+        return;
+    }
+
+    memcpy(buffer_ptr, src_ptr, size);
+    VK_CHECK(vmaFlushAllocation(allocator, dst_buffer.allocation, 0, size));
+    vmaUnmapMemory(allocator, dst_buffer.allocation);
+}
+uint32_t aligned_size(uint32_t size, uint32_t alignment) {
+    uint32_t aligned = size;
+    if (alignment > 0) {
+        aligned = (aligned + alignment - 1) & ~(alignment - 1);
+    }
+
+    return aligned;
 }

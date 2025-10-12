@@ -4,17 +4,10 @@
 #include "device.hpp"
 #include "pipeline.hpp"
 #include "resources.hpp"
+#include "rt_scene.hpp"
 #include "swapchain.hpp"
 #include "ui.hpp"
-
-uint32_t aligned_size(uint32_t size, uint32_t alignment) {
-    uint32_t aligned = size;
-    if (alignment > 0) {
-        aligned = (aligned + alignment - 1) & ~(alignment - 1);
-    }
-
-    return aligned;
-}
+#include <vulkan/vulkan_core.h>
 
 struct MeshIndirectDrawCommand {
     uint32_t group_count_x;
@@ -24,6 +17,9 @@ struct MeshIndirectDrawCommand {
 };
 
 struct SceneUBO {
+    glm::mat4 view;
+    glm::mat4 proj;
+
     glm::mat4 view_proj;
     glm::mat4 inverse_view_proj;
     glm::vec4 planes[6];
@@ -50,6 +46,18 @@ struct PostProcesPushConstants {
     uint32_t material_index;
 
     uint32_t lightpass_index;
+    uint32_t rt_output_index;
+
+    uint32_t frame_index;
+};
+
+struct LightpassPushConstants {
+    uint32_t depth_index;
+    uint32_t albedo_index;
+    uint32_t normals_index;
+    uint32_t material_index;
+
+    uint32_t gi_output_index;
 };
 
 struct DrawData {
@@ -82,41 +90,6 @@ struct MeshletBounds {
 
     glm::vec3 cone_apex;
     float     _pad;
-};
-
-struct Vertex {
-    glm::vec3 position;
-    glm::vec3 normal;
-    glm::vec2 uv;
-
-    bool operator==(const Vertex& other) const {
-        return position == other.position && normal == other.normal && uv == other.uv;
-    }
-};
-
-struct Material {
-    uint32_t albedo_index;
-    uint32_t normals_index;
-    uint32_t material_index;
-};
-
-struct Mesh {
-    VkDeviceSize vertex_buffer_offset;
-    VkDeviceSize index_buffer_offset;
-
-    uint32_t meshlet_offset;
-    uint32_t meshlet_count;
-
-    uint32_t vertex_count;
-    uint32_t index_count;
-
-    Material material;
-
-    glm::vec3 center = {};
-    float     radius = 0.0f;
-
-    glm::vec3 position = {};
-    float     scale    = 1.0f;
 };
 
 // TODO: is not nice
@@ -209,7 +182,7 @@ std::vector<Mesh> load_model(
             );
 
             glm::vec3 axis_min = glm::vec3(FLT_MAX);
-            glm::vec3 axis_max = glm::vec3(FLT_MIN);
+            glm::vec3 axis_max = glm::vec3(-FLT_MAX);
 
             for (size_t i = 0; i < vertex_count; i++) {
                 glm::vec3 position = {
@@ -248,10 +221,10 @@ std::vector<Mesh> load_model(
             }
 
             float bounds_min = glm::min(glm::min(axis_min.x, axis_min.y), axis_min.z);
-            float bounds_max = glm::min(glm::min(axis_max.x, axis_max.y), axis_max.z);
+            float bounds_max = glm::max(glm::max(axis_max.x, axis_max.y), axis_max.z);
 
             glm::vec3 center = (axis_min + axis_max) / 2.0f;
-            float     radius = (bounds_max - bounds_min) / 2.0f;
+            float     radius = glm::length(bounds_max - bounds_min) / 2.0f;
 
             if (primitive.indices >= 0) {
                 const tinygltf::Accessor&   index_accessor = model.accessors[primitive.indices];
@@ -404,7 +377,7 @@ std::vector<Mesh> load_model(
             spdlog::debug("Building meshlets");
             const size_t max_vertices  = 64;
             const size_t max_triangles = 124;
-            const float  cone_weight   = 0.5f;
+            const float  cone_weight   = 0.75f;
 
             size_t max_meshlets = meshopt_buildMeshletsBound(indices.size(), max_vertices, max_triangles);
             spdlog::trace("Max meshlets {}", max_meshlets);
@@ -451,26 +424,21 @@ std::vector<Mesh> load_model(
                     sizeof(Vertex)
                 );
 
+                float axis_length = sqrt(
+                    bounds.cone_axis[0] * bounds.cone_axis[0] + bounds.cone_axis[1] * bounds.cone_axis[1] +
+                    bounds.cone_axis[2] * bounds.cone_axis[2]
+                );
+
+                if (axis_length < 0.001f) {
+                    bounds.cone_cutoff = -1.0f;
+                }
+
                 meshlet_bounds[idx++] = MeshletBounds{
-                    .center =
-                        {
-                            bounds.center[0],
-                            bounds.center[1],
-                            bounds.center[2],
-                        },
-                    .radius = bounds.radius,
-                    .cone_axis =
-                        {
-                            bounds.cone_axis[0],
-                            bounds.cone_axis[1],
-                            bounds.cone_axis[2],
-                        },
+                    .center      = {bounds.center[0], bounds.center[1], bounds.center[2]},
+                    .radius      = bounds.radius,
+                    .cone_axis   = {bounds.cone_axis[0], bounds.cone_axis[1], bounds.cone_axis[2]},
                     .cone_cutoff = bounds.cone_cutoff,
-                    .cone_apex   = {
-                        bounds.cone_apex[0],
-                        bounds.cone_apex[1],
-                        bounds.cone_apex[2],
-                    },
+                    .cone_apex   = {bounds.cone_apex[0], bounds.cone_apex[1], bounds.cone_apex[2]},
                 };
             }
 
@@ -644,7 +612,9 @@ int main() {
 
     const int FRAMES_IN_FLIGHT = 2;
 
-    bool use_meshlets      = true;
+    bool use_meshlets    = true;
+    bool use_hardware_rt = true;
+
     bool enable_validation = false;
 
     spdlog::info("Creating Vulkan instance");
@@ -661,7 +631,9 @@ int main() {
     spdlog::info("Queue index that supports graphics operations: {}", graphics_family_index);
 
     spdlog::info("Creating device");
-    VkDevice device = create_device(instance, physical_device, graphics_family_index, enable_validation, use_meshlets);
+    VkDevice device = create_device(
+        instance, physical_device, graphics_family_index, enable_validation, use_meshlets, use_hardware_rt
+    );
     volkLoadDevice(device);
 
     VmaAllocatorCreateInfo allocator_info = {
@@ -756,7 +728,14 @@ int main() {
             .type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
             .descriptorCount = 10,
         },
+
     };
+    if (use_hardware_rt) {
+        descriptor_pool_sizes.push_back({
+            .type            = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+            .descriptorCount = 10,
+        });
+    }
 
     VkDescriptorPoolCreateInfo descriptor_pool_info = {
         .sType   = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -787,6 +766,8 @@ int main() {
     VkShaderModule light_compute_module     = shader_module_from_file(device, "data/shaders/light.comp.spv");
     VkShaderModule composite_compute_module = shader_module_from_file(device, "data/shaders/composite.comp.spv");
 
+    VkShaderStageFlags additional_flags =
+        use_hardware_rt ? VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR : 0;
     VkDescriptorSetLayout draw_data_descriptor_layout = create_descriptor_set_layout(
         device,
         {
@@ -795,50 +776,49 @@ int main() {
                 .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
                 .count       = 1,
                 .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
-                .bindless = false,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT | additional_flags,
             },
             {
                 .binding     = 1,
                 .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
-                .bindless    = false,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
+                               VK_SHADER_STAGE_VERTEX_BIT | additional_flags,
             },
             {
                 .binding     = 2,
                 .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
-                .bindless    = false,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
+                               VK_SHADER_STAGE_VERTEX_BIT | additional_flags,
             },
             {
                 .binding     = 3,
                 .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
-                .bindless    = false,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
+                               VK_SHADER_STAGE_VERTEX_BIT | additional_flags,
             },
             {
                 .binding     = 4,
                 .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
-                .bindless    = false,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
+                               VK_SHADER_STAGE_VERTEX_BIT | additional_flags,
             },
             {
                 .binding     = 5,
                 .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
-                .bindless    = false,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
+                               VK_SHADER_STAGE_VERTEX_BIT | additional_flags,
             },
             {
                 .binding     = 6,
                 .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
-                .bindless    = false,
+                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
+                               VK_SHADER_STAGE_VERTEX_BIT | additional_flags,
             },
         }
     );
@@ -851,7 +831,6 @@ int main() {
                 .type        = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
                 .count       = 1,
                 .stage_flags = VK_SHADER_STAGE_ALL,
-                .bindless    = false,
             },
         }
     );
@@ -878,7 +857,6 @@ int main() {
                 .count       = 1,
                 .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_MESH_BIT_EXT |
                                VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
-                .bindless = false,
             },
         }
     );
@@ -937,7 +915,6 @@ int main() {
                 .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                 .count       = 1,
                 .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-                .bindless    = false,
             },
         }
     );
@@ -946,7 +923,7 @@ int main() {
         device,
         {{compute_descriptor_layout, scene_ubo_descriptor_layout, global_texture_descriptor_layout}},
         VK_SHADER_STAGE_COMPUTE_BIT,
-        sizeof(PostProcesPushConstants)
+        sizeof(LightpassPushConstants)
     );
 
     VkPipeline lightpass_pipeline = create_compute_pipeline(
@@ -966,7 +943,6 @@ int main() {
                 .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                 .count       = 1,
                 .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-                .bindless    = false,
             },
         }
     );
@@ -1100,6 +1076,17 @@ int main() {
         device
     );
 
+    Image gi_output = create_image(
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        swapchain.width / 4,
+        swapchain.height / 4,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
     std::vector<std::reference_wrapper<Image>> gbuffer_images = {
         gbuffer_albedo,
         gbuffer_normals,
@@ -1154,6 +1141,17 @@ int main() {
         );
 
         image_pipeline_barrier(
+            gi_output,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        image_pipeline_barrier(
             composite_output,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1184,13 +1182,19 @@ int main() {
 
     Buffer global_vertex_buffer = create_buffer(
         1024 * 1024 * 128,
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            (use_hardware_rt ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+                             : 0),
         vma_allocator
     );
 
     Buffer global_index_buffer = create_buffer(
         1024 * 1024 * 64,
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            (use_hardware_rt ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+                             : 0),
         vma_allocator
     );
 
@@ -1450,19 +1454,23 @@ int main() {
         .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
     };
 
-    VkWriteDescriptorSet compute_write_set = {
-        .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .pNext            = nullptr,
-        .dstSet           = compute_descriptor_set,
-        .dstBinding       = 0,
-        .dstArrayElement  = 0,
-        .descriptorCount  = 1,
-        .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        .pImageInfo       = &compute_image_info,
-        .pBufferInfo      = nullptr,
-        .pTexelBufferView = nullptr
+    std::vector<VkWriteDescriptorSet> compute_write_sets = {
+        {
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = compute_descriptor_set,
+            .dstBinding       = 0,
+            .dstArrayElement  = 0,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .pImageInfo       = &compute_image_info,
+            .pBufferInfo      = nullptr,
+            .pTexelBufferView = nullptr,
+        },
     };
-    vkUpdateDescriptorSets(device, 1, &compute_write_set, 0, nullptr);
+    vkUpdateDescriptorSets(
+        device, static_cast<uint32_t>(compute_write_sets.size()), compute_write_sets.data(), 0, nullptr
+    );
 
     VkDescriptorSetAllocateInfo composite_descriptor_set_info = {
         .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -1598,7 +1606,7 @@ int main() {
     );
 
     auto helmet = load_model(
-        "data/models/football/football.gltf",
+        "data/models/sponza/sponza.glb",
         staging_buffer,
         global_vertex_buffer,
         indirect_vertex_buffer_offset,
@@ -1622,38 +1630,55 @@ int main() {
 
     std::vector<Mesh> meshes;
 
-    // Stress test
-    {
-        int row = 0;
-        int col = 0;
-        int t   = 0;
-
-        float spacing = 20.0f;
-
-        int grid_break = 10;
-
-        for (int i = 0; i < 3000; i++) {
-
-            for (auto mesh : lantern) {
-                auto clone     = mesh;
-                clone.position = glm::vec3(5 + row * spacing * 0.6, t * spacing, col * spacing * 0.5 - 5);
-                clone.scale    = 4.5;
-                meshes.push_back(clone);
-            }
-
-            row++;
-
-            if (row >= grid_break) {
-                row = 0;
-                col++;
-            }
-
-            if (col >= grid_break) {
-                t++;
-                col = 0;
-            }
-        }
+    for (auto& m : lantern) {
+        m.scale = 10.2f;
+        meshes.push_back(m);
     }
+
+    for (auto& m : helmet) {
+        m.scale = 0.05f;
+        meshes.push_back(m);
+    }
+
+    // // Stress test
+    // {
+    //     int row = 0;
+    //     int col = 0;
+    //     int t   = 0;
+    //
+    //     float spacing = 20.0f;
+    //
+    //     int grid_break = 10;
+    //
+    //     for (int i = 0; i < 300; i++) {
+    //
+    //         for (auto mesh : lantern) {
+    //             auto clone     = mesh;
+    //             clone.position = glm::vec3(5 + row * spacing * 0.6, t * spacing, col * spacing * 0.5 - 5);
+    //             clone.scale    = 10.5;
+    //             meshes.push_back(clone);
+    //         }
+    //
+    //         for (auto mesh : helmet) {
+    //             auto clone     = mesh;
+    //             clone.position = glm::vec3(-2 + row * spacing * 0.6, t * spacing, col * spacing * 0.5 - 5);
+    //             clone.scale    = 10.5;
+    //             meshes.push_back(clone);
+    //         }
+    //
+    //         row++;
+    //
+    //         if (row >= grid_break) {
+    //             row = 0;
+    //             col++;
+    //         }
+    //
+    //         if (col >= grid_break) {
+    //             t++;
+    //             col = 0;
+    //         }
+    //     }
+    // }
 
     uint32_t depth_index = texture_cache.size();
     texture_cache.insert({depth_index, depth_buffer});
@@ -1670,7 +1695,61 @@ int main() {
     uint32_t lightpass_output_index = texture_cache.size();
     texture_cache.insert({lightpass_output_index, lightpass_output});
 
+    uint32_t gi_output_index = texture_cache.size();
+    texture_cache.insert({gi_output_index, gi_output});
+
     populate_materials(texture_cache, global_texture_descriptor_set, linear_sampler, device);
+
+    RTScene               rt_scene                 = {};
+    VkDescriptorSetLayout rt_descriptor_set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout      rt_pipeline_layout       = VK_NULL_HANDLE;
+    VkDescriptorSet       rt_descriptor_set        = VK_NULL_HANDLE;
+
+    if (use_hardware_rt) {
+        spdlog::info("Setting up hardware raytracing scene");
+        rt_descriptor_set_layout = create_descriptor_set_layout(
+            device,
+            {{
+                 .binding     = 0,
+                 .type        = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                 .count       = 1,
+                 .stage_flags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+             },
+             {
+                 .binding     = 1,
+                 .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                 .count       = 1,
+                 .stage_flags = VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+             }},
+            true
+        );
+
+        rt_pipeline_layout = create_pipeline_layout(
+            device,
+            {draw_data_descriptor_layout,
+             scene_ubo_descriptor_layout,
+             global_texture_descriptor_layout,
+             rt_descriptor_set_layout},
+            VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+            sizeof(PostProcesPushConstants)
+        );
+
+        rt_scene = create_rt_scene(
+            device,
+            physical_device,
+            vma_allocator,
+            command_buffers[0],
+            graphics_queue,
+            meshes,
+            get_buffer_device_address(global_vertex_buffer, device),
+            get_buffer_device_address(global_index_buffer, device),
+            rt_pipeline_layout,
+            "data/shaders/raygen.rgen.spv",
+            "data/shaders/miss.rmiss.spv",
+            "data/shaders/closesthit.rchit.spv",
+            "data/shaders/anyhit.rahit.spv"
+        );
+    }
 
     VkDescriptorPool imgui_descriptor_pool = init_imgui(
         window,
@@ -1702,6 +1781,7 @@ int main() {
 
     bool pressed_keys[512] = {0};
 
+    uint32_t frame_count = 0;
     uint32_t frame_index = 0;
 
     float delta_time = 0.0f;
@@ -1844,7 +1924,10 @@ int main() {
         vmaSetCurrentFrameIndex(vma_allocator, frame_index);
         VK_CHECK(vkResetFences(device, 1, &frame_fences[frame_index]));
 
-        SceneUBO scene_ubo          = {};
+        SceneUBO scene_ubo = {};
+        scene_ubo.view     = camera.view_matrix;
+        scene_ubo.proj     = camera.projection_matrix;
+
         scene_ubo.view_proj         = camera.combined_matrix;
         scene_ubo.inverse_view_proj = glm::inverse(camera.combined_matrix);
         scene_ubo.frozen_view_proj  = frozen_view_proj;
@@ -1925,9 +2008,9 @@ int main() {
         vkBeginCommandBuffer(command_buffer, &begin_info);
         VkViewport viewport = {
             .x        = 0,
-            .y        = static_cast<float>(swapchain.height),
+            .y        = 0,
             .width    = static_cast<float>(swapchain.width),
-            .height   = -static_cast<float>(swapchain.height),
+            .height   = static_cast<float>(swapchain.height),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
         };
@@ -2112,6 +2195,16 @@ int main() {
 
         vkCmdEndRendering(command_buffer);
 
+        PostProcesPushConstants post_process_push = {
+            .depth_index     = depth_index,
+            .albedo_index    = albedo_index,
+            .normals_index   = normals_index,
+            .material_index  = material_index,
+            .lightpass_index = lightpass_output_index,
+            .rt_output_index = 0,
+            .frame_index     = frame_count,
+        };
+
         for (auto image : gbuffer_images) {
             image_pipeline_barrier(
                 image.get(),
@@ -2136,6 +2229,98 @@ int main() {
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
         );
 
+        if (use_hardware_rt) {
+            const uint32_t handle_size_aligned = aligned_size(
+                rt_scene.rt_properties.shaderGroupHandleSize, rt_scene.rt_properties.shaderGroupHandleAlignment
+            );
+
+            VkStridedDeviceAddressRegionKHR callable_shader_sbt_entry{};
+
+            VkDescriptorSet rt_sets[] = {
+                draw_data_descriptor_set, scene_ubo_descriptor_set, global_texture_descriptor_set
+            };
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_scene.pipeline);
+            vkCmdBindDescriptorSets(
+                command_buffer,
+                VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+                rt_pipeline_layout,
+                0,
+                3,
+                rt_sets,
+                2,
+                &dynamic_offsets[0]
+            );
+            vkCmdPushConstants(
+                command_buffer,
+                rt_pipeline_layout,
+                VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+                0,
+                sizeof(PostProcesPushConstants),
+                &post_process_push
+            );
+
+            VkWriteDescriptorSetAccelerationStructureKHR descriptor_acceleration_structure_info = {
+                .sType                      = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+                .accelerationStructureCount = 1,
+                .pAccelerationStructures    = &rt_scene.tlas.handle,
+            };
+
+            VkDescriptorImageInfo rt_image_descriptor = {
+                .imageView   = gi_output.view,
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            };
+
+            std::vector<VkWriteDescriptorSet> acceleration_structure_writes = {
+                {
+                    .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .pNext           = &descriptor_acceleration_structure_info,
+                    .dstSet          = rt_descriptor_set,
+                    .dstBinding      = 0,
+                    .descriptorCount = 1,
+                    .descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                },
+                {
+                    .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .pNext           = nullptr,
+                    .dstSet          = rt_descriptor_set,
+                    .dstBinding      = 1,
+                    .descriptorCount = 1,
+                    .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                    .pImageInfo      = &rt_image_descriptor,
+                },
+            };
+            vkCmdPushDescriptorSet(
+                command_buffer,
+                VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+                rt_pipeline_layout,
+                3,
+                static_cast<uint32_t>(acceleration_structure_writes.size()),
+                acceleration_structure_writes.data()
+            );
+
+            vkCmdTraceRaysKHR(
+                command_buffer,
+                &rt_scene.raygen_shader_sbt_entry,
+                &rt_scene.miss_shader_sbt_entry,
+                &rt_scene.hit_shader_sbt_entry,
+                &callable_shader_sbt_entry,
+                gi_output.width,
+                gi_output.height,
+                1
+            );
+        }
+
+        image_pipeline_barrier(
+            gi_output,
+            command_buffer,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+        );
+
         VkDescriptorSet compute_sets[] = {
             compute_descriptor_set, scene_ubo_descriptor_set, global_texture_descriptor_set
         };
@@ -2151,12 +2336,12 @@ int main() {
             &dynamic_offsets[1]
         );
 
-        PostProcesPushConstants post_process_push = {
+        LightpassPushConstants light_constants = {
             .depth_index     = depth_index,
             .albedo_index    = albedo_index,
             .normals_index   = normals_index,
             .material_index  = material_index,
-            .lightpass_index = lightpass_output_index
+            .gi_output_index = gi_output_index,
         };
 
         vkCmdPushConstants(
@@ -2164,11 +2349,22 @@ int main() {
             compute_pipeline_layout,
             VK_SHADER_STAGE_COMPUTE_BIT,
             0,
-            sizeof(PostProcesPushConstants),
-            &post_process_push
+            sizeof(LightpassPushConstants),
+            &light_constants
         );
 
         vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
+
+        image_pipeline_barrier(
+            gi_output,
+            command_buffer,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+        );
 
         image_pipeline_barrier(
             lightpass_output,
@@ -2424,6 +2620,7 @@ int main() {
         }
 
         frame_index = (frame_index + 1) % FRAMES_IN_FLIGHT;
+        frame_count++;
     }
 
     VK_CHECK(vkDeviceWaitIdle(device));
@@ -2448,8 +2645,16 @@ int main() {
     destroy_image(gbuffer_albedo, device, vma_allocator);
     destroy_image(gbuffer_material, device, vma_allocator);
     destroy_image(gbuffer_normals, device, vma_allocator);
+    destroy_image(gi_output, device, vma_allocator);
+
     for (auto image : loaded_images) {
         destroy_image(image, device, vma_allocator);
+    }
+
+    if (use_hardware_rt) {
+        vkDestroyPipelineLayout(device, rt_pipeline_layout, nullptr);
+        vkDestroyDescriptorSetLayout(device, rt_descriptor_set_layout, nullptr);
+        destroy_rt_scene(rt_scene, device, vma_allocator);
     }
 
     vmaDestroyAllocator(vma_allocator);

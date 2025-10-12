@@ -64,7 +64,7 @@ void update_camera(Camera& camera) {
         0.0f,
         0.0f,
         0.0f,
-        f,
+        -f,
         0.0f,
         0.0f,
         0.0f,

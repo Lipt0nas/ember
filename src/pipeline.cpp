@@ -198,7 +198,7 @@ VkPipeline create_graphics_pipeline(
 }
 
 VkDescriptorSetLayout
-create_descriptor_set_layout(VkDevice device, const std::vector<DescriptorLayoutBinding>& bindings) {
+create_descriptor_set_layout(VkDevice device, const std::vector<DescriptorLayoutBinding>& bindings, bool push_set) {
     std::vector<VkDescriptorSetLayoutBinding> vk_bindings;
     std::vector<VkDescriptorBindingFlags>     flags;
 
@@ -234,10 +234,20 @@ create_descriptor_set_layout(VkDevice device, const std::vector<DescriptorLayout
         .pBindingFlags = flags.data(),
     };
 
+    VkDescriptorSetLayoutCreateFlags layout_flags = 0;
+
+    if (contains_bindless) {
+        layout_flags |= VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    }
+
+    if (push_set) {
+        layout_flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT;
+    }
+
     VkDescriptorSetLayoutCreateInfo descriptor_layout_info = {
         .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
         .pNext        = &binding_flags_info,
-        .flags        = contains_bindless ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT : 0u,
+        .flags        = layout_flags,
         .bindingCount = static_cast<uint32_t>(vk_bindings.size()),
         .pBindings    = vk_bindings.data()
     };

@@ -8,6 +8,15 @@
 
 #include "common_post_process.glsl"
 
+layout(push_constant, std430) uniform pc {
+    uint depth_index;
+    uint albedo_index;
+    uint normals_index;
+    uint material_index;
+
+    uint gi_index;
+} push_constants;
+
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 2, binding = 0) uniform sampler2D textures[];
@@ -90,9 +99,9 @@ void main() {
 
     vec3 world_pos = reconstruct_world_position(uv, depth);
 
-    vec3 light_dir = vec3(0, -1, 0);
+    vec3 light_dir = vec3(1, -0.7, 0);
     vec3 light_color = vec3(1.0, 1.0, 1.0);
-    float light_intensity = 5.0;
+    float light_intensity = 1.0;
 
     vec3 V = normalize(scene.camera_position.xyz - world_pos);
     vec3 L = normalize(-light_dir);
@@ -120,8 +129,21 @@ void main() {
     float NdotL = max(dot(normal, L), 0.0);
     vec3 Lo = (diffuse + specular) * radiance * NdotL;
 
-    vec3 ambient = vec3(0.2) * albedo;
-    vec3 color = ambient + Lo;
+    vec3 gi = texture(textures[push_constants.gi_index], uv).rgb;
 
-    imageStore(out_color, pixel_coord, vec4(color, 1.0));
+    vec3 color = Lo + gi.rgb;
+    vec3 ambient = vec3(0.03) * albedo;
+    color += ambient;
+
+    vec3 output_color = color.rgb;
+
+    if (scene.debug_frustum == 1) {
+        output_color = gi.rgb;
+    }
+
+    if (scene.disable_culling == 1) {
+        output_color = Lo;
+    }
+
+    imageStore(out_color, pixel_coord, vec4(output_color, 1.0));
 }

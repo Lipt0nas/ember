@@ -26,7 +26,8 @@ Buffer create_buffer(
     VkDeviceSize             size,
     VkBufferUsageFlags       usage_flags,
     VmaAllocator             allocator,
-    VmaAllocationCreateFlags allocation_flags = 0
+    VmaAllocationCreateFlags allocation_flags = 0,
+    size_t                   alignment        = 0
 );
 void destroy_buffer(const Buffer& buffer, VkDevice device, VmaAllocator allocator);
 void copy_buffer(
@@ -39,6 +40,10 @@ void copy_buffer(
     size_t          data_size,
     VkDeviceSize    dst_buffer_offset = 0
 );
+
+void copy_to_buffer(const Buffer& dst_buffer, VmaAllocator allocator, void* src_ptr, size_t size);
+
+uint64_t get_buffer_device_address(const Buffer& buffer, VkDevice device);
 
 void buffer_pipeline_barrier(
     const Buffer&         buffer,
@@ -105,3 +110,5 @@ void copy_image(
     VkQueue         queue,
     VkDevice        device
 );
+
+uint32_t aligned_size(uint32_t size, uint32_t alignment);

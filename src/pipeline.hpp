@@ -34,5 +34,6 @@ VkPipeline create_graphics_pipeline(
 
 VkPipeline create_compute_pipeline(VkDevice device, VkPipelineLayout pipeline_layout, const Shader& shader);
 
-VkDescriptorSetLayout
-create_descriptor_set_layout(VkDevice device, const std::vector<DescriptorLayoutBinding>& bindings);
+VkDescriptorSetLayout create_descriptor_set_layout(
+    VkDevice device, const std::vector<DescriptorLayoutBinding>& bindings, bool push_set = false
+);
