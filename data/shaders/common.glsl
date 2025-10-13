@@ -59,17 +59,13 @@ layout(set = 1, binding = 0) uniform SceneUBO {
     uint debug_frustum;
     uint disable_culling;
 
-    uint _pad0;
-    uint _pad1;
+    float P00;
+    float P11;
 } scene;
 
-bool is_sphere_in_frustum(vec3 center, float radius, mat4 model, vec4[6] planes) {
-    vec4 world_center = model * vec4(center, 1.0);
-    vec3 scale = vec3(length(model[0].xyz), length(model[1].xyz), length(model[2].xyz));
-    float world_radius = radius * max(scale.x, max(scale.y, scale.z));
-
+bool is_sphere_in_frustum(vec3 world_center, float world_radius, vec4[6] planes) {
     for (int i = 0; i < 6; i++) {
-        if (dot(world_center, planes[i]) <= -world_radius) {
+        if (dot(world_center, planes[i].xyz) + planes[i].w <= -world_radius) {
             return false;
         }
     }

@@ -223,6 +223,7 @@ VkDevice create_device(
     vulkan_features_12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
     vulkan_features_12.hostQueryReset                               = VK_TRUE;
     vulkan_features_12.uniformAndStorageBuffer8BitAccess            = VK_TRUE;
+    vulkan_features_12.samplerFilterMinmax                          = VK_TRUE;
 
     VkPhysicalDeviceVulkan13Features vulkan_features_13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,

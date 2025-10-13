@@ -24,7 +24,7 @@ layout(set = 2, binding = 0) uniform sampler2D textures[];
 layout(set = 0, binding = 0, rgba16f) uniform image2D out_color;
 
 vec3 reconstruct_world_position(vec2 uv, float depth) {
-    vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 ndc = vec4(uv.x * 2 - 1, 1.0 - uv.y * 2, depth, 1.0);
     vec4 world_pos = scene.inverse_view_proj * ndc;
 
     return world_pos.xyz / world_pos.w;

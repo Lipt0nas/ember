@@ -112,3 +112,5 @@ void copy_image(
 );
 
 uint32_t aligned_size(uint32_t size, uint32_t alignment);
+
+uint32_t previous_pow2(uint32_t v);

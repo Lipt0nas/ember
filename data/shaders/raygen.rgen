@@ -67,6 +67,7 @@ void main() {
     const vec2 pixel_center = vec2(pixel_coord) + vec2(0.5);
     vec2 uv = pixel_center / vec2(gl_LaunchSizeEXT.xy);
     vec2 d = uv * 2.0 - 1.0;
+    d.y *= -1;
 
     vec4 origin = inverse(scene.view) * vec4(0, 0, 0, 1);
     vec4 target = inverse(scene.proj) * vec4(d.x, d.y, 1, 1);
