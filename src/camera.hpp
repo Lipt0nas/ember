@@ -30,7 +30,9 @@ struct Camera {
     glm::mat4 combined_matrix;
 
     FrustumPlanes planes;
+
+    glm::quat orientation;
 };
 
 void update_camera(Camera& camera);
-void move_camera(Camera& camera, glm::vec3 direction, float distance);
+void move_camera(Camera& camera, glm::vec2 direction, float distance);

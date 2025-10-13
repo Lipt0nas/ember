@@ -7,7 +7,6 @@
 #include "rt_scene.hpp"
 #include "swapchain.hpp"
 #include "ui.hpp"
-#include <vulkan/vulkan_core.h>
 
 struct MeshIndirectDrawCommand {
     uint32_t group_count_x;
@@ -31,12 +30,22 @@ struct SceneUBO {
 
     uint32_t debug_frustum;
     uint32_t disable_culling;
-    uint32_t _pad[2];
+
+    float P00;
+    float P11;
 };
 
 struct CullPassPushConstants {
+    glm::vec2 screen_size;
+
     uint32_t draw_count;
     uint32_t command_count_offset;
+
+    uint32_t depth_pyramid_index;
+};
+
+struct DepthReduceConstants {
+    glm::vec2 size;
 };
 
 struct PostProcesPushConstants {
@@ -377,7 +386,7 @@ std::vector<Mesh> load_model(
             spdlog::debug("Building meshlets");
             const size_t max_vertices  = 64;
             const size_t max_triangles = 124;
-            const float  cone_weight   = 0.75f;
+            const float  cone_weight   = 0.25f;
 
             size_t max_meshlets = meshopt_buildMeshletsBound(indices.size(), max_vertices, max_triangles);
             spdlog::trace("Max meshlets {}", max_meshlets);
@@ -423,15 +432,6 @@ std::vector<Mesh> load_model(
                     vertices.size(),
                     sizeof(Vertex)
                 );
-
-                float axis_length = sqrt(
-                    bounds.cone_axis[0] * bounds.cone_axis[0] + bounds.cone_axis[1] * bounds.cone_axis[1] +
-                    bounds.cone_axis[2] * bounds.cone_axis[2]
-                );
-
-                if (axis_length < 0.001f) {
-                    bounds.cone_cutoff = -1.0f;
-                }
 
                 meshlet_bounds[idx++] = MeshletBounds{
                     .center      = {bounds.center[0], bounds.center[1], bounds.center[2]},
@@ -613,7 +613,7 @@ int main() {
     const int FRAMES_IN_FLIGHT = 2;
 
     bool use_meshlets    = true;
-    bool use_hardware_rt = true;
+    bool use_hardware_rt = false;
 
     bool enable_validation = false;
 
@@ -765,6 +765,8 @@ int main() {
 
     VkShaderModule light_compute_module     = shader_module_from_file(device, "data/shaders/light.comp.spv");
     VkShaderModule composite_compute_module = shader_module_from_file(device, "data/shaders/composite.comp.spv");
+
+    VkShaderModule hiz_module = shader_module_from_file(device, "data/shaders/hi_z.comp.spv");
 
     VkShaderStageFlags additional_flags =
         use_hardware_rt ? VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR : 0;
@@ -963,9 +965,24 @@ int main() {
         }
     );
 
+    VkDescriptorSetLayout compute_cull_depth_layout = create_descriptor_set_layout(
+        device,
+        {
+            {
+                .binding     = 0,
+                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+        }
+    );
+
     VkPipelineLayout compute_cull_pipeline_layout = create_pipeline_layout(
         device,
-        {draw_data_descriptor_layout, scene_ubo_descriptor_layout, draw_command_decriptor_layout},
+        {draw_data_descriptor_layout,
+         scene_ubo_descriptor_layout,
+         draw_command_decriptor_layout,
+         compute_cull_depth_layout},
         VK_SHADER_STAGE_COMPUTE_BIT,
         sizeof(CullPassPushConstants)
     );
@@ -975,6 +992,38 @@ int main() {
         compute_cull_pipeline_layout,
         {
             .module = compute_cull_module,
+            .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
+        }
+    );
+
+    VkDescriptorSetLayout hiz_descriptor_layout = create_descriptor_set_layout(
+        device,
+        {
+            {
+                .binding     = 0,
+                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            {
+                .binding     = 1,
+                .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+        },
+        true
+    );
+
+    VkPipelineLayout hiz_pipeline_layout = create_pipeline_layout(
+        device, {hiz_descriptor_layout}, VK_SHADER_STAGE_COMPUTE_BIT, sizeof(DepthReduceConstants)
+    );
+
+    VkPipeline hiz_pipeline = create_compute_pipeline(
+        device,
+        hiz_pipeline_layout,
+        {
+            .module = hiz_module,
             .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
         }
     );
@@ -1003,6 +1052,21 @@ int main() {
     VkSampler linear_sampler = VK_NULL_HANDLE;
     VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &linear_sampler));
 
+    sampler_info.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+
+    VkSamplerReductionModeCreateInfoEXT reduction_info = {
+        .sType         = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO_EXT,
+        .pNext         = nullptr,
+        .reductionMode = VK_SAMPLER_REDUCTION_MODE_MIN,
+    };
+    sampler_info.pNext = &reduction_info;
+
+    VkSampler depth_sampler = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &depth_sampler));
+
     Buffer staging_buffer = create_buffer(
         1024 * 1024 * 128,
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -1014,12 +1078,47 @@ int main() {
         VK_FORMAT_D32_SFLOAT,
         swapchain.width,
         swapchain.height,
-        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_DEPTH_BIT,
         false,
         vma_allocator,
         device
     );
+
+    uint32_t depth_pyramid_width  = previous_pow2(swapchain.width);
+    uint32_t depth_pyramid_height = previous_pow2(swapchain.height);
+
+    Image depth_hiz = create_image(
+        VK_FORMAT_R32_SFLOAT,
+        depth_pyramid_width,
+        depth_pyramid_height,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        true,
+        vma_allocator,
+        device
+    );
+
+    std::vector<VkImageView> depth_mip_views(depth_hiz.levels);
+    for (int i = 0; i < depth_mip_views.size(); i++) {
+        VkImageViewCreateInfo depth_mip_view_info = {
+            .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext            = nullptr,
+            .flags            = 0,
+            .image            = depth_hiz.handle,
+            .viewType         = VK_IMAGE_VIEW_TYPE_2D,
+            .format           = depth_hiz.format,
+            .subresourceRange = {
+                .aspectMask     = depth_hiz.aspect,
+                .baseMipLevel   = static_cast<uint32_t>(i),
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1
+            },
+        };
+
+        VK_CHECK(vkCreateImageView(device, &depth_mip_view_info, nullptr, &depth_mip_views[i]));
+    }
 
     Image gbuffer_albedo = create_image(
         VK_FORMAT_R8G8B8A8_UNORM,
@@ -1104,6 +1203,17 @@ int main() {
         VkCommandBuffer command_buffer = command_buffers[0];
 
         VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
+
+        image_pipeline_barrier(
+            depth_hiz,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
 
         image_pipeline_barrier(
             depth_buffer,
@@ -1472,6 +1582,41 @@ int main() {
         device, static_cast<uint32_t>(compute_write_sets.size()), compute_write_sets.data(), 0, nullptr
     );
 
+    VkDescriptorSetAllocateInfo compute_cull_descriptor_set_info2 = {
+        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .pNext              = nullptr,
+        .descriptorPool     = descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts        = &compute_cull_depth_layout
+    };
+
+    VkDescriptorSet compute_cull_descriptor_set = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateDescriptorSets(device, &compute_cull_descriptor_set_info2, &compute_cull_descriptor_set));
+
+    VkDescriptorImageInfo compute_cull_image_info = {
+        .sampler     = depth_sampler,
+        .imageView   = depth_hiz.view,
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+    };
+
+    std::vector<VkWriteDescriptorSet> compute_cull_write_sets = {
+        {
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = compute_cull_descriptor_set,
+            .dstBinding       = 0,
+            .dstArrayElement  = 0,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo       = &compute_cull_image_info,
+            .pBufferInfo      = nullptr,
+            .pTexelBufferView = nullptr,
+        },
+    };
+    vkUpdateDescriptorSets(
+        device, static_cast<uint32_t>(compute_cull_write_sets.size()), compute_cull_write_sets.data(), 0, nullptr
+    );
+
     VkDescriptorSetAllocateInfo composite_descriptor_set_info = {
         .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .pNext              = nullptr,
@@ -1640,45 +1785,38 @@ int main() {
         meshes.push_back(m);
     }
 
-    // // Stress test
-    // {
-    //     int row = 0;
-    //     int col = 0;
-    //     int t   = 0;
-    //
-    //     float spacing = 20.0f;
-    //
-    //     int grid_break = 10;
-    //
-    //     for (int i = 0; i < 300; i++) {
-    //
-    //         for (auto mesh : lantern) {
-    //             auto clone     = mesh;
-    //             clone.position = glm::vec3(5 + row * spacing * 0.6, t * spacing, col * spacing * 0.5 - 5);
-    //             clone.scale    = 10.5;
-    //             meshes.push_back(clone);
-    //         }
-    //
-    //         for (auto mesh : helmet) {
-    //             auto clone     = mesh;
-    //             clone.position = glm::vec3(-2 + row * spacing * 0.6, t * spacing, col * spacing * 0.5 - 5);
-    //             clone.scale    = 10.5;
-    //             meshes.push_back(clone);
-    //         }
-    //
-    //         row++;
-    //
-    //         if (row >= grid_break) {
-    //             row = 0;
-    //             col++;
-    //         }
-    //
-    //         if (col >= grid_break) {
-    //             t++;
-    //             col = 0;
-    //         }
-    //     }
-    // }
+    // Stress test
+    {
+        int row = 0;
+        int col = 0;
+        int t   = 0;
+
+        float spacing = 2.0f;
+
+        int grid_break = 10;
+
+        for (int i = 0; i < 300; i++) {
+
+            for (auto mesh : lantern) {
+                auto clone     = mesh;
+                clone.position = glm::vec3(5 + row * spacing * 0.6, t * spacing, col * spacing * 0.5 - 5);
+                clone.scale    = 1;
+                meshes.push_back(clone);
+            }
+
+            row++;
+
+            if (row >= grid_break) {
+                row = 0;
+                col++;
+            }
+
+            if (col >= grid_break) {
+                t++;
+                col = 0;
+            }
+        }
+    }
 
     uint32_t depth_index = texture_cache.size();
     texture_cache.insert({depth_index, depth_buffer});
@@ -1766,13 +1904,12 @@ int main() {
         .near_plane      = 0.01f,
         .viewport_width  = static_cast<float>(swapchain.width),
         .viewport_height = static_cast<float>(swapchain.height),
-        .fov             = 90.0f
+        .fov             = 90.0f,
+        .orientation     = glm::identity<glm::quat>()
     };
-    camera.position  = {52, 46, 47};
-    camera.direction = {0.5, -0.78, -0.40};
 
-    float base_camera_speed        = 10.0;
-    float camera_mouse_sensitivity = 0.002f;
+    float base_camera_speed        = 10.0f;
+    float camera_mouse_sensitivity = 0.003f;
     float camera_speed_mod         = 2.5f;
     float camera_speed             = base_camera_speed;
 
@@ -1839,20 +1976,20 @@ int main() {
                 auto y = static_cast<float>(window_event.motion.y);
 
                 if (capturing_mouse) {
+
+                    camera.orientation =
+                        glm::rotate(
+                            glm::quat(0, 0, 0, 1), float(-xrel * camera_mouse_sensitivity), glm::vec3(0, 1, 0)
+                        ) *
+                        camera.orientation;
+                    camera.orientation = glm::rotate(
+                                             glm::quat(0, 0, 0, 1),
+                                             float(-yrel * camera_mouse_sensitivity),
+                                             camera.orientation * glm::vec3(1, 0, 0)
+                                         ) *
+                                         camera.orientation;
+
                     glm::vec2 mouse_delta = {-xrel * camera_mouse_sensitivity, -yrel * camera_mouse_sensitivity};
-
-                    last_mouse_pos = {xrel, yrel};
-
-                    glm::mat4 rotation_mat(1.0f);
-                    rotation_mat     = glm::rotate(rotation_mat, mouse_delta.x, camera.up);
-                    camera.direction = glm::vec3(rotation_mat * glm::vec4(camera.direction, 1.0));
-
-                    glm::vec3 temp(camera.direction);
-                    temp             = glm::cross(temp, camera.up);
-                    temp             = glm::normalize(temp);
-                    rotation_mat     = glm::mat4(1.0f);
-                    rotation_mat     = glm::rotate(rotation_mat, mouse_delta.y, temp);
-                    camera.direction = glm::vec3(rotation_mat * glm::vec4(camera.direction, 1.0));
                 }
                 break;
             }
@@ -1865,27 +2002,19 @@ int main() {
         }
 
         if (pressed_keys[SDL_SCANCODE_W]) {
-            move_camera(camera, camera.direction, camera_speed * delta_time);
+            move_camera(camera, glm::vec2(1, 0), camera_speed * delta_time);
         }
 
         if (pressed_keys[SDL_SCANCODE_S]) {
-            move_camera(camera, camera.direction, -camera_speed * delta_time);
+            move_camera(camera, glm::vec2(-1, 0), camera_speed * delta_time);
         }
 
         if (pressed_keys[SDL_SCANCODE_A]) {
-            move_camera(camera, glm::cross(camera.direction, camera.up), -camera_speed * delta_time);
+            move_camera(camera, glm::vec2(0, -1), camera_speed * delta_time);
         }
 
         if (pressed_keys[SDL_SCANCODE_D]) {
-            move_camera(camera, glm::cross(camera.direction, camera.up), camera_speed * delta_time);
-        }
-
-        if (pressed_keys[SDL_SCANCODE_Q]) {
-            move_camera(camera, camera.up, camera_speed * delta_time);
-        }
-
-        if (pressed_keys[SDL_SCANCODE_E]) {
-            move_camera(camera, camera.up, -camera_speed * delta_time);
+            move_camera(camera, glm::vec2(0, 1), camera_speed * delta_time);
         }
 
         update_camera(camera);
@@ -1927,6 +2056,8 @@ int main() {
         SceneUBO scene_ubo = {};
         scene_ubo.view     = camera.view_matrix;
         scene_ubo.proj     = camera.projection_matrix;
+        scene_ubo.P00      = camera.projection_matrix[0][0];
+        scene_ubo.P11      = camera.projection_matrix[1][1];
 
         scene_ubo.view_proj         = camera.combined_matrix;
         scene_ubo.inverse_view_proj = glm::inverse(camera.combined_matrix);
@@ -1956,6 +2087,7 @@ int main() {
         size_t ubo_ptr_offset = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         VK_CHECK(vmaMapMemory(vma_allocator, scene_ubo_buffer.allocation, &scene_ubo_ptr));
         memcpy(reinterpret_cast<char*>(scene_ubo_ptr) + ubo_ptr_offset, &scene_ubo, sizeof(SceneUBO));
+        VK_CHECK(vmaFlushAllocation(vma_allocator, scene_ubo_buffer.allocation, 0, VK_WHOLE_SIZE));
 
         bindless_draw_data_cpu_buffer.clear();
 
@@ -1972,8 +2104,8 @@ int main() {
                 DrawData{
                     .model_matrix   = model,
                     .normal_matrix  = glm::mat4(normal_matrix),
-                    .center         = mesh.center,
-                    .radius         = mesh.radius,
+                    .center         = mesh.center * mesh.scale + mesh.position,
+                    .radius         = mesh.radius * mesh.scale,
                     .index_count    = mesh.index_count,
                     .first_index    = first_index,
                     .vertex_offset  = vertex_offset,
@@ -1985,6 +2117,7 @@ int main() {
                 }
             );
         }
+
         void*  bindless_uniform_ptr       = nullptr;
         size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         VK_CHECK(vmaMapMemory(vma_allocator, draw_data_buffer.allocation, &bindless_uniform_ptr));
@@ -1993,8 +2126,8 @@ int main() {
             bindless_draw_data_cpu_buffer.data(),
             sizeof(DrawData) * bindless_draw_data_cpu_buffer.size()
         );
+        VK_CHECK(vmaFlushAllocation(vma_allocator, draw_data_buffer.allocation, 0, VK_WHOLE_SIZE));
 
-        void*  bindless_command_ptr     = nullptr;
         size_t command_ptr_frame_offset = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
 
         VkCommandBufferBeginInfo begin_info = {
@@ -2008,9 +2141,9 @@ int main() {
         vkBeginCommandBuffer(command_buffer, &begin_info);
         VkViewport viewport = {
             .x        = 0,
-            .y        = 0,
+            .y        = static_cast<float>(swapchain.height),
             .width    = static_cast<float>(swapchain.width),
-            .height   = static_cast<float>(swapchain.height),
+            .height   = -static_cast<float>(swapchain.height),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
         };
@@ -2039,22 +2172,26 @@ int main() {
             static_cast<uint32_t>(command_ptr_frame_offset),
         };
 
-        VkDescriptorSet cull_sets[] = {draw_data_descriptor_set, scene_ubo_descriptor_set, draw_command_descriptor_set};
+        VkDescriptorSet cull_sets[] = {
+            draw_data_descriptor_set, scene_ubo_descriptor_set, draw_command_descriptor_set, compute_cull_descriptor_set
+        };
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_cull_pipeline);
         vkCmdBindDescriptorSets(
             command_buffer,
             VK_PIPELINE_BIND_POINT_COMPUTE,
             compute_cull_pipeline_layout,
             0,
-            3,
+            4,
             cull_sets,
             3,
             dynamic_offsets.data()
         );
 
         CullPassPushConstants cull_constants = {
+            .screen_size          = {depth_pyramid_width, depth_pyramid_height},
             .draw_count           = static_cast<uint32_t>(bindless_draw_data_cpu_buffer.size()),
             .command_count_offset = 0,
+            .depth_pyramid_index  = depth_index,
         };
 
         vkCmdPushConstants(
@@ -2079,7 +2216,7 @@ int main() {
             indirect_command_buffer.size / FRAMES_IN_FLIGHT
         );
 
-        std::vector<VkRenderingAttachmentInfo> gbuffer_color_attachments{
+        std::vector<VkRenderingAttachmentInfo> gbuffer_color_attachments = {
             {
                 .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .pNext              = nullptr,
@@ -2222,9 +2359,107 @@ int main() {
             depth_buffer,
             command_buffer,
             VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL,
             VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+        );
+
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_pipeline);
+        for (int i = 0; i < depth_hiz.levels; ++i) {
+            uint32_t mip_width  = glm::max(1u, depth_hiz.width >> i);
+            uint32_t mip_height = glm::max(1u, depth_hiz.height >> i);
+
+            DepthReduceConstants constants = {
+                .size = {mip_width, mip_height},
+            };
+
+            VkDescriptorImageInfo image_read_info = {
+                .sampler     = depth_sampler,
+                .imageView   = i == 0 ? depth_buffer.view : depth_mip_views[i - 1],
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            };
+
+            VkDescriptorImageInfo image_write_info = {
+                .sampler     = VK_NULL_HANDLE,
+                .imageView   = depth_mip_views[i],
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            };
+
+            std::vector<VkWriteDescriptorSet> write_sets = {
+                {
+                    .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .pNext            = nullptr,
+                    .dstBinding       = 0,
+                    .dstArrayElement  = 0,
+                    .descriptorCount  = 1,
+                    .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    .pImageInfo       = &image_read_info,
+                    .pBufferInfo      = nullptr,
+                    .pTexelBufferView = nullptr,
+                },
+                {
+                    .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .pNext            = nullptr,
+                    .dstBinding       = 1,
+                    .dstArrayElement  = 0,
+                    .descriptorCount  = 1,
+                    .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                    .pImageInfo       = &image_write_info,
+                    .pBufferInfo      = nullptr,
+                    .pTexelBufferView = nullptr,
+                },
+            };
+
+            vkCmdPushDescriptorSet(
+                command_buffer,
+                VK_PIPELINE_BIND_POINT_COMPUTE,
+                hiz_pipeline_layout,
+                0,
+                static_cast<uint32_t>(write_sets.size()),
+                write_sets.data()
+            );
+
+            vkCmdPushConstants(
+                command_buffer,
+                hiz_pipeline_layout,
+                VK_SHADER_STAGE_COMPUTE_BIT,
+                0,
+                sizeof(DepthReduceConstants),
+                &constants
+            );
+
+            uint32_t groups_x = (mip_width + 7) / 8;
+            uint32_t groups_y = (mip_height + 7) / 8;
+            vkCmdDispatch(command_buffer, groups_x, groups_y, 1);
+
+            image_pipeline_barrier(
+                depth_hiz.handle,
+                command_buffer,
+                VK_IMAGE_LAYOUT_GENERAL,
+                VK_IMAGE_LAYOUT_GENERAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                {
+                    .aspectMask     = depth_hiz.aspect,
+                    .baseMipLevel   = static_cast<uint32_t>(i),
+                    .levelCount     = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount     = 1,
+                }
+            );
+        }
+
+        image_pipeline_barrier(
+            depth_buffer,
+            command_buffer,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
         );
@@ -2645,7 +2880,12 @@ int main() {
     destroy_image(gbuffer_albedo, device, vma_allocator);
     destroy_image(gbuffer_material, device, vma_allocator);
     destroy_image(gbuffer_normals, device, vma_allocator);
+    destroy_image(depth_hiz, device, vma_allocator);
     destroy_image(gi_output, device, vma_allocator);
+
+    for (auto view : depth_mip_views) {
+        vkDestroyImageView(device, view, nullptr);
+    }
 
     for (auto image : loaded_images) {
         destroy_image(image, device, vma_allocator);
@@ -2665,11 +2905,16 @@ int main() {
     vkDestroyDescriptorSetLayout(device, compute_descriptor_layout, nullptr);
     vkDestroyDescriptorSetLayout(device, composite_descriptor_layout, nullptr);
     vkDestroyDescriptorSetLayout(device, draw_command_decriptor_layout, nullptr);
+    vkDestroyDescriptorSetLayout(device, compute_cull_depth_layout, nullptr);
+    vkDestroyDescriptorSetLayout(device, hiz_descriptor_layout, nullptr);
     vkDestroyPipelineLayout(device, compute_pipeline_layout, nullptr);
     vkDestroyPipelineLayout(device, composite_pipeline_layout, nullptr);
+    vkDestroyPipelineLayout(device, hiz_pipeline_layout, nullptr);
     vkDestroyPipeline(device, lightpass_pipeline, nullptr);
     vkDestroyPipeline(device, composite_pipeline, nullptr);
+    vkDestroyPipeline(device, hiz_pipeline, nullptr);
     vkDestroySampler(device, linear_sampler, nullptr);
+    vkDestroySampler(device, depth_sampler, nullptr);
     vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
     vkDestroyDescriptorPool(device, imgui_descriptor_pool, nullptr);
     if (mesh_module != VK_NULL_HANDLE) {
@@ -2685,6 +2930,7 @@ int main() {
         vkDestroyShaderModule(device, vertex_module, nullptr);
     }
     vkDestroyShaderModule(device, compute_cull_module, nullptr);
+    vkDestroyShaderModule(device, hiz_module, nullptr);
     vkDestroyPipelineLayout(device, compute_cull_pipeline_layout, nullptr);
     vkDestroyPipelineLayout(device, geometry_pipeline_layout, nullptr);
     vkDestroyPipeline(device, geometry_pipeline, nullptr);

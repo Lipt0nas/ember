@@ -1,0 +1,22 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_debug_printf : enable
+#extension GL_EXT_spirv_intrinsics : enable
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depth;
+layout(set = 0, binding = 1, r32f) uniform writeonly image2D output_depth;
+
+layout(push_constant, std430) uniform pc {
+    vec2 size;
+} push;
+
+void main() {
+    uvec2 pos = gl_GlobalInvocationID.xy;
+
+    float depth = texture(depth, (vec2(pos) + vec2(0.5)) / push.size).x;
+
+    imageStore(output_depth, ivec2(pos), vec4(depth));
+}

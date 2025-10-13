@@ -20,6 +20,10 @@ layout(scalar, set = 3, binding = 0) readonly buffer MeshDrawCommands {
     MeshDrawCommand cmds[];
 } draw_commands;
 
+bool cone_cull(vec3 center, float radius, vec3 cone_axis, float cone_cutoff, vec3 camera_position) {
+    return dot(center - camera_position, cone_axis) >= cone_cutoff * length(center - camera_position) + radius;
+}
+
 void main() {
     uint thread_id = gl_LocalInvocationIndex;
     uint base_meshlet_id = gl_WorkGroupID.x * MESHLETS_PER_TASK;
@@ -48,18 +52,17 @@ void main() {
             planes = scene.frozen_planes;
         }
 
-        is_visible = is_sphere_in_frustum(bounds.center, bounds.radius * 1.15, draw.model, planes);
+        vec3 world_bounds = (draw.model * vec4(bounds.center, 1.0f)).xyz;
 
-        if (is_visible) {
-            if (bounds.cone_cutoff > 0.0) {
-                vec3 world_cone_apex = (draw.model * vec4(bounds.cone_apex, 1.0)).xyz;
-                vec3 world_cone_axis = normalize(mat3(draw.model) * bounds.cone_axis);
+        vec3 scale = vec3(length(draw.model[0].xyz), length(draw.model[1].xyz), length(draw.model[2].xyz));
+        float world_radius = bounds.radius * max(scale.x, max(scale.y, scale.z));
 
-                vec3 camera_to_apex = normalize(camera_position - world_cone_apex);
+        vec3 cone_axis = mat3(scene.view) * bounds.cone_axis;
 
-                is_visible = (dot(camera_to_apex, world_cone_axis) >= -bounds.cone_cutoff);
-            }
-        }
+        is_visible = is_sphere_in_frustum(world_bounds, world_radius, planes);
+
+        world_bounds = (scene.view * vec4(world_bounds, 1)).xyz;
+        is_visible = is_visible && !cone_cull(world_bounds, world_radius, cone_axis, bounds.cone_cutoff, vec3(0, 0, 0));
 
         if (scene.disable_culling == 1) {
             is_visible = true;

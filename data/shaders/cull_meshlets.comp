@@ -16,9 +16,36 @@ layout(scalar, set = 2, binding = 0) buffer MeshDrawCommands {
 } draw_commands;
 
 layout(push_constant, std430) uniform pc {
+    vec2 screen_size;
+
     uint draw_count;
     uint command_count_offset;
+
+    uint depth_pyramid_index;
 } push_constants;
+
+layout(set = 3, binding = 0) uniform sampler2D depth;
+
+bool project_sphere(vec3 c, float r, float znear, float P00, float P11, out vec4 aabb) {
+    if (c.z < r + znear)
+        return false;
+
+    vec3 cr = c * r;
+    float czr2 = c.z * c.z - r * r;
+
+    float vx = sqrt(c.x * c.x + czr2);
+    float minx = (vx * c.x - cr.z) / (vx * c.z + cr.x);
+    float maxx = (vx * c.x + cr.z) / (vx * c.z - cr.x);
+
+    float vy = sqrt(c.y * c.y + czr2);
+    float miny = (vy * c.y - cr.z) / (vy * c.z + cr.y);
+    float maxy = (vy * c.y + cr.z) / (vy * c.z - cr.y);
+
+    aabb = vec4(minx * P00, miny * P11, maxx * P00, maxy * P11);
+    aabb = aabb.xwzy * vec4(0.5f, -0.5f, 0.5f, -0.5f) + vec4(0.5f); // clip space -> uv space
+
+    return true;
+}
 
 void main() {
     uint object_id = gl_GlobalInvocationID.x;
@@ -28,20 +55,39 @@ void main() {
     DrawData draw_data = uniforms.draw_data[object_id];
 
     vec3 camera_position = scene.camera_position.xyz;
+    mat4 view_proj = scene.view_proj;
     vec4[6] planes = scene.planes;
 
     if (scene.debug_frustum == 1) {
         camera_position = scene.frozen_camera_position.xyz;
         planes = scene.frozen_planes;
+        view_proj = scene.frozen_view_proj;
     }
 
-    bool is_visible = is_sphere_in_frustum(draw_data.center, draw_data.radius, draw_data.model, planes);
+    vec3 center = draw_data.center;
+    center = (scene.view * vec4(center, 1.0f)).xyz;
+
+    float radius = draw_data.radius;
+
+    bool visible = is_sphere_in_frustum(draw_data.center, draw_data.radius, planes);
+    vec4 aabb;
+    if (projectSphere(center, radius, 0.01, scene.P00, scene.P11, aabb)) {
+        float width = (aabb.z - aabb.x) * push_constants.screen_size.x;
+        float height = (aabb.w - aabb.y) * push_constants.screen_size.y;
+
+        float level = ceil(log2(max(width, height)));
+
+        float depth = textureLod(depth, (aabb.xy + aabb.zw) * 0.5, level).r;
+        float depth_sphere = 0.01 / (center.z - radius);
+
+        visible = visible && depth_sphere > depth;
+    }
 
     if (scene.disable_culling == 1) {
-        is_visible = true;
+        visible = true;
     }
 
-    if (is_visible) {
+    if (visible) {
         uint cmd_index = atomicAdd(draw_commands.culled_count, 1);
 
         draw_commands.cmds[cmd_index].group_count_x = (draw_data.meshlet_count + MESHLETS_PER_TASK - 1) / MESHLETS_PER_TASK;

@@ -499,3 +499,12 @@ uint32_t aligned_size(uint32_t size, uint32_t alignment) {
 
     return aligned;
 }
+
+uint32_t previous_pow2(uint32_t v) {
+    uint32_t r = 1;
+
+    while (r * 2 < v)
+        r *= 2;
+
+    return r;
+}
