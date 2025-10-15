@@ -33,8 +33,8 @@ Swapchain create_swapchain(SDL_Window* window, VkInstance instance, VkDevice dev
     // TODO:: Allow for easier selection
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     for (const auto& mode : present_modes) {
-        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
-            // if (mode == VK_PRESENT_MODE_FIFO_KHR) {
+        // if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+        if (mode == VK_PRESENT_MODE_FIFO_KHR) {
             present_mode = mode;
             break;
         }

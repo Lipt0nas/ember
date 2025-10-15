@@ -3,6 +3,8 @@
 #include "ember.hpp"
 #include "resources.hpp"
 
+#include <algorithm>
+#include <array>
 #include <functional>
 #include <unordered_map>
 
@@ -215,6 +217,32 @@ struct RenderPass {
     }
 };
 
+constexpr uint32_t PASS_TIMING_COUNT = 500;
+struct PassTiming {
+    std::array<float, PASS_TIMING_COUNT> timings;
+    uint32_t                             current_timing_index = 0;
+
+    void add_sample(double sample_ms) {
+        timings[current_timing_index++] = sample_ms;
+
+        if (current_timing_index >= PASS_TIMING_COUNT) {
+            current_timing_index = PASS_TIMING_COUNT - 1;
+
+            std::rotate(timings.begin(), timings.begin() + 1, timings.end());
+        }
+    }
+
+    float get_avg_timing_ms() const {
+        double avg_time = 0.0;
+        for (int i = 0; i < PASS_TIMING_COUNT; i++) {
+            avg_time += timings[i];
+        }
+
+        return avg_time / PASS_TIMING_COUNT;
+    }
+};
+
+constexpr uint32_t QUERY_COUNT = 64;
 struct Framegraph {
     std::vector<RenderPass> passes;
 
@@ -232,30 +260,73 @@ struct Framegraph {
     // ...
     std::vector<std::vector<BufferBarrier>> buffer_barriers;
 
+    bool                     enable_timings   = false;
     uint32_t                 next_query_index = 0;
     std::vector<VkQueryPool> timestamp_query_pools;
 
-    std::unordered_map<std::string, double> pass_timings_ms;
+    bool     start_reading              = false;
+    uint32_t timestamp_query_pool_index = 0;
+
+    std::unordered_map<std::string, PassTiming> pass_timings;
 
     // TODO: Probably not a constructor
-    Framegraph(VkDevice device, uint32_t frames_in_flight) {
-        VkQueryPoolCreateInfo pool_info = {
-            .sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
-            .pNext      = nullptr,
-            .flags      = 0,
-            .queryType  = VK_QUERY_TYPE_TIMESTAMP,
-            .queryCount = 256,
-        };
+    Framegraph(
+        VkDevice device, VkQueue queue, VkCommandBuffer command_buffer, uint32_t frames_in_flight, bool enable_timings
+    ) {
+        this->enable_timings = enable_timings;
 
-        timestamp_query_pools.resize(frames_in_flight);
-        for (int i = 0; i < frames_in_flight; i++) {
-            vkCreateQueryPool(device, &pool_info, nullptr, &timestamp_query_pools[i]);
+        timestamp_query_pools.resize(frames_in_flight + 30);
+
+        if (enable_timings) {
+            VkQueryPoolCreateInfo pool_info = {
+                .sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                .pNext      = nullptr,
+                .flags      = 0,
+                .queryType  = VK_QUERY_TYPE_TIMESTAMP,
+                .queryCount = QUERY_COUNT,
+            };
+
+            for (int i = 0; i < timestamp_query_pools.size(); i++) {
+                vkCreateQueryPool(device, &pool_info, nullptr, &timestamp_query_pools[i]);
+            }
+
+            VkCommandBufferBeginInfo begin_info = {
+                .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                .pNext            = nullptr,
+                .flags            = 0,
+                .pInheritanceInfo = nullptr
+            };
+
+            VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
+
+            for (int i = 0; i < timestamp_query_pools.size(); i++) {
+                vkCmdResetQueryPool(command_buffer, timestamp_query_pools[i], 0, QUERY_COUNT);
+            }
+
+            VK_CHECK(vkEndCommandBuffer(command_buffer));
+
+            VkSubmitInfo submit_info = {
+                .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .pNext                = nullptr,
+                .waitSemaphoreCount   = 0,
+                .pWaitSemaphores      = nullptr,
+                .pWaitDstStageMask    = nullptr,
+                .commandBufferCount   = 1,
+                .pCommandBuffers      = &command_buffer,
+                .signalSemaphoreCount = 0,
+                .pSignalSemaphores    = nullptr
+            };
+
+            VK_CHECK(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE));
+            VK_CHECK(vkDeviceWaitIdle(device));
         }
     }
 
     void destroy(VkDevice device) {
-        for (auto pool : timestamp_query_pools) {
-            vkDestroyQueryPool(device, pool, nullptr);
+        if (enable_timings) {
+            for (auto pool : timestamp_query_pools) {
+                vkDestroyQueryPool(device, pool, nullptr);
+            }
         }
     }
 
@@ -270,8 +341,8 @@ struct Framegraph {
         tracked_layouts.insert({image.handle, expected_layout});
     }
 
-    double get_pass_time_ms(const std::string& pass_name) {
-        return pass_timings_ms.count(pass_name) ? pass_timings_ms[pass_name] : 0.0;
+    const PassTiming& get_pass_timing(const std::string& pass_name) {
+        return pass_timings[pass_name];
     }
 
     void build() {
@@ -484,7 +555,9 @@ struct Framegraph {
         }
     }
 
-    void execute(VkDevice device, VkCommandBuffer command_buffer, uint32_t frame_index, float timestamp_period) {
+    void execute(VkCommandBuffer command_buffer, uint32_t frame_index) {
+        // NOTE: this is for cross-frame barrier debugging
+
         // VkMemoryBarrier2 full_barrier = {
         //     .sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
         //     .srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -499,15 +572,19 @@ struct Framegraph {
         //
         // vkCmdPipelineBarrier2(command_buffer, &dep);
 
-        VkQueryPool query_pool = timestamp_query_pools[frame_index];
-        vkCmdResetQueryPool(command_buffer, query_pool, 0, next_query_index);
+        VkQueryPool query_pool = timestamp_query_pools[timestamp_query_pool_index];
+        if (enable_timings) {
+            vkCmdResetQueryPool(command_buffer, query_pool, 0, next_query_index);
+        }
 
         for (int i = 0; i < passes.size(); i++) {
             const auto& current_pass = passes[i];
 
-            vkCmdWriteTimestamp2(
-                command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool, current_pass.query_start_index
-            );
+            if (enable_timings) {
+                vkCmdWriteTimestamp2(
+                    command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool, current_pass.query_start_index
+                );
+            }
 
             std::vector<VkImageMemoryBarrier2>  img_barriers;
             std::vector<VkBufferMemoryBarrier2> buf_barriers;
@@ -574,14 +651,34 @@ struct Framegraph {
                 current_pass.on_render(command_buffer, frame_index);
             }
 
-            vkCmdWriteTimestamp2(
-                command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, query_pool, current_pass.query_end_index
-            );
+            if (enable_timings) {
+                vkCmdWriteTimestamp2(
+                    command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, query_pool, current_pass.query_end_index
+                );
+            }
         }
 
-        VkQueryPool           prev_query_pool = timestamp_query_pools[(frame_index - 1) % timestamp_query_pools.size()];
+        if (!start_reading) {
+            if (timestamp_query_pool_index >= timestamp_query_pools.size() - 1) {
+                start_reading = true;
+            }
+        }
+
+        timestamp_query_pool_index = (timestamp_query_pool_index + 1) % timestamp_query_pools.size();
+    }
+
+    void gather_timestamp_queries(VkDevice device, float timestamp_period) {
+        if (!start_reading) {
+            return;
+        }
+
+        uint32_t read_frame_index =
+            (timestamp_query_pool_index + timestamp_query_pools.size() - 1) % timestamp_query_pools.size();
+
+        VkQueryPool           prev_query_pool = timestamp_query_pools[read_frame_index];
         std::vector<uint64_t> timestamps(next_query_index);
-        vkGetQueryPoolResults(
+
+        VkResult result = vkGetQueryPoolResults(
             device,
             prev_query_pool,
             0,
@@ -592,11 +689,13 @@ struct Framegraph {
             VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT
         );
 
-        for (auto& pass : passes) {
-            uint64_t start             = timestamps[pass.query_start_index];
-            uint64_t end               = timestamps[pass.query_end_index];
-            double   duration_ns       = (end - start) * timestamp_period;
-            pass_timings_ms[pass.name] = duration_ns / 1'000'000.0;
+        if (result == VK_SUCCESS) {
+            for (auto& pass : passes) {
+                uint64_t start       = timestamps[pass.query_start_index];
+                uint64_t end         = timestamps[pass.query_end_index];
+                double   duration_ns = (end - start) * timestamp_period;
+                pass_timings[pass.name].add_sample(duration_ns / 1'000'000.0);
+            }
         }
     }
 };

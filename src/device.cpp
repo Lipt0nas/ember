@@ -78,8 +78,8 @@ VkInstance create_instance(bool enable_validation, VkDebugUtilsMessengerEXT& deb
         .pNext                   = enable_validation ? &debug_messenger_info : nullptr,
         .flags                   = 0,
         .pApplicationInfo        = &app_info,
-        .enabledLayerCount       = static_cast<uint32_t>(validation_layer_names.size()),
-        .ppEnabledLayerNames     = validation_layer_names.data(),
+        .enabledLayerCount       = enable_validation ? static_cast<uint32_t>(validation_layer_names.size()) : 0,
+        .ppEnabledLayerNames     = enable_validation ? validation_layer_names.data() : nullptr,
         .enabledExtensionCount   = static_cast<uint32_t>(instance_extensions.size()),
         .ppEnabledExtensionNames = instance_extensions.data()
     };

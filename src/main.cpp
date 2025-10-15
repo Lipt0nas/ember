@@ -9,6 +9,121 @@
 #include "swapchain.hpp"
 #include "ui.hpp"
 
+#include <format>
+
+void draw_pass_timings_lines(const std::vector<std::pair<std::string, PassTiming>>& passes) {
+    ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.25f);
+    if (ImPlot::BeginPlot("Pass Timings", ImVec2(-1, 300))) {
+        ImPlot::SetupAxes("Sample", "Time (ms)");
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0, PASS_TIMING_COUNT, ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 10, ImGuiCond_Once);
+
+        for (const auto& [name, timing] : passes) {
+            ImPlot::PlotShaded(name.c_str(), timing.timings.data(), PASS_TIMING_COUNT);
+        }
+
+        ImPlot::EndPlot();
+    }
+    ImPlot::PopStyleVar();
+}
+
+void draw_pass_stats(const std::vector<std::pair<std::string, PassTiming>>& passes) {
+    if (ImGui::BeginTable("PassStats", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Sortable)) {
+        ImGui::TableSetupColumn("Pass");
+        ImGui::TableSetupColumn("Avg (ms)");
+        ImGui::TableSetupColumn("Min (ms)");
+        ImGui::TableSetupColumn("Max (ms)");
+        ImGui::TableSetupColumn("% of Frame");
+        ImGui::TableHeadersRow();
+
+        float              total_avg = 0.0f;
+        std::vector<float> avg_timings;
+
+        for (const auto& [name, timing] : passes) {
+            float avg = timing.get_avg_timing_ms();
+
+            avg_timings.push_back(avg);
+            total_avg += avg;
+        }
+
+        for (const auto& [name, timing] : passes) {
+            float min_time = FLT_MAX;
+            float max_time = 0.0f;
+
+            for (float t : timing.timings) {
+                min_time = std::min(min_time, t);
+                max_time = std::max(max_time, t);
+            }
+            float avg        = timing.get_avg_timing_ms();
+            float percentage = (avg / total_avg) * 100.0f;
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+
+            ImVec4 color = ImVec4(1, 1, 1, 1);
+            if (percentage > 40.0f)
+                color = ImVec4(1, 0.3f, 0.3f, 1);
+            else if (percentage > 20.0f)
+                color = ImVec4(1, 1, 0, 1);
+            else
+                color = ImVec4(0.3f, 1, 0.3f, 1);
+
+            ImGui::TextColored(color, "%s", name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("%.3f", avg);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.3f", min_time);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.3f", max_time);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f%%", percentage);
+        }
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextColored(ImVec4(1, 1, 0, 1), "TOTAL");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(ImVec4(1, 1, 0, 1), "%.3f", total_avg);
+        ImGui::TableNextColumn();
+        ImGui::Text("---");
+        ImGui::TableNextColumn();
+        ImGui::Text("---");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(ImVec4(1, 1, 0, 1), "%.2f Theoretical FPS", 1000.0f / total_avg);
+        ImGui::EndTable();
+
+        ImGui::Text("Percentage:");
+        for (size_t i = 0; i < passes.size(); i++) {
+            float percentage = (avg_timings[i] / total_avg) * 100.0f;
+            ImGui::Text("%s", passes[i].first.c_str());
+            ImGui::SameLine(200);
+            ImGui::ProgressBar(
+                avg_timings[i] / total_avg,
+                ImVec2(-1, 0),
+                (std::format("{}: {:.1f}%", passes[i].first, percentage)).c_str()
+            );
+        }
+    }
+}
+
+void draw_pass_profiler(const std::vector<std::pair<std::string, PassTiming>>& passes) {
+    if (ImGui::BeginTabBar("ProfilerTabs")) {
+        if (ImGui::BeginTabItem("Stats")) {
+            draw_pass_stats(passes);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Lines")) {
+            draw_pass_timings_lines(passes);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Demo")) {
+            ImPlot::ShowDemoWindow();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+}
+
 struct MeshIndirectDrawCommand {
     uint32_t group_count_x;
     uint32_t group_count_y;
@@ -613,10 +728,12 @@ int main() {
 
     const int FRAMES_IN_FLIGHT = 2;
 
-    bool use_meshlets    = true;
+    bool use_meshlets    = false;
     bool use_hardware_rt = false;
 
     bool enable_validation = false;
+
+    bool supports_timestamp_queries = true;
 
     spdlog::info("Creating Vulkan instance");
     VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
@@ -630,6 +747,24 @@ int main() {
     vkGetPhysicalDeviceProperties(physical_device, &physical_device_properties);
 
     spdlog::info("Queue index that supports graphics operations: {}", graphics_family_index);
+
+    if (physical_device_properties.limits.timestampPeriod == 0) {
+        spdlog::warn("Device does not suport timestamp queries");
+
+        supports_timestamp_queries = false;
+    }
+
+    uint32_t queue_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_count, nullptr);
+
+    std::vector<VkQueueFamilyProperties> queue_properties(queue_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_count, queue_properties.data());
+
+    if (queue_properties[graphics_family_index].timestampValidBits == 0) {
+        spdlog::warn("Graphics queue does not suport timestamp queries");
+
+        supports_timestamp_queries = false;
+    }
 
     spdlog::info("Creating device");
     VkDevice device = create_device(
@@ -1310,13 +1445,13 @@ int main() {
     );
 
     Buffer indirect_command_buffer = create_buffer(
-        1024 * 1024 * 16,
+        1024 * 1024 * 8 * FRAMES_IN_FLIGHT,
         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator
     );
 
     Buffer draw_data_buffer = create_buffer(
-        1024 * 1024 * 32,
+        1024 * 1024 * 12 * FRAMES_IN_FLIGHT,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
@@ -1729,7 +1864,7 @@ int main() {
     loaded_images.push_back(missing_material);
 
     auto lantern = load_model(
-        "data/models/boulder/boulder.gltf",
+        "data/models/helmet.glb",
         staging_buffer,
         global_vertex_buffer,
         indirect_vertex_buffer_offset,
@@ -1752,7 +1887,7 @@ int main() {
     );
 
     auto helmet = load_model(
-        "data/models/sponza/sponza.glb",
+        "data/models/lantern.glb",
         staging_buffer,
         global_vertex_buffer,
         indirect_vertex_buffer_offset,
@@ -1937,7 +2072,8 @@ int main() {
 
     bool running = true;
 
-    Framegraph framegraph(device, FRAMES_IN_FLIGHT);
+    Framegraph framegraph(device, graphics_queue, command_buffers[0], FRAMES_IN_FLIGHT, supports_timestamp_queries);
+
     framegraph.import_image(depth_hiz, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(depth_buffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_albedo, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -2607,21 +2743,12 @@ int main() {
         ImGui::Text("FPS: %u", fps);
         ImGui::NewLine();
 
-        ImGui::SeparatorText("Frame Timings");
-        double total_gpu_time = 0;
+        std::vector<std::pair<std::string, PassTiming>> pass_timings = {};
         for (const auto& pass : framegraph.passes) {
-            double time = framegraph.get_pass_time_ms(pass.name);
-            ImGui::Text("%s: %.3fms", pass.name.c_str(), time);
-
-            total_gpu_time += time;
+            pass_timings.push_back(std::make_pair(pass.name, framegraph.get_pass_timing(pass.name)));
         }
-        ImGui::Text("%s: %.3fms", "Total", total_gpu_time);
-        ImGui::NewLine();
 
-        ImGui::SeparatorText("Camera");
-        ImGui::Text("Camera pos: %.2f, %.2f, %.2f", camera.position.x, camera.position.y, camera.position.z);
-        ImGui::Text("Camera dir: %.2f, %.2f, %.2f", camera.direction.x, camera.direction.y, camera.direction.z);
-        ImGui::NewLine();
+        draw_pass_profiler(pass_timings);
 
         ImGui::SeparatorText("Debug");
         if (ImGui::Checkbox("Freeze frustum", &debug_frustum)) {
@@ -2759,7 +2886,7 @@ int main() {
             indirect_command_buffer.size / FRAMES_IN_FLIGHT
         );
 
-        framegraph.execute(device, command_buffer, frame_index, physical_device_properties.limits.timestampPeriod);
+        framegraph.execute(command_buffer, frame_index);
 
         image_pipeline_barrier(
             composite_output,
@@ -2928,6 +3055,8 @@ int main() {
             .pResults           = nullptr
         };
         VK_CHECK(vkQueuePresentKHR(graphics_queue, &present_info));
+
+        framegraph.gather_timestamp_queries(device, physical_device_properties.limits.timestampPeriod);
 
         auto time_diff =
             std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - frame_start_time)

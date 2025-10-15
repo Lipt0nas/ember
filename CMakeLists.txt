@@ -66,7 +66,12 @@ FetchContent_Declare(stb
   GIT_TAG 5c205738c191bcb0abc65c4febfa9bd25ff35234
 )
 
-FetchContent_MakeAvailable(glm sdl vma spdlog volk tinygltf meshoptimizer stb)
+FetchContent_Declare(implot
+  GIT_REPOSITORY https://github.com/epezent/implot
+  GIT_TAG 3da8bd34299965d3b0ab124df743fe3e076fa222
+)
+
+FetchContent_MakeAvailable(glm sdl vma spdlog volk tinygltf meshoptimizer stb implot)
 
 FetchContent_GetProperties(imgui)
 if(NOT imgui_POPULATED)
@@ -93,6 +98,14 @@ endif()
 add_library(stb INTERFACE)
 target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
 
+add_library(implot STATIC
+    ${implot_SOURCE_DIR}/implot.cpp
+    ${implot_SOURCE_DIR}/implot_items.cpp
+    ${implot_SOURCE_DIR}/implot_demo.cpp
+)
+target_link_libraries(implot PUBLIC imgui)
+target_include_directories(implot INTERFACE ${implot_SOURCE_DIR})
+
 set(SOURCES
     "src/main.cpp"
     "src/ember.cpp"
@@ -118,6 +131,7 @@ target_link_libraries(Ember PRIVATE
     tinygltf
     meshoptimizer
     stb
+    implot
 )
 
 # TODO: temporary convenience

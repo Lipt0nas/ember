@@ -13,6 +13,7 @@
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
+#include <implot.h>
 #include <spdlog/spdlog.h>
 
 #include <meshoptimizer.h>
