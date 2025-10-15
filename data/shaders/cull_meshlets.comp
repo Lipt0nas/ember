@@ -71,7 +71,7 @@ void main() {
 
     bool visible = is_sphere_in_frustum(draw_data.center, draw_data.radius, planes);
     vec4 aabb;
-    if (projectSphere(center, radius, 0.01, scene.P00, scene.P11, aabb)) {
+    if (project_sphere(center, radius, 0.01, scene.P00, scene.P11, aabb)) {
         float width = (aabb.z - aabb.x) * push_constants.screen_size.x;
         float height = (aabb.w - aabb.y) * push_constants.screen_size.y;
 

@@ -103,6 +103,7 @@ set(SOURCES
     "src/pipeline.cpp"
     "src/ui.cpp"
     "src/rt_scene.cpp"
+    "src/framegraph.cpp"
 )
 add_executable(Ember ${SOURCES})
 

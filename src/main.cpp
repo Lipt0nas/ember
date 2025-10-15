@@ -2,6 +2,7 @@
 
 #include "camera.hpp"
 #include "device.hpp"
+#include "framegraph.hpp"
 #include "pipeline.hpp"
 #include "resources.hpp"
 #include "rt_scene.hpp"
@@ -1936,6 +1937,582 @@ int main() {
 
     bool running = true;
 
+    Framegraph framegraph(device, FRAMES_IN_FLIGHT);
+    framegraph.import_image(depth_hiz, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(depth_buffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    framegraph.import_image(gbuffer_albedo, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    framegraph.import_image(gbuffer_normals, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    framegraph.import_image(gbuffer_material, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    framegraph.import_image(gi_output, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
+
+    auto cull_early_pass =
+        framegraph.add_pass("cull early")
+            .reads_storage_image(depth_hiz, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .reads_buffer_dynamic(
+                draw_data_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                draw_data_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                scene_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .writes_buffer_dynamic(
+                indirect_command_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+                indirect_command_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+                size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+                size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+
+                std::vector<uint32_t> dynamic_offsets = {
+                    static_cast<uint32_t>(draw_data_ptr_frame_offset),
+                    static_cast<uint32_t>(ubo_ptr_offset),
+                    static_cast<uint32_t>(command_ptr_frame_offset),
+                };
+
+                VkDescriptorSet cull_sets[] = {
+                    draw_data_descriptor_set,
+                    scene_ubo_descriptor_set,
+                    draw_command_descriptor_set,
+                    compute_cull_descriptor_set
+                };
+                vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_cull_pipeline);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    compute_cull_pipeline_layout,
+                    0,
+                    4,
+                    cull_sets,
+                    3,
+                    dynamic_offsets.data()
+                );
+
+                CullPassPushConstants cull_constants = {
+                    .screen_size          = {depth_pyramid_width, depth_pyramid_height},
+                    .draw_count           = static_cast<uint32_t>(bindless_draw_data_cpu_buffer.size()),
+                    .command_count_offset = 0,
+                    .depth_pyramid_index  = depth_index,
+                };
+
+                vkCmdPushConstants(
+                    command_buffer,
+                    compute_cull_pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    sizeof(CullPassPushConstants),
+                    &cull_constants
+                );
+
+                vkCmdDispatch(command_buffer, (bindless_draw_data_cpu_buffer.size() + 255) / 256, 1, 1);
+            });
+
+    auto gbuffer_pass =
+        framegraph.add_pass("gbuffer")
+            .writes_depth_attachment(depth_buffer)
+            .writes_color_attachment(gbuffer_albedo)
+            .writes_color_attachment(gbuffer_normals)
+            .writes_color_attachment(gbuffer_material)
+            .reads_buffer_dynamic(
+                indirect_command_buffer,
+                VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+                indirect_command_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                scene_ubo_buffer,
+                VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                draw_data_buffer,
+                VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                draw_data_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+                size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+                size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+
+                std::vector<uint32_t> dynamic_offsets = {
+                    static_cast<uint32_t>(draw_data_ptr_frame_offset),
+                    static_cast<uint32_t>(ubo_ptr_offset),
+                    static_cast<uint32_t>(command_ptr_frame_offset),
+                };
+
+                std::vector<VkRenderingAttachmentInfo> gbuffer_color_attachments = {
+                    {
+                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                        .pNext              = nullptr,
+                        .imageView          = gbuffer_albedo.view,
+                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .resolveMode        = VK_RESOLVE_MODE_NONE,
+                        .resolveImageView   = VK_NULL_HANDLE,
+                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                    },
+                    {
+                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                        .pNext              = nullptr,
+                        .imageView          = gbuffer_normals.view,
+                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .resolveMode        = VK_RESOLVE_MODE_NONE,
+                        .resolveImageView   = VK_NULL_HANDLE,
+                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                    },
+                    {
+                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                        .pNext              = nullptr,
+                        .imageView          = gbuffer_material.view,
+                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .resolveMode        = VK_RESOLVE_MODE_NONE,
+                        .resolveImageView   = VK_NULL_HANDLE,
+                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                    },
+                };
+
+                VkRenderingAttachmentInfo depth_attachment_info = {
+                    .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                    .pNext              = nullptr,
+                    .imageView          = depth_buffer.view,
+                    .imageLayout        = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                    .resolveMode        = VK_RESOLVE_MODE_NONE,
+                    .resolveImageView   = VK_NULL_HANDLE,
+                    .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                    .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                    .clearValue         = {.depthStencil = {.depth = 0.0f, .stencil = 0}}
+                };
+
+                VkRenderingInfo rendering_info = {
+                    .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .renderArea =
+                        {
+                            .offset = {.x = 0, .y = 0},
+                            .extent = {.width = swapchain.width, .height = swapchain.height},
+                        },
+                    .layerCount           = 1,
+                    .viewMask             = 0,
+                    .colorAttachmentCount = static_cast<uint32_t>(gbuffer_color_attachments.size()),
+                    .pColorAttachments    = gbuffer_color_attachments.data(),
+                    .pDepthAttachment     = &depth_attachment_info,
+                    .pStencilAttachment   = nullptr
+                };
+
+                vkCmdBeginRendering(command_buffer, &rendering_info);
+                vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, geometry_pipeline);
+
+                VkDescriptorSet sets[] = {
+                    draw_data_descriptor_set,
+                    scene_ubo_descriptor_set,
+                    global_texture_descriptor_set,
+                    draw_command_descriptor_set
+                };
+
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    geometry_pipeline_layout,
+                    0,
+                    4,
+                    sets,
+                    3,
+                    &dynamic_offsets[0]
+                );
+
+                if (use_meshlets) {
+                    vkCmdDrawMeshTasksIndirectCountEXT(
+                        command_buffer,
+                        indirect_command_buffer.handle,
+                        command_ptr_frame_offset + sizeof(uint32_t),
+                        indirect_command_buffer.handle,
+                        command_ptr_frame_offset,
+                        bindless_draw_data_cpu_buffer.size(),
+                        sizeof(MeshIndirectDrawCommand)
+                    );
+                } else {
+                    vkCmdBindIndexBuffer(command_buffer, global_index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
+
+                    vkCmdDrawIndexedIndirectCount(
+                        command_buffer,
+                        indirect_command_buffer.handle,
+                        command_ptr_frame_offset + sizeof(uint32_t),
+                        indirect_command_buffer.handle,
+                        command_ptr_frame_offset,
+                        bindless_draw_data_cpu_buffer.size(),
+                        sizeof(VkDrawIndexedIndirectCommand)
+                    );
+                }
+
+                vkCmdEndRendering(command_buffer);
+            });
+
+    auto depth_pyramid_pass = framegraph.add_pass("depth pyramid")
+                                  .writes_image(
+                                      depth_hiz,
+                                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                      VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+                                      VK_IMAGE_LAYOUT_GENERAL
+                                  )
+                                  .reads_image(
+                                      depth_buffer,
+                                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                      VK_ACCESS_2_SHADER_READ_BIT,
+                                      VK_IMAGE_LAYOUT_GENERAL
+                                  )
+                                  .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                                      vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_pipeline);
+                                      for (int i = 0; i < depth_hiz.levels; ++i) {
+                                          uint32_t mip_width  = glm::max(1u, depth_hiz.width >> i);
+                                          uint32_t mip_height = glm::max(1u, depth_hiz.height >> i);
+
+                                          DepthReduceConstants constants = {
+                                              .size = {mip_width, mip_height},
+                                          };
+
+                                          VkDescriptorImageInfo image_read_info = {
+                                              .sampler     = depth_sampler,
+                                              .imageView   = i == 0 ? depth_buffer.view : depth_mip_views[i - 1],
+                                              .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                          };
+
+                                          VkDescriptorImageInfo image_write_info = {
+                                              .sampler     = VK_NULL_HANDLE,
+                                              .imageView   = depth_mip_views[i],
+                                              .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                          };
+
+                                          std::vector<VkWriteDescriptorSet> write_sets = {
+                                              {
+                                                  .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                  .pNext            = nullptr,
+                                                  .dstBinding       = 0,
+                                                  .dstArrayElement  = 0,
+                                                  .descriptorCount  = 1,
+                                                  .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                  .pImageInfo       = &image_read_info,
+                                                  .pBufferInfo      = nullptr,
+                                                  .pTexelBufferView = nullptr,
+                                              },
+                                              {
+                                                  .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                  .pNext            = nullptr,
+                                                  .dstBinding       = 1,
+                                                  .dstArrayElement  = 0,
+                                                  .descriptorCount  = 1,
+                                                  .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                  .pImageInfo       = &image_write_info,
+                                                  .pBufferInfo      = nullptr,
+                                                  .pTexelBufferView = nullptr,
+                                              },
+                                          };
+
+                                          vkCmdPushDescriptorSet(
+                                              command_buffer,
+                                              VK_PIPELINE_BIND_POINT_COMPUTE,
+                                              hiz_pipeline_layout,
+                                              0,
+                                              static_cast<uint32_t>(write_sets.size()),
+                                              write_sets.data()
+                                          );
+
+                                          vkCmdPushConstants(
+                                              command_buffer,
+                                              hiz_pipeline_layout,
+                                              VK_SHADER_STAGE_COMPUTE_BIT,
+                                              0,
+                                              sizeof(DepthReduceConstants),
+                                              &constants
+                                          );
+
+                                          uint32_t groups_x = (mip_width + 7) / 8;
+                                          uint32_t groups_y = (mip_height + 7) / 8;
+                                          vkCmdDispatch(command_buffer, groups_x, groups_y, 1);
+
+                                          image_pipeline_barrier(
+                                              depth_hiz.handle,
+                                              command_buffer,
+                                              VK_IMAGE_LAYOUT_GENERAL,
+                                              VK_IMAGE_LAYOUT_GENERAL,
+                                              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                              VK_ACCESS_2_SHADER_WRITE_BIT,
+                                              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                              VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                              {
+                                                  .aspectMask     = depth_hiz.aspect,
+                                                  .baseMipLevel   = static_cast<uint32_t>(i),
+                                                  .levelCount     = 1,
+                                                  .baseArrayLayer = 0,
+                                                  .layerCount     = 1,
+                                              }
+                                          );
+                                      }
+                                  });
+
+    if (use_hardware_rt) {
+        auto rtgi_pass =
+            framegraph.add_pass("rtgi")
+                .reads_buffer_dynamic(
+                    draw_data_buffer,
+                    VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                    VK_ACCESS_2_UNIFORM_READ_BIT,
+                    draw_data_buffer.size / FRAMES_IN_FLIGHT
+                )
+                .reads_buffer_dynamic(
+                    scene_ubo_buffer,
+                    VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                    VK_ACCESS_2_UNIFORM_READ_BIT,
+                    scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+                )
+                .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR)
+                .writes_storage_image(gi_output, VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR)
+                .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                    size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+                    size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+                    size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+
+                    std::vector<uint32_t> dynamic_offsets = {
+                        static_cast<uint32_t>(draw_data_ptr_frame_offset),
+                        static_cast<uint32_t>(ubo_ptr_offset),
+                        static_cast<uint32_t>(command_ptr_frame_offset),
+                    };
+
+                    PostProcesPushConstants post_process_push = {
+                        .depth_index     = depth_index,
+                        .albedo_index    = albedo_index,
+                        .normals_index   = normals_index,
+                        .material_index  = material_index,
+                        .lightpass_index = lightpass_output_index,
+                        .rt_output_index = 0,
+                        .frame_index     = frame_count,
+                    };
+
+                    const uint32_t handle_size_aligned = aligned_size(
+                        rt_scene.rt_properties.shaderGroupHandleSize, rt_scene.rt_properties.shaderGroupHandleAlignment
+                    );
+
+                    VkStridedDeviceAddressRegionKHR callable_shader_sbt_entry{};
+
+                    VkDescriptorSet rt_sets[] = {
+                        draw_data_descriptor_set, scene_ubo_descriptor_set, global_texture_descriptor_set
+                    };
+                    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_scene.pipeline);
+                    vkCmdBindDescriptorSets(
+                        command_buffer,
+                        VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+                        rt_pipeline_layout,
+                        0,
+                        3,
+                        rt_sets,
+                        2,
+                        &dynamic_offsets[0]
+                    );
+                    vkCmdPushConstants(
+                        command_buffer,
+                        rt_pipeline_layout,
+                        VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+                        0,
+                        sizeof(PostProcesPushConstants),
+                        &post_process_push
+                    );
+
+                    VkWriteDescriptorSetAccelerationStructureKHR descriptor_acceleration_structure_info = {
+                        .sType                      = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+                        .accelerationStructureCount = 1,
+                        .pAccelerationStructures    = &rt_scene.tlas.handle,
+                    };
+
+                    VkDescriptorImageInfo rt_image_descriptor = {
+                        .imageView   = gi_output.view,
+                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    };
+
+                    std::vector<VkWriteDescriptorSet> acceleration_structure_writes = {
+                        {
+                            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext           = &descriptor_acceleration_structure_info,
+                            .dstSet          = rt_descriptor_set,
+                            .dstBinding      = 0,
+                            .descriptorCount = 1,
+                            .descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                        },
+                        {
+                            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext           = nullptr,
+                            .dstSet          = rt_descriptor_set,
+                            .dstBinding      = 1,
+                            .descriptorCount = 1,
+                            .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .pImageInfo      = &rt_image_descriptor,
+                        },
+                    };
+                    vkCmdPushDescriptorSet(
+                        command_buffer,
+                        VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+                        rt_pipeline_layout,
+                        3,
+                        static_cast<uint32_t>(acceleration_structure_writes.size()),
+                        acceleration_structure_writes.data()
+                    );
+
+                    vkCmdTraceRaysKHR(
+                        command_buffer,
+                        &rt_scene.raygen_shader_sbt_entry,
+                        &rt_scene.miss_shader_sbt_entry,
+                        &rt_scene.hit_shader_sbt_entry,
+                        &callable_shader_sbt_entry,
+                        gi_output.width,
+                        gi_output.height,
+                        1
+                    );
+                });
+    }
+
+    auto& light_pass = framegraph.add_pass("lighting")
+                           .reads_buffer_dynamic(
+                               scene_ubo_buffer,
+                               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                               VK_ACCESS_2_UNIFORM_READ_BIT,
+                               scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+                           )
+                           .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                           .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                           .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                           .samples_image(gbuffer_material, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                           .writes_storage_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+
+    if (use_hardware_rt) {
+        light_pass.samples_image(gi_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+    }
+
+    light_pass.render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+        size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+
+        std::vector<uint32_t> dynamic_offsets = {
+            static_cast<uint32_t>(draw_data_ptr_frame_offset),
+            static_cast<uint32_t>(ubo_ptr_offset),
+            static_cast<uint32_t>(command_ptr_frame_offset),
+        };
+
+        VkDescriptorSet compute_sets[] = {
+            compute_descriptor_set, scene_ubo_descriptor_set, global_texture_descriptor_set
+        };
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, lightpass_pipeline);
+        vkCmdBindDescriptorSets(
+            command_buffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            compute_pipeline_layout,
+            0,
+            3,
+            compute_sets,
+            1,
+            &dynamic_offsets[1]
+        );
+
+        LightpassPushConstants light_constants = {
+            .depth_index     = depth_index,
+            .albedo_index    = albedo_index,
+            .normals_index   = normals_index,
+            .material_index  = material_index,
+            .gi_output_index = gi_output_index,
+        };
+
+        vkCmdPushConstants(
+            command_buffer,
+            compute_pipeline_layout,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0,
+            sizeof(LightpassPushConstants),
+            &light_constants
+        );
+
+        vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
+    });
+
+    auto& composite_pass =
+        framegraph.add_pass("composite")
+            .reads_buffer_dynamic(
+                scene_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .samples_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(composite_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+                size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+                size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+
+                std::vector<uint32_t> dynamic_offsets = {
+                    static_cast<uint32_t>(draw_data_ptr_frame_offset),
+                    static_cast<uint32_t>(ubo_ptr_offset),
+                    static_cast<uint32_t>(command_ptr_frame_offset),
+                };
+
+                PostProcesPushConstants post_process_push = {
+                    .depth_index     = depth_index,
+                    .albedo_index    = albedo_index,
+                    .normals_index   = normals_index,
+                    .material_index  = material_index,
+                    .lightpass_index = lightpass_output_index,
+                    .rt_output_index = 0,
+                    .frame_index     = frame_count,
+                };
+
+                VkDescriptorSet composite_sets[] = {
+                    composite_descriptor_set, scene_ubo_descriptor_set, global_texture_descriptor_set
+                };
+                vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, composite_pipeline);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    composite_pipeline_layout,
+                    0,
+                    3,
+                    composite_sets,
+                    1,
+                    &dynamic_offsets[1]
+                );
+                vkCmdPushConstants(
+                    command_buffer,
+                    composite_pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    sizeof(PostProcesPushConstants),
+                    &post_process_push
+                );
+
+                vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
+            });
+
+    framegraph.build();
+
     while (running) {
         auto frame_start_time = std::chrono::high_resolution_clock::now();
 
@@ -2024,20 +2601,36 @@ int main() {
         ImGui::NewFrame();
 
         ImGui::Begin("Debug");
+
+        ImGui::SeparatorText("Info");
         ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
         ImGui::Text("FPS: %u", fps);
-        ImGui::Separator();
+        ImGui::NewLine();
 
+        ImGui::SeparatorText("Frame Timings");
+        double total_gpu_time = 0;
+        for (const auto& pass : framegraph.passes) {
+            double time = framegraph.get_pass_time_ms(pass.name);
+            ImGui::Text("%s: %.3fms", pass.name.c_str(), time);
+
+            total_gpu_time += time;
+        }
+        ImGui::Text("%s: %.3fms", "Total", total_gpu_time);
+        ImGui::NewLine();
+
+        ImGui::SeparatorText("Camera");
         ImGui::Text("Camera pos: %.2f, %.2f, %.2f", camera.position.x, camera.position.y, camera.position.z);
         ImGui::Text("Camera dir: %.2f, %.2f, %.2f", camera.direction.x, camera.direction.y, camera.direction.z);
-        ImGui::Separator();
+        ImGui::NewLine();
 
+        ImGui::SeparatorText("Debug");
         if (ImGui::Checkbox("Freeze frustum", &debug_frustum)) {
             frozen_camera_position = glm::vec4(camera.position, 1.0);
             frozen_planes          = camera.planes;
             frozen_view_proj       = camera.combined_matrix;
         }
         ImGui::Checkbox("Disable culling", &disable_culling);
+        ImGui::NewLine();
         ImGui::End();
 
         ImGui::Render();
@@ -2166,511 +2759,7 @@ int main() {
             indirect_command_buffer.size / FRAMES_IN_FLIGHT
         );
 
-        std::vector<uint32_t> dynamic_offsets = {
-            static_cast<uint32_t>(draw_data_ptr_frame_offset),
-            static_cast<uint32_t>(ubo_ptr_offset),
-            static_cast<uint32_t>(command_ptr_frame_offset),
-        };
-
-        VkDescriptorSet cull_sets[] = {
-            draw_data_descriptor_set, scene_ubo_descriptor_set, draw_command_descriptor_set, compute_cull_descriptor_set
-        };
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_cull_pipeline);
-        vkCmdBindDescriptorSets(
-            command_buffer,
-            VK_PIPELINE_BIND_POINT_COMPUTE,
-            compute_cull_pipeline_layout,
-            0,
-            4,
-            cull_sets,
-            3,
-            dynamic_offsets.data()
-        );
-
-        CullPassPushConstants cull_constants = {
-            .screen_size          = {depth_pyramid_width, depth_pyramid_height},
-            .draw_count           = static_cast<uint32_t>(bindless_draw_data_cpu_buffer.size()),
-            .command_count_offset = 0,
-            .depth_pyramid_index  = depth_index,
-        };
-
-        vkCmdPushConstants(
-            command_buffer,
-            compute_cull_pipeline_layout,
-            VK_SHADER_STAGE_COMPUTE_BIT,
-            0,
-            sizeof(CullPassPushConstants),
-            &cull_constants
-        );
-
-        vkCmdDispatch(command_buffer, (bindless_draw_data_cpu_buffer.size() + 255) / 256, 1, 1);
-
-        buffer_pipeline_barrier(
-            indirect_command_buffer,
-            command_buffer,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
-            VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
-            command_ptr_frame_offset,
-            indirect_command_buffer.size / FRAMES_IN_FLIGHT
-        );
-
-        std::vector<VkRenderingAttachmentInfo> gbuffer_color_attachments = {
-            {
-                .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .pNext              = nullptr,
-                .imageView          = gbuffer_albedo.view,
-                .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                .resolveMode        = VK_RESOLVE_MODE_NONE,
-                .resolveImageView   = VK_NULL_HANDLE,
-                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-                .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
-            },
-            {
-                .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .pNext              = nullptr,
-                .imageView          = gbuffer_normals.view,
-                .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                .resolveMode        = VK_RESOLVE_MODE_NONE,
-                .resolveImageView   = VK_NULL_HANDLE,
-                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-                .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
-            },
-            {
-                .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .pNext              = nullptr,
-                .imageView          = gbuffer_material.view,
-                .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                .resolveMode        = VK_RESOLVE_MODE_NONE,
-                .resolveImageView   = VK_NULL_HANDLE,
-                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-                .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
-            },
-        };
-
-        VkRenderingAttachmentInfo depth_attachment_info = {
-            .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-            .pNext              = nullptr,
-            .imageView          = depth_buffer.view,
-            .imageLayout        = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-            .resolveMode        = VK_RESOLVE_MODE_NONE,
-            .resolveImageView   = VK_NULL_HANDLE,
-            .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR,
-            .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-            .clearValue         = {.depthStencil = {.depth = 0.0f, .stencil = 0}}
-        };
-
-        VkRenderingInfo rendering_info = {
-            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .renderArea =
-                {
-                    .offset = {.x = 0, .y = 0},
-                    .extent = {.width = swapchain.width, .height = swapchain.height},
-                },
-            .layerCount           = 1,
-            .viewMask             = 0,
-            .colorAttachmentCount = static_cast<uint32_t>(gbuffer_color_attachments.size()),
-            .pColorAttachments    = gbuffer_color_attachments.data(),
-            .pDepthAttachment     = &depth_attachment_info,
-            .pStencilAttachment   = nullptr
-        };
-
-        vkCmdBeginRendering(command_buffer, &rendering_info);
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, geometry_pipeline);
-
-        VkDescriptorSet sets[] = {
-            draw_data_descriptor_set,
-            scene_ubo_descriptor_set,
-            global_texture_descriptor_set,
-            draw_command_descriptor_set
-        };
-
-        vkCmdBindDescriptorSets(
-            command_buffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
-            geometry_pipeline_layout,
-            0,
-            4,
-            sets,
-            3,
-            &dynamic_offsets[0]
-        );
-
-        if (use_meshlets) {
-            vkCmdDrawMeshTasksIndirectCountEXT(
-                command_buffer,
-                indirect_command_buffer.handle,
-                command_ptr_frame_offset + sizeof(uint32_t),
-                indirect_command_buffer.handle,
-                command_ptr_frame_offset,
-                bindless_draw_data_cpu_buffer.size(),
-                sizeof(MeshIndirectDrawCommand)
-            );
-        } else {
-            vkCmdBindIndexBuffer(command_buffer, global_index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
-
-            vkCmdDrawIndexedIndirectCount(
-                command_buffer,
-                indirect_command_buffer.handle,
-                command_ptr_frame_offset + sizeof(uint32_t),
-                indirect_command_buffer.handle,
-                command_ptr_frame_offset,
-                bindless_draw_data_cpu_buffer.size(),
-                sizeof(VkDrawIndexedIndirectCommand)
-            );
-        }
-
-        vkCmdEndRendering(command_buffer);
-
-        PostProcesPushConstants post_process_push = {
-            .depth_index     = depth_index,
-            .albedo_index    = albedo_index,
-            .normals_index   = normals_index,
-            .material_index  = material_index,
-            .lightpass_index = lightpass_output_index,
-            .rt_output_index = 0,
-            .frame_index     = frame_count,
-        };
-
-        for (auto image : gbuffer_images) {
-            image_pipeline_barrier(
-                image.get(),
-                command_buffer,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-            );
-        }
-
-        image_pipeline_barrier(
-            depth_buffer,
-            command_buffer,
-            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
-            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-        );
-
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_pipeline);
-        for (int i = 0; i < depth_hiz.levels; ++i) {
-            uint32_t mip_width  = glm::max(1u, depth_hiz.width >> i);
-            uint32_t mip_height = glm::max(1u, depth_hiz.height >> i);
-
-            DepthReduceConstants constants = {
-                .size = {mip_width, mip_height},
-            };
-
-            VkDescriptorImageInfo image_read_info = {
-                .sampler     = depth_sampler,
-                .imageView   = i == 0 ? depth_buffer.view : depth_mip_views[i - 1],
-                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-            };
-
-            VkDescriptorImageInfo image_write_info = {
-                .sampler     = VK_NULL_HANDLE,
-                .imageView   = depth_mip_views[i],
-                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-            };
-
-            std::vector<VkWriteDescriptorSet> write_sets = {
-                {
-                    .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .pNext            = nullptr,
-                    .dstBinding       = 0,
-                    .dstArrayElement  = 0,
-                    .descriptorCount  = 1,
-                    .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    .pImageInfo       = &image_read_info,
-                    .pBufferInfo      = nullptr,
-                    .pTexelBufferView = nullptr,
-                },
-                {
-                    .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .pNext            = nullptr,
-                    .dstBinding       = 1,
-                    .dstArrayElement  = 0,
-                    .descriptorCount  = 1,
-                    .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                    .pImageInfo       = &image_write_info,
-                    .pBufferInfo      = nullptr,
-                    .pTexelBufferView = nullptr,
-                },
-            };
-
-            vkCmdPushDescriptorSet(
-                command_buffer,
-                VK_PIPELINE_BIND_POINT_COMPUTE,
-                hiz_pipeline_layout,
-                0,
-                static_cast<uint32_t>(write_sets.size()),
-                write_sets.data()
-            );
-
-            vkCmdPushConstants(
-                command_buffer,
-                hiz_pipeline_layout,
-                VK_SHADER_STAGE_COMPUTE_BIT,
-                0,
-                sizeof(DepthReduceConstants),
-                &constants
-            );
-
-            uint32_t groups_x = (mip_width + 7) / 8;
-            uint32_t groups_y = (mip_height + 7) / 8;
-            vkCmdDispatch(command_buffer, groups_x, groups_y, 1);
-
-            image_pipeline_barrier(
-                depth_hiz.handle,
-                command_buffer,
-                VK_IMAGE_LAYOUT_GENERAL,
-                VK_IMAGE_LAYOUT_GENERAL,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_SHADER_WRITE_BIT,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                {
-                    .aspectMask     = depth_hiz.aspect,
-                    .baseMipLevel   = static_cast<uint32_t>(i),
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                }
-            );
-        }
-
-        image_pipeline_barrier(
-            depth_buffer,
-            command_buffer,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-        );
-
-        if (use_hardware_rt) {
-            const uint32_t handle_size_aligned = aligned_size(
-                rt_scene.rt_properties.shaderGroupHandleSize, rt_scene.rt_properties.shaderGroupHandleAlignment
-            );
-
-            VkStridedDeviceAddressRegionKHR callable_shader_sbt_entry{};
-
-            VkDescriptorSet rt_sets[] = {
-                draw_data_descriptor_set, scene_ubo_descriptor_set, global_texture_descriptor_set
-            };
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_scene.pipeline);
-            vkCmdBindDescriptorSets(
-                command_buffer,
-                VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
-                rt_pipeline_layout,
-                0,
-                3,
-                rt_sets,
-                2,
-                &dynamic_offsets[0]
-            );
-            vkCmdPushConstants(
-                command_buffer,
-                rt_pipeline_layout,
-                VK_SHADER_STAGE_RAYGEN_BIT_KHR,
-                0,
-                sizeof(PostProcesPushConstants),
-                &post_process_push
-            );
-
-            VkWriteDescriptorSetAccelerationStructureKHR descriptor_acceleration_structure_info = {
-                .sType                      = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
-                .accelerationStructureCount = 1,
-                .pAccelerationStructures    = &rt_scene.tlas.handle,
-            };
-
-            VkDescriptorImageInfo rt_image_descriptor = {
-                .imageView   = gi_output.view,
-                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-            };
-
-            std::vector<VkWriteDescriptorSet> acceleration_structure_writes = {
-                {
-                    .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .pNext           = &descriptor_acceleration_structure_info,
-                    .dstSet          = rt_descriptor_set,
-                    .dstBinding      = 0,
-                    .descriptorCount = 1,
-                    .descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-                },
-                {
-                    .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .pNext           = nullptr,
-                    .dstSet          = rt_descriptor_set,
-                    .dstBinding      = 1,
-                    .descriptorCount = 1,
-                    .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                    .pImageInfo      = &rt_image_descriptor,
-                },
-            };
-            vkCmdPushDescriptorSet(
-                command_buffer,
-                VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
-                rt_pipeline_layout,
-                3,
-                static_cast<uint32_t>(acceleration_structure_writes.size()),
-                acceleration_structure_writes.data()
-            );
-
-            vkCmdTraceRaysKHR(
-                command_buffer,
-                &rt_scene.raygen_shader_sbt_entry,
-                &rt_scene.miss_shader_sbt_entry,
-                &rt_scene.hit_shader_sbt_entry,
-                &callable_shader_sbt_entry,
-                gi_output.width,
-                gi_output.height,
-                1
-            );
-        }
-
-        image_pipeline_barrier(
-            gi_output,
-            command_buffer,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-        );
-
-        VkDescriptorSet compute_sets[] = {
-            compute_descriptor_set, scene_ubo_descriptor_set, global_texture_descriptor_set
-        };
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, lightpass_pipeline);
-        vkCmdBindDescriptorSets(
-            command_buffer,
-            VK_PIPELINE_BIND_POINT_COMPUTE,
-            compute_pipeline_layout,
-            0,
-            3,
-            compute_sets,
-            1,
-            &dynamic_offsets[1]
-        );
-
-        LightpassPushConstants light_constants = {
-            .depth_index     = depth_index,
-            .albedo_index    = albedo_index,
-            .normals_index   = normals_index,
-            .material_index  = material_index,
-            .gi_output_index = gi_output_index,
-        };
-
-        vkCmdPushConstants(
-            command_buffer,
-            compute_pipeline_layout,
-            VK_SHADER_STAGE_COMPUTE_BIT,
-            0,
-            sizeof(LightpassPushConstants),
-            &light_constants
-        );
-
-        vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
-
-        image_pipeline_barrier(
-            gi_output,
-            command_buffer,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
-        );
-
-        image_pipeline_barrier(
-            lightpass_output,
-            command_buffer,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-        );
-
-        VkDescriptorSet composite_sets[] = {
-            composite_descriptor_set, scene_ubo_descriptor_set, global_texture_descriptor_set
-        };
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, composite_pipeline);
-        vkCmdBindDescriptorSets(
-            command_buffer,
-            VK_PIPELINE_BIND_POINT_COMPUTE,
-            composite_pipeline_layout,
-            0,
-            3,
-            composite_sets,
-            1,
-            &dynamic_offsets[1]
-        );
-        vkCmdPushConstants(
-            command_buffer,
-            composite_pipeline_layout,
-            VK_SHADER_STAGE_COMPUTE_BIT,
-            0,
-            sizeof(PostProcesPushConstants),
-            &post_process_push
-        );
-
-        vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
-
-        for (auto image : gbuffer_images) {
-            image_pipeline_barrier(
-                image.get(),
-                command_buffer,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
-            );
-        }
-
-        image_pipeline_barrier(
-            depth_buffer,
-            command_buffer,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
-            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
-        );
-
-        image_pipeline_barrier(
-            lightpass_output,
-            command_buffer,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
-        );
+        framegraph.execute(device, command_buffer, frame_index, physical_device_properties.limits.timestampPeriod);
 
         image_pipeline_barrier(
             composite_output,
@@ -2862,6 +2951,8 @@ int main() {
 
     ImGui_ImplSDL3_Shutdown();
     ImGui_ImplVulkan_Shutdown();
+
+    framegraph.destroy(device);
 
     destroy_swapchain(swapchain, window, instance, device);
     destroy_buffer(staging_buffer, device, vma_allocator);
