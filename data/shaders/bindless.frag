@@ -35,9 +35,9 @@ vec3 world_normal(vec3 normal_map, vec3 vertex_normal, vec3 world_pos, vec2 uv) 
 }
 
 void main() {
-    vec3 albedo = texture(textures[in_albedo_index], in_uv).rgb;
-    vec3 normal = texture(textures[in_normals_index], in_uv).rgb * 2.0 - 1.0;
-    vec3 material = texture(textures[in_material_index], in_uv).rgb;
+    vec3 albedo = texture(textures[nonuniformEXT(in_albedo_index)], in_uv).rgb;
+    vec3 normal = texture(textures[nonuniformEXT(in_normals_index)], in_uv).rgb * 2.0 - 1.0;
+    vec3 material = texture(textures[nonuniformEXT(in_material_index)], in_uv).rgb;
 
     out_color = vec4(albedo, 1.0);
     out_normal = vec4(world_normal(normal, in_normal, in_world_pos, in_uv), 1.0);

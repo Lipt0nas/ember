@@ -19,11 +19,13 @@ void main() {
     uint base = gl_VertexIndex;
     Vertex vertex = global_vertices.vertices[base];
 
-    vec4 world_pos = scene.view_proj * draw.model * vec4(vertex.position, 1.0);
+    vec3 world_pos = rotate_quat(vertex.position, draw.rotation) * draw.scale + draw.position;
+
+    vec4 clip_pos = scene.view_proj * vec4(world_pos, 1.0);
     vec3 meshlet_color = vec3(1.0);
 
-    gl_Position = world_pos;
-    out_normal = vertex.normal;
+    gl_Position = clip_pos;
+    out_normal = rotate_quat(vertex.normal, draw.rotation);
     out_uv = vertex.uv;
     out_meshlet_color = meshlet_color;
     out_albedo_index = draw.albedo_index;

@@ -131,24 +131,28 @@ struct MeshIndirectDrawCommand {
     uint32_t object_id;
 };
 
-struct SceneUBO {
-    glm::mat4 view;
+struct alignas(16) SceneUBO {
     glm::mat4 proj;
+    glm::vec4 camera_position;
 
     glm::mat4 view_proj;
     glm::mat4 inverse_view_proj;
-    glm::vec4 planes[6];
-    glm::vec4 camera_position;
 
-    glm::mat4 frozen_view_proj;
-    glm::vec4 frozen_planes[6];
-    glm::vec4 frozen_camera_position;
+    glm::mat4 view;
+    float     frustum[4];
+
+    glm::mat4 frozen_view;
+    float     frozen_frustum[4];
 
     uint32_t debug_frustum;
     uint32_t disable_culling;
 
     float P00;
     float P11;
+
+    float near_plane;
+    // Unused for now, works as padding
+    float far_plane;
 };
 
 struct CullPassPushConstants {
@@ -186,11 +190,12 @@ struct LightpassPushConstants {
 };
 
 struct DrawData {
-    glm::mat4 model_matrix;
-    glm::mat4 normal_matrix;
-
     glm::vec3 center;
     float     radius;
+
+    glm::vec3 position;
+    float     scale;
+    glm::quat rotation;
 
     // --- INDIRECT VERTEX PIPELINE ---
     uint32_t index_count;
@@ -222,8 +227,11 @@ uint32_t missing_albedo_index   = 0;
 uint32_t missing_normals_index  = 0;
 uint32_t missing_material_index = 0;
 
-std::vector<Mesh> load_model(
+void load_scene(
     const std::filesystem::path&         path,
+    std::vector<Mesh>&                   meshes,
+    std::vector<Material>&               materials,
+    std::vector<MeshInstance>&           instances,
     const Buffer&                        staging_buffer,
     const Buffer&                        indirect_vertex_buffer,
     VkDeviceSize&                        indirect_vertex_buffer_offset,
@@ -244,6 +252,8 @@ std::vector<Mesh> load_model(
     VkQueue                              queue,
     VkDevice                             device
 ) {
+    spdlog::info("Loading scene: {}", path.string());
+
     tinygltf::TinyGLTF loader;
     tinygltf::Model    model;
     std::string        error;
@@ -267,14 +277,100 @@ std::vector<Mesh> load_model(
         spdlog::error("Failed loading model {}", path.string());
     }
 
-    std::vector<Mesh> meshes;
-
     uint32_t                               local_cache_offset = global_texture_cache.size();
     std::unordered_map<uint32_t, uint32_t> local_texture_cache;
 
+    materials.resize(model.materials.size());
+    spdlog::info("Loading {} materials", materials.size());
+
+    void* staging_buffer_ptr = nullptr;
+    VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
+    for (int i = 0; i < model.materials.size(); i++) {
+        auto& mat = model.materials[i];
+
+        uint32_t albedo_index   = missing_albedo_index;
+        uint32_t normals_index  = missing_normals_index;
+        uint32_t material_index = missing_material_index;
+
+        auto upload_texture = [&](int texture_index, VkFormat format) {
+            tinygltf::Texture& texture     = model.textures[texture_index];
+            int                image_index = texture.source;
+
+            if (image_index >= 0) {
+                auto local_it = local_texture_cache.find(image_index + local_cache_offset);
+                if (local_it != local_texture_cache.end()) {
+                    return local_it->second;
+                } else {
+                    tinygltf::Image& img = model.images[image_index];
+
+                    Image image = create_image(
+                        format,
+                        static_cast<uint32_t>(img.width),
+                        static_cast<uint32_t>(img.height),
+                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                        VK_IMAGE_ASPECT_COLOR_BIT,
+                        true,
+                        allocator,
+                        device
+                    );
+
+                    if (img.image.size() > staging_buffer.size) {
+                        spdlog::error(
+                            "Attempted out of bounds image buffer write for image, size={}, staging size={}",
+                            img.image.size(),
+                            staging_buffer.size
+                        );
+                        exit(1);
+                    }
+
+                    memcpy(staging_buffer_ptr, &img.image.at(0), img.image.size());
+                    copy_image(staging_buffer, image, true, command_buffer, queue, device);
+
+                    uint32_t index = global_texture_cache.size();
+                    global_texture_cache.insert({index, image});
+                    local_texture_cache.insert({image_index + local_cache_offset, index});
+
+                    loaded_images.push_back(image);
+
+                    return index;
+                };
+            }
+
+            return 0u;
+        };
+
+        if (mat.pbrMetallicRoughness.baseColorTexture.index >= 0) {
+            albedo_index = upload_texture(mat.pbrMetallicRoughness.baseColorTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
+        } else {
+            spdlog::warn("Material id {} \"{}\" does not have a base color texture", i, mat.name);
+        }
+
+        if (mat.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0) {
+            material_index =
+                upload_texture(mat.pbrMetallicRoughness.metallicRoughnessTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
+        } else {
+            spdlog::warn("Material id {} \"{}\" does not have a metallic/rougness texture", i, mat.name);
+        }
+
+        if (mat.normalTexture.index >= 0) {
+            normals_index = upload_texture(mat.normalTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
+        } else {
+            spdlog::warn("Material id {} \"{}\" does not have a normals texture", i, mat.name);
+        }
+
+        materials[i].albedo_index   = albedo_index;
+        materials[i].normals_index  = normals_index;
+        materials[i].material_index = material_index;
+    }
+
+    int              current_entry = 0;
+    std::vector<int> mesh_primitive_offsets(model.meshes.size());
+    spdlog::info("Loading {} meshes", model.meshes.size());
     for (int m = 0; m < model.meshes.size(); m++) {
         spdlog::trace("mesh {}", m);
         const tinygltf::Mesh& mesh = model.meshes[m];
+
+        mesh_primitive_offsets[m] = current_entry;
 
         for (int p = 0; p < mesh.primitives.size(); p++) {
             spdlog::trace("primitive {}", p);
@@ -306,8 +402,7 @@ std::vector<Mesh> load_model(
                 &texcoord_buffer.data[texcoord_view.byteOffset + texcoord_accessor.byteOffset]
             );
 
-            glm::vec3 axis_min = glm::vec3(FLT_MAX);
-            glm::vec3 axis_max = glm::vec3(-FLT_MAX);
+            glm::vec3 center = glm::vec3(0);
 
             for (size_t i = 0; i < vertex_count; i++) {
                 glm::vec3 position = {
@@ -316,17 +411,7 @@ std::vector<Mesh> load_model(
                     positions[i * 3 + 2],
                 };
 
-                axis_min = {
-                    glm::min(axis_min.x, position.x),
-                    glm::min(axis_min.y, position.y),
-                    glm::min(axis_min.z, position.z),
-                };
-
-                axis_max = {
-                    glm::max(axis_max.x, position.x),
-                    glm::max(axis_max.y, position.y),
-                    glm::max(axis_max.z, position.z),
-                };
+                center += position;
 
                 vertices.emplace_back(
                     Vertex{
@@ -345,11 +430,18 @@ std::vector<Mesh> load_model(
                 );
             }
 
-            float bounds_min = glm::min(glm::min(axis_min.x, axis_min.y), axis_min.z);
-            float bounds_max = glm::max(glm::max(axis_max.x, axis_max.y), axis_max.z);
+            center /= float(vertex_count);
+            float radius = 0.0f;
 
-            glm::vec3 center = (axis_min + axis_max) / 2.0f;
-            float     radius = glm::length(bounds_max - bounds_min) / 2.0f;
+            for (size_t i = 0; i < vertex_count; i++) {
+                glm::vec3 position = {
+                    positions[i * 3 + 0],
+                    positions[i * 3 + 1],
+                    positions[i * 3 + 2],
+                };
+
+                radius = std::max(radius, distance(center, position));
+            }
 
             if (primitive.indices >= 0) {
                 const tinygltf::Accessor&   index_accessor = model.accessors[primitive.indices];
@@ -394,8 +486,6 @@ std::vector<Mesh> load_model(
             VkDeviceSize mesh_index_offset  = indirect_index_buffer_offset;
 
             spdlog::debug("Copying vertices into global buffer");
-            void* staging_buffer_ptr = nullptr;
-            VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
             memcpy(staging_buffer_ptr, vertices.data(), sizeof(Vertex) * vertices.size());
             copy_buffer(
                 staging_buffer,
@@ -423,80 +513,8 @@ std::vector<Mesh> load_model(
             );
             indirect_index_buffer_offset += sizeof(uint32_t) * indices.size();
 
-            uint32_t albedo_index   = missing_albedo_index;
-            uint32_t normals_index  = missing_normals_index;
-            uint32_t material_index = missing_material_index;
-
             if (primitive.material >= 0) {
                 const tinygltf::Material& material = model.materials[primitive.material];
-
-                auto upload_texture = [&](int texture_index, VkFormat format) {
-                    tinygltf::Texture& texture     = model.textures[texture_index];
-                    int                image_index = texture.source;
-
-                    if (image_index >= 0) {
-                        auto local_it = local_texture_cache.find(image_index + local_cache_offset);
-                        if (local_it != local_texture_cache.end()) {
-                            return local_it->second;
-                        } else {
-                            tinygltf::Image& img = model.images[image_index];
-
-                            Image image = create_image(
-                                format,
-                                static_cast<uint32_t>(img.width),
-                                static_cast<uint32_t>(img.height),
-                                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                                VK_IMAGE_ASPECT_COLOR_BIT,
-                                true,
-                                allocator,
-                                device
-                            );
-
-                            if (img.image.size() > staging_buffer.size) {
-                                spdlog::error(
-                                    "Attempted out of bounds buffer write for image, size={}, staging size={}",
-                                    img.image.size(),
-                                    staging_buffer.size
-                                );
-                                exit(1);
-                            }
-
-                            memcpy(staging_buffer_ptr, &img.image.at(0), img.image.size());
-                            copy_image(staging_buffer, image, true, command_buffer, queue, device);
-
-                            uint32_t index = global_texture_cache.size();
-                            global_texture_cache.insert({index, image});
-                            local_texture_cache.insert({image_index + local_cache_offset, index});
-
-                            loaded_images.push_back(image);
-
-                            return index;
-                        };
-                    }
-
-                    return 0u;
-                };
-
-                if (material.pbrMetallicRoughness.baseColorTexture.index >= 0) {
-                    albedo_index =
-                        upload_texture(material.pbrMetallicRoughness.baseColorTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
-                } else {
-                    spdlog::warn("Model {} primitive {} does not have a base color texture!", path.string(), p);
-                }
-
-                if (material.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0) {
-                    material_index = upload_texture(
-                        material.pbrMetallicRoughness.metallicRoughnessTexture.index, VK_FORMAT_R8G8B8A8_UNORM
-                    );
-                } else {
-                    spdlog::warn("Model {} primitive {} does not have a metallic/roughness texture!", path.string(), p);
-                }
-
-                if (material.normalTexture.index >= 0) {
-                    normals_index = upload_texture(material.normalTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
-                } else {
-                    spdlog::warn("Model {} primitive {} does not have a normals texture!", path.string(), p);
-                }
             }
 
             spdlog::debug("Building meshlets");
@@ -667,18 +685,67 @@ std::vector<Mesh> load_model(
                 meshlet_count,
                 vertices.size(),
                 indices.size(),
-                Material{
-                    .albedo_index   = albedo_index,
-                    .normals_index  = normals_index,
-                    .material_index = material_index,
-                },
                 center,
                 radius
             );
+
+            current_entry++;
         }
     }
 
-    return meshes;
+    spdlog::info("Scene count: {}", model.scenes.size());
+    int scene_id = model.defaultScene >= 0 ? model.defaultScene : (model.scenes.size() >= 1 ? 0 : -1);
+    if (scene_id <= -1) {
+        spdlog::warn("No eligibles scenes found");
+        return;
+    }
+
+    spdlog::info("Constructing scene");
+    const tinygltf::Scene& scene = model.scenes[scene_id];
+    glm::mat4              identity(1.0f);
+
+    for (int node_id : scene.nodes) {
+        const auto& node = model.nodes[node_id];
+        if (node.mesh <= -1)
+            continue;
+
+        const auto& mesh = model.meshes[node.mesh];
+
+        glm::vec3 position;
+        if (node.translation.size() == 3) {
+            position = {node.translation[0], node.translation[1], node.translation[2]};
+        } else {
+            spdlog::warn("node missing position");
+        }
+
+        float scale = 1.0f;
+        if (node.scale.size() == 3) {
+            // TODO: handle this more gracefully
+            scale = node.scale[0];
+        }
+
+        glm::quat rotation;
+        if (node.rotation.size() == 4) {
+            rotation = glm::quat(node.rotation[0], node.rotation[1], node.rotation[2], node.rotation[3]);
+        }
+
+        if (node.children.size() > 0) {
+            spdlog::warn("{} children", node.children.size());
+        }
+
+        for (int i = 0; i < mesh.primitives.size(); i++) {
+            int mesh_id = mesh_primitive_offsets[node.mesh] + i;
+
+            MeshInstance instance = {
+                .mesh_id     = mesh_id,
+                .material_id = mesh.primitives[i].material,
+                .position    = position,
+                .scale       = scale,
+                .rotation    = rotation,
+            };
+            instances.push_back(instance);
+        }
+    }
 }
 
 void populate_materials(
@@ -687,6 +754,8 @@ void populate_materials(
     VkSampler                                  sampler,
     VkDevice                                   device
 ) {
+    spdlog::info("Texture cache contains: {} textures", texture_cache.size());
+
     for (auto& [slot, image] : texture_cache) {
         VkDescriptorImageInfo image_write_info = {
             .sampler = sampler, .imageView = image.view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
@@ -728,7 +797,7 @@ int main() {
 
     const int FRAMES_IN_FLIGHT = 2;
 
-    bool use_meshlets    = false;
+    bool use_meshlets    = true;
     bool use_hardware_rt = false;
 
     bool enable_validation = false;
@@ -1427,7 +1496,7 @@ int main() {
     }
 
     Buffer global_vertex_buffer = create_buffer(
-        1024 * 1024 * 128,
+        1024 * 1024 * 228,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             (use_hardware_rt ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
@@ -1436,7 +1505,7 @@ int main() {
     );
 
     Buffer global_index_buffer = create_buffer(
-        1024 * 1024 * 64,
+        1024 * 1024 * 164,
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             (use_hardware_rt ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
@@ -1459,19 +1528,19 @@ int main() {
     std::vector<DrawData> bindless_draw_data_cpu_buffer;
 
     Buffer meshlet_buffer = create_buffer(
-        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 164, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer meshlet_vertex_indices_buffer = create_buffer(
-        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 164, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer meshlet_primitive_indices_buffer = create_buffer(
-        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 164, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer meshlet_bounds_buffer = create_buffer(
-        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 164, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer scene_ubo_buffer = create_buffer(
@@ -1863,8 +1932,15 @@ int main() {
     texture_cache.insert({missing_material_index, missing_material});
     loaded_images.push_back(missing_material);
 
-    auto lantern = load_model(
-        "data/models/helmet.glb",
+    std::vector<Mesh>         meshes;
+    std::vector<Material>     materials;
+    std::vector<MeshInstance> mesh_instances;
+
+    load_scene(
+        "data/models/sponza/sponza.glb",
+        meshes,
+        materials,
+        mesh_instances,
         staging_buffer,
         global_vertex_buffer,
         indirect_vertex_buffer_offset,
@@ -1886,73 +1962,73 @@ int main() {
         device
     );
 
-    auto helmet = load_model(
-        "data/models/lantern.glb",
-        staging_buffer,
-        global_vertex_buffer,
-        indirect_vertex_buffer_offset,
-        global_index_buffer,
-        indirect_index_buffer_offset,
-        meshlet_buffer,
-        meshlet_buffer_offset,
-        meshlet_vertex_indices_buffer,
-        meshlet_vertex_indices_offset,
-        meshlet_primitive_indices_buffer,
-        meshlet_vertex_primitive_indices_offset,
-        meshlet_bounds_buffer,
-        meshlet_bounds_buffer_offset,
-        texture_cache,
-        loaded_images,
-        vma_allocator,
-        command_buffers[0],
-        graphics_queue,
-        device
-    );
+    // auto helmet = load_model(
+    //     "data/models/lantern.glb",
+    //     staging_buffer,
+    //     global_vertex_buffer,
+    //     indirect_vertex_buffer_offset,
+    //     global_index_buffer,
+    //     indirect_index_buffer_offset,
+    //     meshlet_buffer,
+    //     meshlet_buffer_offset,
+    //     meshlet_vertex_indices_buffer,
+    //     meshlet_vertex_indices_offset,
+    //     meshlet_primitive_indices_buffer,
+    //     meshlet_vertex_primitive_indices_offset,
+    //     meshlet_bounds_buffer,
+    //     meshlet_bounds_buffer_offset,
+    //     texture_cache,
+    //     loaded_images,
+    //     vma_allocator,
+    //     command_buffers[0],
+    //     graphics_queue,
+    //     device
+    // );
+    //
+    // std::vector<Mesh> meshes;
+    //
+    // for (auto& m : lantern) {
+    //     m.scale = 1.2f;
+    //     meshes.push_back(m);
+    // }
 
-    std::vector<Mesh> meshes;
-
-    for (auto& m : lantern) {
-        m.scale = 10.2f;
-        meshes.push_back(m);
-    }
-
-    for (auto& m : helmet) {
-        m.scale = 0.05f;
-        meshes.push_back(m);
-    }
-
-    // Stress test
-    {
-        int row = 0;
-        int col = 0;
-        int t   = 0;
-
-        float spacing = 2.0f;
-
-        int grid_break = 10;
-
-        for (int i = 0; i < 300; i++) {
-
-            for (auto mesh : lantern) {
-                auto clone     = mesh;
-                clone.position = glm::vec3(5 + row * spacing * 0.6, t * spacing, col * spacing * 0.5 - 5);
-                clone.scale    = 1;
-                meshes.push_back(clone);
-            }
-
-            row++;
-
-            if (row >= grid_break) {
-                row = 0;
-                col++;
-            }
-
-            if (col >= grid_break) {
-                t++;
-                col = 0;
-            }
-        }
-    }
+    // for (auto& m : helmet) {
+    //     m.scale = 0.05f;
+    //     meshes.push_back(m);
+    // }
+    //
+    // // Stress test
+    // {
+    //     int row = 0;
+    //     int col = 0;
+    //     int t   = 0;
+    //
+    //     float spacing = 2.0f;
+    //
+    //     int grid_break = 10;
+    //
+    //     for (int i = 0; i < 300; i++) {
+    //
+    //         for (auto mesh : lantern) {
+    //             auto clone     = mesh;
+    //             clone.position = glm::vec3(5 + row * spacing * 0.6, t * spacing, col * spacing * 0.5 - 5);
+    //             clone.scale    = 1;
+    //             meshes.push_back(clone);
+    //         }
+    //
+    //         row++;
+    //
+    //         if (row >= grid_break) {
+    //             row = 0;
+    //             col++;
+    //         }
+    //
+    //         if (col >= grid_break) {
+    //             t++;
+    //             col = 0;
+    //         }
+    //     }
+    // }
 
     uint32_t depth_index = texture_cache.size();
     texture_cache.insert({depth_index, depth_buffer});
@@ -2015,6 +2091,7 @@ int main() {
             command_buffers[0],
             graphics_queue,
             meshes,
+            mesh_instances,
             get_buffer_device_address(global_vertex_buffer, device),
             get_buffer_device_address(global_index_buffer, device),
             rt_pipeline_layout,
@@ -2041,7 +2118,7 @@ int main() {
         .viewport_width  = static_cast<float>(swapchain.width),
         .viewport_height = static_cast<float>(swapchain.height),
         .fov             = 90.0f,
-        .orientation     = glm::identity<glm::quat>()
+        .orientation     = {0.0f, 0.0f, 0.0f, 1.0f}
     };
 
     float base_camera_speed        = 10.0f;
@@ -2064,9 +2141,8 @@ int main() {
     uint32_t accumulated_fps = 0;
     uint32_t fps             = 0;
 
-    glm::mat4     frozen_view_proj;
-    glm::vec4     frozen_camera_position;
-    FrustumPlanes frozen_planes;
+    glm::mat4 frozen_view;
+    float     frozen_frustum[4];
 
     bool debug_frustum   = false;
     bool disable_culling = false;
@@ -2745,6 +2821,11 @@ int main() {
 
         update_camera(camera);
 
+        auto transposed_projection = glm::transpose(camera.projection_matrix);
+
+        glm::vec4 frustum_x = normalize_plane(transposed_projection[3] + transposed_projection[0]);
+        glm::vec4 frustum_y = normalize_plane(transposed_projection[3] + transposed_projection[1]);
+
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
@@ -2765,9 +2846,11 @@ int main() {
 
         ImGui::SeparatorText("Debug");
         if (ImGui::Checkbox("Freeze frustum", &debug_frustum)) {
-            frozen_camera_position = glm::vec4(camera.position, 1.0);
-            frozen_planes          = camera.planes;
-            frozen_view_proj       = camera.combined_matrix;
+            frozen_view       = camera.view_matrix;
+            frozen_frustum[0] = frustum_x.x;
+            frozen_frustum[1] = frustum_x.z;
+            frozen_frustum[2] = frustum_y.y;
+            frozen_frustum[3] = frustum_y.z;
         }
         ImGui::Checkbox("Disable culling", &disable_culling);
         ImGui::NewLine();
@@ -2785,35 +2868,33 @@ int main() {
         VK_CHECK(vkResetFences(device, 1, &frame_fences[frame_index]));
         vmaSetCurrentFrameIndex(vma_allocator, frame_index);
 
-        SceneUBO scene_ubo = {};
-        scene_ubo.view     = camera.view_matrix;
-        scene_ubo.proj     = camera.projection_matrix;
-        scene_ubo.P00      = camera.projection_matrix[0][0];
-        scene_ubo.P11      = camera.projection_matrix[1][1];
+        SceneUBO scene_ubo        = {};
+        scene_ubo.proj            = camera.projection_matrix;
+        scene_ubo.camera_position = glm::vec4(camera.position, 1.0);
 
         scene_ubo.view_proj         = camera.combined_matrix;
         scene_ubo.inverse_view_proj = glm::inverse(camera.combined_matrix);
-        scene_ubo.frozen_view_proj  = frozen_view_proj;
 
-        scene_ubo.camera_position        = glm::vec4(camera.position, 1.0);
-        scene_ubo.frozen_camera_position = frozen_camera_position;
+        scene_ubo.view       = camera.view_matrix;
+        scene_ubo.frustum[0] = frustum_x.x;
+        scene_ubo.frustum[1] = frustum_x.z;
+        scene_ubo.frustum[2] = frustum_y.y;
+        scene_ubo.frustum[3] = frustum_y.z;
 
-        scene_ubo.planes[0] = camera.planes.left;
-        scene_ubo.planes[1] = camera.planes.right;
-        scene_ubo.planes[2] = camera.planes.bottom;
-        scene_ubo.planes[3] = camera.planes.top;
-        scene_ubo.planes[4] = camera.planes.near;
-        scene_ubo.planes[5] = camera.planes.far;
-
-        scene_ubo.frozen_planes[0] = frozen_planes.left;
-        scene_ubo.frozen_planes[1] = frozen_planes.right;
-        scene_ubo.frozen_planes[2] = frozen_planes.bottom;
-        scene_ubo.frozen_planes[3] = frozen_planes.top;
-        scene_ubo.frozen_planes[4] = frozen_planes.near;
-        scene_ubo.frozen_planes[5] = frozen_planes.far;
+        scene_ubo.frozen_view       = frozen_view;
+        scene_ubo.frozen_frustum[0] = frozen_frustum[0];
+        scene_ubo.frozen_frustum[1] = frozen_frustum[1];
+        scene_ubo.frozen_frustum[2] = frozen_frustum[2];
+        scene_ubo.frozen_frustum[3] = frozen_frustum[3];
 
         scene_ubo.debug_frustum   = debug_frustum;
         scene_ubo.disable_culling = disable_culling;
+
+        scene_ubo.P00 = camera.projection_matrix[0][0];
+        scene_ubo.P11 = camera.projection_matrix[1][1];
+
+        scene_ubo.near_plane = camera.near_plane;
+        scene_ubo.far_plane  = 1000.0f;
 
         void*  scene_ubo_ptr  = nullptr;
         size_t ubo_ptr_offset = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
@@ -2823,29 +2904,28 @@ int main() {
 
         bindless_draw_data_cpu_buffer.clear();
 
-        for (auto& mesh : meshes) {
+        for (auto& instance : mesh_instances) {
+            Mesh&     mesh     = meshes[instance.mesh_id];
+            Material& material = materials[instance.material_id];
+
             uint32_t first_index   = static_cast<uint32_t>(mesh.index_buffer_offset / sizeof(uint32_t));
             int32_t  vertex_offset = static_cast<int32_t>(mesh.vertex_buffer_offset / sizeof(Vertex));
 
-            glm::mat4 model = glm::translate(glm::mat4(1.0f), mesh.position);
-            model           = glm::scale(model, glm::vec3(mesh.scale));
-
-            glm::mat3 normal_matrix = glm::transpose(glm::inverse(glm::mat3(model)));
-
             bindless_draw_data_cpu_buffer.push_back(
                 DrawData{
-                    .model_matrix   = model,
-                    .normal_matrix  = glm::mat4(normal_matrix),
-                    .center         = mesh.center * mesh.scale + mesh.position,
-                    .radius         = mesh.radius * mesh.scale,
+                    .center         = mesh.center,
+                    .radius         = mesh.radius,
+                    .position       = instance.position,
+                    .scale          = instance.scale,
+                    .rotation       = instance.rotation,
                     .index_count    = mesh.index_count,
                     .first_index    = first_index,
                     .vertex_offset  = vertex_offset,
                     .meshlet_offset = mesh.meshlet_offset,
                     .meshlet_count  = mesh.meshlet_count,
-                    .albedo_index   = mesh.material.albedo_index,
-                    .normals_index  = mesh.material.normals_index,
-                    .material_index = mesh.material.material_index,
+                    .albedo_index   = material.albedo_index,
+                    .normals_index  = material.normals_index,
+                    .material_index = material.material_index,
                 }
             );
         }

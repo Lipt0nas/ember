@@ -39,49 +39,54 @@ void main() {
 
     barrier();
 
-    bool is_visible = false;
+    bool visible = true;
     if (meshlet_id < draw.meshlet_count) {
         uint global_meshlet_id = draw.meshlet_offset + meshlet_id;
         MeshletBounds bounds = meshlet_bounds.bounds[global_meshlet_id];
 
-        vec3 camera_position = scene.camera_position.xyz;
-        vec4[6] planes = scene.planes;
+        mat4 view = scene.view;
+        vec4 frustum = scene.frustum;
 
         if (scene.debug_frustum == 1) {
-            camera_position = scene.frozen_camera_position.xyz;
-            planes = scene.frozen_planes;
+            view = scene.frozen_view;
+            frustum = scene.frozen_frustum;
         }
 
-        vec3 world_bounds = (draw.model * vec4(bounds.center, 1.0f)).xyz;
+        vec3 center = rotate_quat(bounds.center, draw.rotation) * draw.scale + draw.position;
+        center = (view * vec4(center, 1.0f)).xyz;
 
-        vec3 scale = vec3(length(draw.model[0].xyz), length(draw.model[1].xyz), length(draw.model[2].xyz));
-        float world_radius = bounds.radius * max(scale.x, max(scale.y, scale.z));
+        float radius = bounds.radius * draw.scale;
 
-        vec3 cone_axis = mat3(scene.view) * bounds.cone_axis;
+        vec3 cone_axis = rotate_quat(bounds.cone_axis, draw.rotation);
+        cone_axis = mat3(view) * cone_axis;
 
-        is_visible = is_sphere_in_frustum(world_bounds, world_radius, planes);
+        float cone_cutoff = bounds.cone_cutoff;
 
-        world_bounds = (scene.view * vec4(world_bounds, 1)).xyz;
-        is_visible = is_visible && !cone_cull(world_bounds, world_radius, cone_axis, bounds.cone_cutoff, vec3(0, 0, 0));
+        visible = visible && !cone_cull(center, radius, cone_axis, cone_cutoff, vec3(0, 0, 0));
+
+        visible = visible && center.z * frustum[1] - abs(center.x) * frustum[0] > -radius;
+        visible = visible && center.z * frustum[3] - abs(center.y) * frustum[2] > -radius;
+
+        visible = visible && center.z + radius > scene.near_plane && center.z - radius < scene.far_plane;
 
         if (scene.disable_culling == 1) {
-            is_visible = true;
+            visible = true;
         }
-    }
 
-    if (is_visible) {
-        uint index = atomicAdd(visible_count, 1);
-        visible_meshlet_indices[index] = thread_id;
-    }
+        if (visible) {
+            uint index = atomicAdd(visible_count, 1);
+            visible_meshlet_indices[index] = thread_id;
+        }
 
-    barrier();
+        barrier();
 
-    if (thread_id == 0) {
-        payload.meshlet_offset = base_meshlet_id;
-        EmitMeshTasksEXT(visible_count, 1, 1);
-    }
+        if (thread_id == 0) {
+            payload.meshlet_offset = base_meshlet_id;
+            EmitMeshTasksEXT(visible_count, 1, 1);
+        }
 
-    if (thread_id < visible_count) {
-        payload.meshlet_indices[thread_id] = visible_meshlet_indices[thread_id];
+        if (thread_id < visible_count) {
+            payload.meshlet_indices[thread_id] = visible_meshlet_indices[thread_id];
+        }
     }
 }

@@ -1,11 +1,12 @@
 #define MESHLETS_PER_TASK 32
 
 struct DrawData {
-    mat4 model;
-    mat4 normal_matrix;
-
     vec3 center;
     float radius;
+
+    vec3 position;
+    float scale;
+    vec4 rotation;
 
     uint index_count;
     uint first_index;
@@ -44,31 +45,49 @@ struct Vertex {
 };
 
 layout(set = 1, binding = 0) uniform SceneUBO {
-    mat4 view;
     mat4 proj;
+    vec4 camera_position;
 
     mat4 view_proj;
     mat4 inverse_view_proj;
-    vec4 planes[6];
-    vec4 camera_position;
 
-    mat4 frozen_view_proj;
-    vec4 frozen_planes[6];
-    vec4 frozen_camera_position;
+    mat4 view;
+    vec4 frustum;
+
+    mat4 frozen_view;
+    vec4 frozen_frustum;
 
     uint debug_frustum;
     uint disable_culling;
 
     float P00;
     float P11;
+
+    float near_plane;
+    float far_plane;
 } scene;
 
-bool is_sphere_in_frustum(vec3 world_center, float world_radius, vec4[6] planes) {
-    for (int i = 0; i < 6; i++) {
-        if (dot(world_center, planes[i].xyz) + planes[i].w <= -world_radius) {
-            return false;
-        }
-    }
+vec3 rotate_quat(vec3 v, vec4 q) {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+bool project_sphere(vec3 c, float r, float znear, float P00, float P11, out vec4 aabb) {
+    if (c.z < r + znear)
+        return false;
+
+    vec3 cr = c * r;
+    float czr2 = c.z * c.z - r * r;
+
+    float vx = sqrt(c.x * c.x + czr2);
+    float minx = (vx * c.x - cr.z) / (vx * c.z + cr.x);
+    float maxx = (vx * c.x + cr.z) / (vx * c.z - cr.x);
+
+    float vy = sqrt(c.y * c.y + czr2);
+    float miny = (vy * c.y - cr.z) / (vy * c.z + cr.y);
+    float maxy = (vy * c.y + cr.z) / (vy * c.z - cr.y);
+
+    aabb = vec4(minx * P00, miny * P11, maxx * P00, maxy * P11);
+    aabb = aabb.xwzy * vec4(0.5f, -0.5f, 0.5f, -0.5f) + vec4(0.5f); // clip space -> uv space
 
     return true;
 }

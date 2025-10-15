@@ -46,7 +46,7 @@ bool trace_shadow_ray(vec3 origin, vec3 normal, vec3 direction) {
 vec3 evaluate_lighting(vec3 pos, vec3 normal) {
     vec3 lighting = vec3(0.0);
 
-    vec3 sun_dir = (vec3(0.2, 0.9, 0.2));
+    vec3 sun_dir = normalize(-vec3(0.4, -0.7, 0.5));
     vec3 sun_color = vec3(1.0, 1.0, 1.0) * 5.0;
 
     float NdotL = max(0.0, dot(normal, sun_dir));
@@ -88,7 +88,7 @@ void main() {
     vec3 local_normal = normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
 
     payload.world_pos = vec3(gl_ObjectToWorldEXT * vec4(local_pos, 1.0));
-    payload.normal = normalize(vec3(gl_WorldToObjectEXT * vec4(local_normal, 0.0)));
+    payload.normal = normalize(mat3(gl_ObjectToWorldEXT) * local_normal);
     payload.hit = true;
 
     vec2 uv0 = v0.uv;
@@ -102,5 +102,5 @@ void main() {
     }
 
     vec3 lighting = evaluate_lighting(payload.world_pos, payload.normal);
-    payload.radiance = albedo * lighting / 3.14159265359;
+    payload.radiance = albedo * lighting;
 }

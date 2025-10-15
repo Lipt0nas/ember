@@ -22,13 +22,18 @@ struct Mesh {
     uint32_t vertex_count;
     uint32_t index_count;
 
-    Material material;
-
     glm::vec3 center = {};
     float     radius = 0.0f;
+};
+
+struct MeshInstance {
+    int mesh_id;
+    int material_id;
 
     glm::vec3 position = {};
     float     scale    = 1.0f;
+
+    glm::quat rotation = {0.0f, 0.0f, 0.0f, 1.0f};
 };
 
 // TODO: move this out
@@ -79,19 +84,20 @@ bool is_mesh_same(const Mesh& m1, const Mesh& m2);
 VkTransformMatrixKHR glm_to_vk_transform(const glm::mat4& mat);
 
 RTScene create_rt_scene(
-    VkDevice                     device,
-    VkPhysicalDevice             physical_device,
-    VmaAllocator                 allocator,
-    VkCommandBuffer              command_buffer,
-    VkQueue                      queue,
-    const std::vector<Mesh>&     meshes,
-    VkDeviceAddress              global_vertex_buffer_address,
-    VkDeviceAddress              global_index_buffer_address,
-    VkPipelineLayout             pipeline_layout,
-    const std::filesystem::path& ray_generation_shader,
-    const std::filesystem::path& ray_miss_shader,
-    const std::filesystem::path& ray_closest_hit_shader,
-    const std::filesystem::path& ray_any_hit_shader
+    VkDevice                         device,
+    VkPhysicalDevice                 physical_device,
+    VmaAllocator                     allocator,
+    VkCommandBuffer                  command_buffer,
+    VkQueue                          queue,
+    const std::vector<Mesh>&         meshes,
+    const std::vector<MeshInstance>& mesh_instances,
+    VkDeviceAddress                  global_vertex_buffer_address,
+    VkDeviceAddress                  global_index_buffer_address,
+    VkPipelineLayout                 pipeline_layout,
+    const std::filesystem::path&     ray_generation_shader,
+    const std::filesystem::path&     ray_miss_shader,
+    const std::filesystem::path&     ray_closest_hit_shader,
+    const std::filesystem::path&     ray_any_hit_shader
 );
 
 void destroy_rt_scene(const RTScene& scene, VkDevice device, VmaAllocator allocator);

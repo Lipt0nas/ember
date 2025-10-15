@@ -1,46 +1,20 @@
 #include "rt_scene.hpp"
 
-bool is_mesh_same(const Mesh& m1, const Mesh& m2) {
-    return (
-        (m1.index_buffer_offset == m2.index_buffer_offset) && (m1.vertex_buffer_offset == m2.vertex_buffer_offset) &&
-        (m1.vertex_count == m2.vertex_count) && (m1.index_count == m2.index_count)
-    );
-}
-
-VkTransformMatrixKHR glm_to_vk_transform(const glm::mat4& mat) {
-    VkTransformMatrixKHR transform;
-    transform.matrix[0][0] = mat[0][0];
-    transform.matrix[0][1] = mat[1][0];
-    transform.matrix[0][2] = mat[2][0];
-    transform.matrix[0][3] = mat[3][0];
-
-    transform.matrix[1][0] = mat[0][1];
-    transform.matrix[1][1] = mat[1][1];
-    transform.matrix[1][2] = mat[2][1];
-    transform.matrix[1][3] = mat[3][1];
-
-    transform.matrix[2][0] = mat[0][2];
-    transform.matrix[2][1] = mat[1][2];
-    transform.matrix[2][2] = mat[2][2];
-    transform.matrix[2][3] = mat[3][2];
-
-    return transform;
-}
-
 RTScene create_rt_scene(
-    VkDevice                     device,
-    VkPhysicalDevice             physical_device,
-    VmaAllocator                 allocator,
-    VkCommandBuffer              command_buffer,
-    VkQueue                      queue,
-    const std::vector<Mesh>&     meshes,
-    VkDeviceAddress              global_vertex_buffer_address,
-    VkDeviceAddress              global_index_buffer_address,
-    VkPipelineLayout             pipeline_layout,
-    const std::filesystem::path& ray_generation_shader,
-    const std::filesystem::path& ray_miss_shader,
-    const std::filesystem::path& ray_closest_hit_shader,
-    const std::filesystem::path& ray_any_hit_shader
+    VkDevice                         device,
+    VkPhysicalDevice                 physical_device,
+    VmaAllocator                     allocator,
+    VkCommandBuffer                  command_buffer,
+    VkQueue                          queue,
+    const std::vector<Mesh>&         meshes,
+    const std::vector<MeshInstance>& mesh_instances,
+    VkDeviceAddress                  global_vertex_buffer_address,
+    VkDeviceAddress                  global_index_buffer_address,
+    VkPipelineLayout                 pipeline_layout,
+    const std::filesystem::path&     ray_generation_shader,
+    const std::filesystem::path&     ray_miss_shader,
+    const std::filesystem::path&     ray_closest_hit_shader,
+    const std::filesystem::path&     ray_any_hit_shader
 ) {
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR ray_tracing_properties = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR
@@ -62,24 +36,9 @@ RTScene create_rt_scene(
 
     spdlog::info("max recursion depth: {}", ray_tracing_properties.maxRayRecursionDepth);
 
-    std::vector<Mesh> unique_meshes;
-    for (auto& m : meshes) {
-        bool is_unique = true;
-        for (auto& unique_mesh : unique_meshes) {
-            if (is_mesh_same(m, unique_mesh)) {
-                is_unique = false;
-                break;
-            }
-        }
-
-        if (is_unique) {
-            unique_meshes.push_back(m);
-        }
-    }
-
     std::vector<BLAS> bottom_level_acceleration_structures;
 
-    for (auto& mesh : unique_meshes) {
+    for (auto& mesh : meshes) {
         VkAccelerationStructureGeometryKHR acceleration_structure_geometry = {
             .sType        = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
             .pNext        = nullptr,
@@ -222,30 +181,27 @@ RTScene create_rt_scene(
     }
 
     std::vector<VkAccelerationStructureInstanceKHR> tlas_instances;
-    for (int i = 0; i < meshes.size(); i++) {
-        const Mesh& mesh = meshes[i];
+    for (int i = 0; i < mesh_instances.size(); i++) {
+        const MeshInstance& inst = mesh_instances[i];
 
-        uint32_t mesh_index = 0;
-        uint32_t idx        = 0;
-        for (const auto& unique_mesh : unique_meshes) {
-            if (is_mesh_same(mesh, unique_mesh)) {
-                break;
-            }
-
-            mesh_index++;
-        }
-
-        glm::mat4 model = glm::translate(glm::mat4(1.0f), mesh.position);
-        model           = glm::scale(model, glm::vec3(mesh.scale));
+        glm::mat4 model = glm::mat4(1.0f);
 
         VkAccelerationStructureInstanceKHR instance = {
-            .transform                              = glm_to_vk_transform(model),
+            .transform                              = {},
             .instanceCustomIndex                    = static_cast<uint32_t>(i),
             .mask                                   = 0xFF,
             .instanceShaderBindingTableRecordOffset = 0,
             .flags                                  = 0,
-            .accelerationStructureReference         = bottom_level_acceleration_structures[mesh_index].address
+            .accelerationStructureReference         = bottom_level_acceleration_structures[inst.mesh_id].address
         };
+
+        glm::mat3 transform = transpose(glm::mat3_cast(inst.rotation)) * inst.scale;
+        memcpy(instance.transform.matrix[0], &transform[0], sizeof(float) * 3);
+        memcpy(instance.transform.matrix[1], &transform[1], sizeof(float) * 3);
+        memcpy(instance.transform.matrix[2], &transform[2], sizeof(float) * 3);
+        instance.transform.matrix[0][3] = inst.position.x;
+        instance.transform.matrix[1][3] = inst.position.y;
+        instance.transform.matrix[2][3] = inst.position.z;
 
         tlas_instances.push_back(instance);
     }

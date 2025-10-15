@@ -99,7 +99,7 @@ void main() {
 
     vec3 world_pos = reconstruct_world_position(uv, depth);
 
-    vec3 light_dir = vec3(1, -0.7, 0);
+    vec3 light_dir = vec3(0.4, -0.7, 0.5);
     vec3 light_color = vec3(1.0, 1.0, 1.0);
     float light_intensity = 1.0;
 
