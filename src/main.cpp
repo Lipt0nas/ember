@@ -2057,7 +2057,8 @@ int main() {
     uint32_t frame_count = 0;
     uint32_t frame_index = 0;
 
-    float delta_time = 0.0f;
+    float delta_time      = 0.0f;
+    auto  frame_timestamp = std::chrono::high_resolution_clock::now();
 
     float    time_passed     = 0.0f;
     uint32_t accumulated_fps = 0;
@@ -2650,7 +2651,19 @@ int main() {
     framegraph.build();
 
     while (running) {
-        auto frame_start_time = std::chrono::high_resolution_clock::now();
+        auto time       = std::chrono::high_resolution_clock::now();
+        auto delta_time = std::chrono::duration<float>(time - frame_timestamp).count();
+        frame_timestamp = time;
+
+        accumulated_fps++;
+        time_passed += delta_time;
+
+        if (time_passed >= 1.0f) {
+            fps = accumulated_fps;
+
+            accumulated_fps = 0;
+            time_passed -= 1.0f;
+        }
 
         SDL_Event window_event;
         while (SDL_PollEvent(&window_event)) {
@@ -2765,13 +2778,12 @@ int main() {
         ImGui::RenderPlatformWindowsDefault();
 
         VK_CHECK(vkWaitForFences(device, 1, &frame_fences[frame_index], VK_TRUE, UINT64_MAX));
-
         uint32_t image_index = 0;
         vkAcquireNextImageKHR(
             device, swapchain.handle, UINT64_MAX, image_available_semaphores[frame_index], VK_NULL_HANDLE, &image_index
         );
-        vmaSetCurrentFrameIndex(vma_allocator, frame_index);
         VK_CHECK(vkResetFences(device, 1, &frame_fences[frame_index]));
+        vmaSetCurrentFrameIndex(vma_allocator, frame_index);
 
         SceneUBO scene_ubo = {};
         scene_ubo.view     = camera.view_matrix;
@@ -3057,20 +3069,6 @@ int main() {
         VK_CHECK(vkQueuePresentKHR(graphics_queue, &present_info));
 
         framegraph.gather_timestamp_queries(device, physical_device_properties.limits.timestampPeriod);
-
-        auto time_diff =
-            std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - frame_start_time)
-                .count();
-        delta_time = time_diff * 0.001f;
-        accumulated_fps++;
-
-        time_passed += delta_time;
-        if (time_passed >= 1.0f) {
-            fps = accumulated_fps;
-
-            accumulated_fps = 0;
-            time_passed     = 0.0f;
-        }
 
         frame_index = (frame_index + 1) % FRAMES_IN_FLIGHT;
         frame_count++;

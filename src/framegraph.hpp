@@ -275,7 +275,7 @@ struct Framegraph {
     ) {
         this->enable_timings = enable_timings;
 
-        timestamp_query_pools.resize(frames_in_flight + 30);
+        timestamp_query_pools.resize(frames_in_flight);
 
         if (enable_timings) {
             VkQueryPoolCreateInfo pool_info = {
@@ -686,7 +686,7 @@ struct Framegraph {
             timestamps.size() * sizeof(uint64_t),
             timestamps.data(),
             sizeof(uint64_t),
-            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT
+            VK_QUERY_RESULT_64_BIT
         );
 
         if (result == VK_SUCCESS) {

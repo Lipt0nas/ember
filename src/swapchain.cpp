@@ -33,8 +33,8 @@ Swapchain create_swapchain(SDL_Window* window, VkInstance instance, VkDevice dev
     // TODO:: Allow for easier selection
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     for (const auto& mode : present_modes) {
-        // if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
-        if (mode == VK_PRESENT_MODE_FIFO_KHR) {
+        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+            // if (mode == VK_PRESENT_MODE_FIFO_KHR) {
             present_mode = mode;
             break;
         }
@@ -49,6 +49,7 @@ Swapchain create_swapchain(SDL_Window* window, VkInstance instance, VkDevice dev
     extent.width  = std::clamp(extent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
     extent.height = std::clamp(extent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
 
+    spdlog::info("Swapchain present mode: {}", string_VkPresentModeKHR(present_mode));
     spdlog::info("Swapchain format: {}", string_VkFormat(surface_format.format));
     spdlog::info("Swapchain colorspace: {}", string_VkColorSpaceKHR(surface_format.colorSpace));
 
