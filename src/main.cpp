@@ -714,7 +714,7 @@ void load_scene(
 
         const auto& mesh = model.meshes[node.mesh];
 
-        glm::vec3 position;
+        glm::vec3 position = glm::vec3(0.0);
         if (node.translation.size() == 3) {
             position = {node.translation[0], node.translation[1], node.translation[2]};
         } else {
@@ -727,7 +727,7 @@ void load_scene(
             scale = node.scale[0];
         }
 
-        glm::quat rotation;
+        glm::quat rotation = glm::quat(0.0f, 0.0f, 0.0f, 1.0f);
         if (node.rotation.size() == 4) {
             rotation = glm::quat(node.rotation[0], node.rotation[1], node.rotation[2], node.rotation[3]);
         }
@@ -1288,7 +1288,7 @@ int main() {
     VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &depth_sampler));
 
     Buffer staging_buffer = create_buffer(
-        1024 * 1024 * 128,
+        1024 * 1024 * 64,
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
@@ -1952,7 +1952,7 @@ int main() {
     std::vector<MeshInstance> mesh_instances;
 
     load_scene(
-        "data/models/helmet.glb",
+        "data/models/sponza/sponza.glb",
         meshes,
         materials,
         mesh_instances,
@@ -2197,6 +2197,9 @@ int main() {
                 indirect_command_buffer.size / FRAMES_IN_FLIGHT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "Early Cull Pass");
+                ZoneScopedN("Early Cull Pass");
+
                 size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
                 size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
                 size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
@@ -2271,6 +2274,9 @@ int main() {
                 draw_data_buffer.size / FRAMES_IN_FLIGHT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "Gbuffer Pass");
+                ZoneScopedN("Gbuffer Pass");
+
                 size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
                 size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
                 size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
@@ -2412,6 +2418,9 @@ int main() {
                                       VK_IMAGE_LAYOUT_GENERAL
                                   )
                                   .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                                      TracyVkZone(tracy_vk_context, command_buffer, "Depth Pyramid");
+                                      ZoneScopedN("Depth Pyramid");
+
                                       vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_pipeline);
                                       for (int i = 0; i < depth_hiz.levels; ++i) {
                                           uint32_t mip_width  = glm::max(1u, depth_hiz.width >> i);
@@ -2518,6 +2527,9 @@ int main() {
                 .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR)
                 .writes_storage_image(gi_output, VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR)
                 .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                    TracyVkZone(tracy_vk_context, command_buffer, "RTGI Pass");
+                    ZoneScopedN("RTGI Pass");
+
                     size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
                     size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
                     size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
@@ -2637,6 +2649,9 @@ int main() {
     }
 
     light_pass.render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+        TracyVkZone(tracy_vk_context, command_buffer, "Light Pass");
+        ZoneScopedN("Light Pass");
+
         size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
@@ -2693,6 +2708,9 @@ int main() {
             .samples_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(composite_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "Composite Pass");
+                ZoneScopedN("Composite Pass");
+
                 size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
                 size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
                 size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
@@ -2917,7 +2935,7 @@ int main() {
         size_t ubo_ptr_offset = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         VK_CHECK(vmaMapMemory(vma_allocator, scene_ubo_buffer.allocation, &scene_ubo_ptr));
         memcpy(reinterpret_cast<char*>(scene_ubo_ptr) + ubo_ptr_offset, &scene_ubo, sizeof(SceneUBO));
-        VK_CHECK(vmaFlushAllocation(vma_allocator, scene_ubo_buffer.allocation, 0, VK_WHOLE_SIZE));
+        VK_CHECK(vmaFlushAllocation(vma_allocator, scene_ubo_buffer.allocation, ubo_ptr_offset, scene_ubo_buffer.size));
 
         bindless_draw_data_cpu_buffer.clear();
 
@@ -2955,9 +2973,10 @@ int main() {
             bindless_draw_data_cpu_buffer.data(),
             sizeof(DrawData) * bindless_draw_data_cpu_buffer.size()
         );
-        VK_CHECK(vmaFlushAllocation(vma_allocator, draw_data_buffer.allocation, 0, VK_WHOLE_SIZE));
-
-        size_t command_ptr_frame_offset = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        vmaUnmapMemory(vma_allocator, draw_data_buffer.allocation);
+        VK_CHECK(vmaFlushAllocation(
+            vma_allocator, draw_data_buffer.allocation, draw_data_ptr_frame_offset, draw_data_buffer.size
+        ));
 
         VkCommandBufferBeginInfo begin_info = {
             .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -2982,12 +3001,13 @@ int main() {
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
+        size_t command_ptr_frame_offset = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         vkCmdFillBuffer(command_buffer, indirect_command_buffer.handle, command_ptr_frame_offset, sizeof(uint32_t), 0);
 
         buffer_pipeline_barrier(
             indirect_command_buffer,
             command_buffer,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
             VK_ACCESS_2_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
@@ -3137,6 +3157,7 @@ int main() {
                 .layerCount     = 1,
             }
         );
+        TracyVkCollect(tracy_vk_context, command_buffer);
         VK_CHECK(vkEndCommandBuffer(command_buffer));
 
         VkPipelineStageFlags wait_stage  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -3152,8 +3173,6 @@ int main() {
                     .pSignalSemaphores    = &render_finished_semaphores[image_index]
         };
         VK_CHECK(vkQueueSubmit(graphics_queue, 1, &submit_info, frame_fences[frame_index]));
-
-        TracyVkCollect(tracy_vk_context, command_buffer);
 
         VkPresentInfoKHR present_info = {
             .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,

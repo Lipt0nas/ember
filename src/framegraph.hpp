@@ -582,7 +582,7 @@ struct Framegraph {
 
             if (enable_timings) {
                 vkCmdWriteTimestamp2(
-                    command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool, current_pass.query_start_index
+                    command_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, query_pool, current_pass.query_start_index
                 );
             }
 
@@ -653,7 +653,7 @@ struct Framegraph {
 
             if (enable_timings) {
                 vkCmdWriteTimestamp2(
-                    command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, query_pool, current_pass.query_end_index
+                    command_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, query_pool, current_pass.query_end_index
                 );
             }
         }
@@ -668,33 +668,41 @@ struct Framegraph {
     }
 
     void gather_timestamp_queries(VkDevice device, float timestamp_period) {
-        if (!start_reading) {
+        if (!start_reading || !enable_timings) {
             return;
         }
 
-        uint32_t read_frame_index =
-            (timestamp_query_pool_index + timestamp_query_pools.size() - 1) % timestamp_query_pools.size();
+        struct QueryResult {
+            uint64_t timestamp;
+            uint64_t availability;
+        };
 
-        VkQueryPool           prev_query_pool = timestamp_query_pools[read_frame_index];
-        std::vector<uint64_t> timestamps(next_query_index);
+        VkQueryPool              prev_query_pool = timestamp_query_pools[timestamp_query_pool_index];
+        std::vector<QueryResult> timestamps(next_query_index);
 
         VkResult result = vkGetQueryPoolResults(
             device,
             prev_query_pool,
             0,
             next_query_index,
-            timestamps.size() * sizeof(uint64_t),
+            timestamps.size() * sizeof(QueryResult),
             timestamps.data(),
-            sizeof(uint64_t),
-            VK_QUERY_RESULT_64_BIT
+            sizeof(QueryResult),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT
         );
 
         if (result == VK_SUCCESS) {
             for (auto& pass : passes) {
-                uint64_t start       = timestamps[pass.query_start_index];
-                uint64_t end         = timestamps[pass.query_end_index];
-                double   duration_ns = (end - start) * timestamp_period;
-                pass_timings[pass.name].add_sample(duration_ns / 1'000'000.0);
+                auto start = timestamps[pass.query_start_index];
+                auto end   = timestamps[pass.query_end_index];
+
+                if (start.availability == 0 || end.availability == 0) {
+                    pass_timings[pass.name].add_sample(0);
+                } else {
+                    double duration_ns =
+                        end.timestamp > start.timestamp ? (end.timestamp - start.timestamp) * timestamp_period : 0;
+                    pass_timings[pass.name].add_sample(duration_ns / 1'000'000.0);
+                }
             }
         }
     }
