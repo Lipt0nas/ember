@@ -146,9 +146,31 @@ VkDevice create_device(
     VkPhysicalDevice physical_device,
     uint32_t         graphics_family_index,
     bool             enable_validation,
-    bool             use_meshlets,
-    bool             use_hardware_rt
+    bool&            use_meshlets,
+    bool&            use_hardware_rt
 ) {
+
+    uint32_t extension_count = 0;
+    VK_CHECK(vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, nullptr));
+
+    std::vector<VkExtensionProperties> available_device_extensions(extension_count);
+    VK_CHECK(vkEnumerateDeviceExtensionProperties(
+        physical_device, nullptr, &extension_count, available_device_extensions.data()
+    ));
+
+    bool meshlets_supported    = false;
+    bool ray_tracing_supported = false;
+    for (auto& extension : available_device_extensions) {
+        meshlets_supported =
+            meshlets_supported || strcmp(extension.extensionName, VK_EXT_MESH_SHADER_EXTENSION_NAME) == 0;
+
+        ray_tracing_supported =
+            ray_tracing_supported || strcmp(extension.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) == 0;
+    }
+
+    use_meshlets    = meshlets_supported;
+    use_hardware_rt = ray_tracing_supported;
+
     std::vector<const char*> device_extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
     if (use_meshlets) {

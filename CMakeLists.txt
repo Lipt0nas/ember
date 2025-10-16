@@ -71,29 +71,50 @@ FetchContent_Declare(implot
   GIT_TAG 3da8bd34299965d3b0ab124df743fe3e076fa222
 )
 
-FetchContent_MakeAvailable(glm sdl vma spdlog volk tinygltf meshoptimizer stb implot)
+FetchContent_Declare(
+  tracy
+  GIT_REPOSITORY https://github.com/wolfpld/tracy.git
+  GIT_TAG v0.12.2
+  GIT_SHALLOW TRUE
+)
 
-FetchContent_GetProperties(imgui)
-if(NOT imgui_POPULATED)
-    FetchContent_MAkeAvailable(imgui)
-    add_library(imgui STATIC
-        ${imgui_SOURCE_DIR}/imgui.cpp
-        ${imgui_SOURCE_DIR}/imgui_demo.cpp
-        ${imgui_SOURCE_DIR}/imgui_draw.cpp
-        ${imgui_SOURCE_DIR}/imgui_tables.cpp
-        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
-    )
-    target_include_directories(imgui PUBLIC 
-        ${imgui_SOURCE_DIR}
-        ${imgui_SOURCE_DIR}/backends
-    )
-    target_compile_definitions(imgui PUBLIC
-        "IMGUI_IMPL_VULKAN_NO_PROTOTYPES"
-    )
-    target_link_libraries(imgui PUBLIC SDL3::SDL3-static Vulkan::Vulkan)
-endif()
+add_compile_options("-DTRACY_ENABLE")
+add_compile_options("-DTRACY_ONLY_LOCALHOST")
+add_compile_options("-DTRACY_VK_USE_SYMBOL_TABLE")
+add_compile_options("-DTRACY_NO_BROADCAST")
+add_compile_options("-DTRACY_CALLSTACK")
+
+FetchContent_MakeAvailable(
+    glm
+    sdl
+    vma
+    spdlog
+    volk
+    tinygltf
+    meshoptimizer
+    stb
+    imgui
+    implot
+    tracy
+)
+
+add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
+)
+target_include_directories(imgui PUBLIC 
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+)
+target_compile_definitions(imgui PUBLIC
+    "IMGUI_IMPL_VULKAN_NO_PROTOTYPES"
+)
+target_link_libraries(imgui PUBLIC SDL3::SDL3-static Vulkan::Vulkan)
 
 add_library(stb INTERFACE)
 target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
@@ -132,6 +153,7 @@ target_link_libraries(Ember PRIVATE
     meshoptimizer
     stb
     implot
+    TracyClient
 )
 
 # TODO: temporary convenience

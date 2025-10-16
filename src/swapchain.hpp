@@ -18,5 +18,7 @@ struct Swapchain {
     VkSurfaceKHR     surface;
 };
 
-Swapchain create_swapchain(SDL_Window* window, VkInstance instance, VkDevice device, VkPhysicalDevice physical_device);
-void      destroy_swapchain(const Swapchain& swapchain, SDL_Window* window, VkInstance instance, VkDevice device);
+Swapchain create_swapchain(
+    SDL_Window* window, VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, bool vsync
+);
+void destroy_swapchain(const Swapchain& swapchain, SDL_Window* window, VkInstance instance, VkDevice device);

@@ -12,6 +12,6 @@ VkDevice create_device(
     VkPhysicalDevice physical_device,
     uint32_t         graphics_family_index,
     bool             enable_validation,
-    bool             use_meshlets,
-    bool             use_hardware_rt
+    bool&            use_meshlets,
+    bool&            use_hardware_rt
 );

@@ -1,6 +1,8 @@
 #include "swapchain.hpp"
 
-Swapchain create_swapchain(SDL_Window* window, VkInstance instance, VkDevice device, VkPhysicalDevice physical_device) {
+Swapchain create_swapchain(
+    SDL_Window* window, VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, bool vsync
+) {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     if (!SDL_Vulkan_CreateSurface(window, instance, nullptr, &surface)) {
         spdlog::error("Failed to create SDL window surface");
@@ -30,13 +32,13 @@ Swapchain create_swapchain(SDL_Window* window, VkInstance instance, VkDevice dev
         }
     }
 
-    // TODO:: Allow for easier selection
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-    for (const auto& mode : present_modes) {
-        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
-            // if (mode == VK_PRESENT_MODE_FIFO_KHR) {
-            present_mode = mode;
-            break;
+    if (!vsync) {
+        for (const auto& mode : present_modes) {
+            if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+                present_mode = mode;
+                break;
+            }
         }
     }
 

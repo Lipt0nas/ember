@@ -11,6 +11,9 @@
 
 #include <format>
 
+#include <tracy/Tracy.hpp>
+#include <tracy/TracyVulkan.hpp>
+
 void draw_pass_timings_lines(const std::vector<std::pair<std::string, PassTiming>>& passes) {
     ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.25f);
     if (ImPlot::BeginPlot("Pass Timings", ImVec2(-1, 300))) {
@@ -798,7 +801,7 @@ int main() {
     const int FRAMES_IN_FLIGHT = 2;
 
     bool use_meshlets    = true;
-    bool use_hardware_rt = false;
+    bool use_hardware_rt = true;
 
     bool enable_validation = false;
 
@@ -841,6 +844,8 @@ int main() {
     );
     volkLoadDevice(device);
 
+    spdlog::info("Extension support:\n\tMesh shading: {}\n\tRay tracing: {}", use_meshlets, use_hardware_rt);
+
     VmaAllocatorCreateInfo allocator_info = {
         .flags                          = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
         .physicalDevice                 = physical_device,
@@ -862,7 +867,7 @@ int main() {
     VmaAllocator vma_allocator;
     VK_CHECK(vmaCreateAllocator(&allocator_info, &vma_allocator));
 
-    Swapchain swapchain = create_swapchain(window, instance, device, physical_device);
+    Swapchain swapchain = create_swapchain(window, instance, device, physical_device, false);
 
     VkQueue graphics_queue = VK_NULL_HANDLE;
     vkGetDeviceQueue(device, graphics_family_index, 0, &graphics_queue);
@@ -907,6 +912,16 @@ int main() {
 
     VkCommandBuffer command_buffers[FRAMES_IN_FLIGHT] = {VK_NULL_HANDLE};
     VK_CHECK(vkAllocateCommandBuffers(device, &command_buffer_info, &command_buffers[0]));
+
+    tracy::VkCtx* tracy_vk_context = TracyVkContextCalibrated(
+        instance,
+        physical_device,
+        device,
+        graphics_queue,
+        command_buffers[0],
+        vkGetInstanceProcAddr,
+        vkGetDeviceProcAddr
+    );
 
     std::vector<VkDescriptorPoolSize> descriptor_pool_sizes = {
         {
@@ -1937,7 +1952,7 @@ int main() {
     std::vector<MeshInstance> mesh_instances;
 
     load_scene(
-        "data/models/sponza/sponza.glb",
+        "data/models/helmet.glb",
         meshes,
         materials,
         mesh_instances,
@@ -2727,6 +2742,8 @@ int main() {
     framegraph.build();
 
     while (running) {
+        FrameMark;
+
         auto time       = std::chrono::high_resolution_clock::now();
         auto delta_time = std::chrono::duration<float>(time - frame_timestamp).count();
         frame_timestamp = time;
@@ -3136,6 +3153,8 @@ int main() {
         };
         VK_CHECK(vkQueueSubmit(graphics_queue, 1, &submit_info, frame_fences[frame_index]));
 
+        TracyVkCollect(tracy_vk_context, command_buffer);
+
         VkPresentInfoKHR present_info = {
             .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .pNext              = nullptr,
@@ -3155,6 +3174,10 @@ int main() {
     }
 
     VK_CHECK(vkDeviceWaitIdle(device));
+
+    spdlog::info("Cleaning up");
+
+    TracyVkDestroy(tracy_vk_context);
 
     ImGui_ImplSDL3_Shutdown();
     ImGui_ImplVulkan_Shutdown();
