@@ -77,8 +77,8 @@ struct RenderPass {
 
     std::function<void(VkCommandBuffer, uint32_t)> on_render = nullptr;
 
-    uint32_t query_start_index;
-    uint32_t query_end_index;
+    uint32_t query_start_index = 0;
+    uint32_t query_end_index   = 0;
 
     std::vector<ImageResourceUse> image_writes;
     std::vector<ImageResourceUse> image_reads;
@@ -264,8 +264,8 @@ struct Framegraph {
     uint32_t                 next_query_index = 0;
     std::vector<VkQueryPool> timestamp_query_pools;
 
-    bool     start_reading              = false;
-    uint32_t timestamp_query_pool_index = 0;
+    bool     start_reading    = false;
+    uint32_t query_pool_index = 0;
 
     std::unordered_map<std::string, PassTiming> pass_timings;
 
@@ -572,7 +572,7 @@ struct Framegraph {
         //
         // vkCmdPipelineBarrier2(command_buffer, &dep);
 
-        VkQueryPool query_pool = timestamp_query_pools[timestamp_query_pool_index];
+        VkQueryPool query_pool = timestamp_query_pools[query_pool_index];
         if (enable_timings) {
             vkCmdResetQueryPool(command_buffer, query_pool, 0, next_query_index);
         }
@@ -659,12 +659,12 @@ struct Framegraph {
         }
 
         if (!start_reading) {
-            if (timestamp_query_pool_index >= timestamp_query_pools.size() - 1) {
+            if (query_pool_index >= timestamp_query_pools.size() - 1) {
                 start_reading = true;
             }
         }
 
-        timestamp_query_pool_index = (timestamp_query_pool_index + 1) % timestamp_query_pools.size();
+        query_pool_index = (query_pool_index + 1) % timestamp_query_pools.size();
     }
 
     void gather_timestamp_queries(VkDevice device, float timestamp_period) {
@@ -677,7 +677,7 @@ struct Framegraph {
             uint64_t availability;
         };
 
-        VkQueryPool              prev_query_pool = timestamp_query_pools[timestamp_query_pool_index];
+        VkQueryPool              prev_query_pool = timestamp_query_pools[query_pool_index];
         std::vector<QueryResult> timestamps(next_query_index);
 
         VkResult result = vkGetQueryPoolResults(

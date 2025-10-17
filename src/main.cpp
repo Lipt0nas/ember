@@ -844,6 +844,9 @@ int main() {
     );
     volkLoadDevice(device);
 
+    // NOTE: don't need this for now, while it's half-baked
+    use_hardware_rt = false;
+
     spdlog::info("Extension support:\n\tMesh shading: {}\n\tRay tracing: {}", use_meshlets, use_hardware_rt);
 
     VmaAllocatorCreateInfo allocator_info = {
@@ -887,9 +890,21 @@ int main() {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .pNext = nullptr, .flags = VK_FENCE_CREATE_SIGNALED_BIT
     };
 
-    VkFence frame_fences[FRAMES_IN_FLIGHT] = {VK_NULL_HANDLE};
+    VkFence     frame_fences[FRAMES_IN_FLIGHT] = {VK_NULL_HANDLE};
+    VkQueryPool statistics_pools[FRAMES_IN_FLIGHT];
     for (int i = 0; i < FRAMES_IN_FLIGHT; i++) {
         VK_CHECK(vkCreateFence(device, &fence_info, nullptr, &frame_fences[i]));
+
+        VkQueryPoolCreateInfo pool_info = {
+            .sType              = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            .pNext              = nullptr,
+            .flags              = 0,
+            .queryType          = VK_QUERY_TYPE_PIPELINE_STATISTICS,
+            .queryCount         = 1,
+            .pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT,
+        };
+
+        VK_CHECK(vkCreateQueryPool(device, &pool_info, nullptr, &statistics_pools[i]));
     }
 
     VkCommandPoolCreateInfo command_pool_info = {
@@ -1423,6 +1438,10 @@ int main() {
         VkCommandBuffer command_buffer = command_buffers[0];
 
         VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
+
+        for (int i = 0; i < FRAMES_IN_FLIGHT; i++) {
+            vkCmdResetQueryPool(command_buffer, statistics_pools[i], 0, 1);
+        }
 
         image_pipeline_barrier(
             depth_hiz,
@@ -2164,6 +2183,8 @@ int main() {
 
     bool running = true;
 
+    uint64_t triangle_count = 0;
+
     Framegraph framegraph(device, graphics_queue, command_buffers[0], FRAMES_IN_FLIGHT, supports_timestamp_queries);
 
     framegraph.import_image(depth_hiz, VK_IMAGE_LAYOUT_GENERAL);
@@ -2276,6 +2297,8 @@ int main() {
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Gbuffer Pass");
                 ZoneScopedN("Gbuffer Pass");
+
+                vkCmdBeginQuery(command_buffer, statistics_pools[frame_index], 0, 0);
 
                 size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
                 size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
@@ -2402,6 +2425,7 @@ int main() {
                 }
 
                 vkCmdEndRendering(command_buffer);
+                vkCmdEndQuery(command_buffer, statistics_pools[frame_index], 0);
             });
 
     auto depth_pyramid_pass = framegraph.add_pass("depth pyramid")
@@ -2870,6 +2894,7 @@ int main() {
         ImGui::SeparatorText("Info");
         ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
         ImGui::Text("FPS: %u", fps);
+        ImGui::Text("Triangles Rendered: %.3fM", (double(triangle_count) / 1'000'000.0));
         ImGui::NewLine();
 
         std::vector<std::pair<std::string, PassTiming>> pass_timings = {};
@@ -2987,6 +3012,9 @@ int main() {
 
         VkCommandBuffer command_buffer = command_buffers[frame_index];
         vkBeginCommandBuffer(command_buffer, &begin_info);
+
+        vkCmdResetQueryPool(command_buffer, statistics_pools[frame_index], 0, 1);
+
         VkViewport viewport = {
             .x        = 0,
             .y        = static_cast<float>(swapchain.height),
@@ -3190,6 +3218,19 @@ int main() {
 
         frame_index = (frame_index + 1) % FRAMES_IN_FLIGHT;
         frame_count++;
+
+        if (frame_count > FRAMES_IN_FLIGHT) {
+            auto result = vkGetQueryPoolResults(
+                device,
+                statistics_pools[frame_index],
+                0,
+                1,
+                sizeof(uint64_t),
+                &triangle_count,
+                0,
+                VK_QUERY_RESULT_64_BIT
+            );
+        }
     }
 
     VK_CHECK(vkDeviceWaitIdle(device));
@@ -3282,6 +3323,7 @@ int main() {
     }
     for (int i = 0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroyFence(device, frame_fences[i], nullptr);
+        vkDestroyQueryPool(device, statistics_pools[i], nullptr);
     }
     if (debug_messenger != VK_NULL_HANDLE) {
         vkDestroyDebugUtilsMessengerEXT(instance, debug_messenger, nullptr);

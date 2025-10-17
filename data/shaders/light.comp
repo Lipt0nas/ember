@@ -101,7 +101,7 @@ void main() {
 
     vec3 light_dir = vec3(0.4, -0.7, 0.5);
     vec3 light_color = vec3(1.0, 1.0, 1.0);
-    float light_intensity = 1.0;
+    float light_intensity = 5.0;
 
     vec3 V = normalize(scene.camera_position.xyz - world_pos);
     vec3 L = normalize(-light_dir);
@@ -132,7 +132,7 @@ void main() {
     vec3 gi = texture(textures[push_constants.gi_index], uv).rgb;
 
     vec3 color = Lo + gi.rgb;
-    vec3 ambient = vec3(0.03) * albedo;
+    vec3 ambient = vec3(0.3) * albedo;
     color += ambient;
 
     vec3 output_color = color.rgb;

@@ -222,6 +222,7 @@ VkDevice create_device(
     features.samplerAnisotropy         = VK_TRUE;
     features.multiDrawIndirect         = VK_TRUE;
     features.drawIndirectFirstInstance = VK_TRUE;
+    features.pipelineStatisticsQuery   = VK_TRUE;
 
     VkPhysicalDeviceVulkan11Features vulkan_features_11 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,

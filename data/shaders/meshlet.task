@@ -78,15 +78,15 @@ void main() {
             visible_meshlet_indices[index] = thread_id;
         }
 
+        if (thread_id < visible_count) {
+            payload.meshlet_indices[thread_id] = visible_meshlet_indices[thread_id];
+        }
+
         barrier();
 
         if (thread_id == 0) {
             payload.meshlet_offset = base_meshlet_id;
             EmitMeshTasksEXT(visible_count, 1, 1);
-        }
-
-        if (thread_id < visible_count) {
-            payload.meshlet_indices[thread_id] = visible_meshlet_indices[thread_id];
         }
     }
 }
