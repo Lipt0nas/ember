@@ -63,6 +63,8 @@ vec3 cosine_weighted_hemisphere(vec3 normal, vec2 seed) {
 }
 
 void main() {
+    return;
+
     const ivec2 pixel_coord = ivec2(gl_LaunchIDEXT.xy);
     const vec2 pixel_center = vec2(pixel_coord) + vec2(0.5);
     vec2 uv = pixel_center / vec2(gl_LaunchSizeEXT.xy);

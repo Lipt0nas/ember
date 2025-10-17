@@ -5,6 +5,7 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_ray_query: require
 
 #include "common_post_process.glsl"
 
@@ -22,6 +23,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 2, binding = 0) uniform sampler2D textures[];
 
 layout(set = 0, binding = 0, rgba16f) uniform image2D out_color;
+layout(set = 0, binding = 1) uniform accelerationStructureEXT top_level_as;
 
 vec3 reconstruct_world_position(vec2 uv, float depth) {
     vec4 ndc = vec4(uv.x * 2 - 1, 1.0 - uv.y * 2, depth, 1.0);
@@ -99,9 +101,9 @@ void main() {
 
     vec3 world_pos = reconstruct_world_position(uv, depth);
 
-    vec3 light_dir = vec3(0.4, -0.7, 0.5);
+    vec3 light_dir = vec3(0.2, -0.9, 0.1);
     vec3 light_color = vec3(1.0, 1.0, 1.0);
-    float light_intensity = 5.0;
+    float light_intensity = 15.0;
 
     vec3 V = normalize(scene.camera_position.xyz - world_pos);
     vec3 L = normalize(-light_dir);
@@ -127,12 +129,29 @@ void main() {
     vec3 radiance = light_color * light_intensity;
 
     float NdotL = max(dot(normal, L), 0.0);
+    if (NdotL > 0.0) {
+        rayQueryEXT query;
+        rayQueryInitializeEXT(query,
+            top_level_as,
+            gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+            0xff,
+            world_pos,
+            0.001,
+            -light_dir,
+            1000000
+        );
+        rayQueryProceedEXT(query);
+
+        if (rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+            radiance = vec3(0.0);
+        }
+    }
     vec3 Lo = (diffuse + specular) * radiance * NdotL;
 
     vec3 gi = texture(textures[push_constants.gi_index], uv).rgb;
 
-    vec3 color = Lo + gi.rgb;
-    vec3 ambient = vec3(0.3) * albedo;
+    vec3 color = Lo;
+    vec3 ambient = (vec3(0.3) * albedo) + gi;
     color += ambient;
 
     vec3 output_color = color.rgb;

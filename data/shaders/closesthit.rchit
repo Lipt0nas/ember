@@ -30,8 +30,8 @@ bool trace_shadow_ray(vec3 origin, vec3 normal, vec3 direction) {
 
     payload.hit = false;
     traceRayEXT(top_level_as,
-        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
-        0xFF, 0, 0, 0, origin + normal * 0.001, 0.001, direction, 10000.0, 0);
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT | gl_RayFlagsOpaqueEXT,
+        0xFF, 0, 0, 0, origin, 0.001, direction, 10000.0, 0);
 
     bool hit = payload.hit;
 
@@ -46,22 +46,21 @@ bool trace_shadow_ray(vec3 origin, vec3 normal, vec3 direction) {
 vec3 evaluate_lighting(vec3 pos, vec3 normal) {
     vec3 lighting = vec3(0.0);
 
-    vec3 sun_dir = normalize(-vec3(0.4, -0.7, 0.5));
+    vec3 sun_dir = normalize(vec3(0.2, -0.9, 0.2));
     vec3 sun_color = vec3(1.0, 1.0, 1.0) * 5.0;
 
     float NdotL = max(0.0, dot(normal, sun_dir));
-    if (NdotL > 0.0) {
-        bool in_shadow = trace_shadow_ray(pos, normal, sun_dir);
+    bool in_shadow = trace_shadow_ray(pos, normal, -sun_dir);
 
-        if (!in_shadow) {
-            lighting += sun_color * NdotL;
-        }
+    if (!in_shadow) {
+        lighting += sun_color * NdotL;
     }
 
     return lighting;
 }
 
-void main() {
+void main()
+{
     const vec3 bary = vec3(1.0f - attribs.x - attribs.y, attribs.x, attribs.y);
 
     uint object_id = gl_InstanceCustomIndexEXT;

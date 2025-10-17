@@ -180,6 +180,7 @@ VkDevice create_device(
     if (use_hardware_rt) {
         device_extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
         device_extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+        device_extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
 
         device_extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
     }
@@ -194,8 +195,15 @@ VkDevice create_device(
         .pQueuePriorities = &queue_prorities
     };
 
+    VkPhysicalDeviceRayQueryFeaturesKHR ray_query_features = {
+        .sType    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+        .pNext    = nullptr,
+        .rayQuery = VK_TRUE,
+    };
+
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR ray_tracing_pipeline_features = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
+        .pNext = &ray_query_features,
     };
     ray_tracing_pipeline_features.rayTracingPipeline = VK_TRUE;
 
