@@ -154,7 +154,6 @@ struct alignas(16) SceneUBO {
     float P11;
 
     float near_plane;
-    // Unused for now, works as padding
     float far_plane;
 };
 
@@ -190,6 +189,25 @@ struct LightpassPushConstants {
     uint32_t material_index;
 
     uint32_t gi_output_index;
+};
+
+struct CompositePushConstants {
+    uint32_t lightpass_index;
+    uint32_t bloom_index;
+
+    float    bloom_strength = 0.04f;
+    uint32_t mix_bloom      = 1;
+};
+
+struct BloomPushConstants {
+    glm::vec2 texel_size;
+
+    uint32_t first_pass;
+    float    padding;
+};
+
+struct GeometryPushConstants {
+    glm::vec2 screen_size;
 };
 
 struct DrawData {
@@ -382,6 +400,15 @@ void load_scene(
 
             const tinygltf::Primitive& primitive = mesh.primitives[p];
 
+            auto has_position  = primitive.attributes.count("POSITION");
+            auto has_normals   = primitive.attributes.count("NORMAL");
+            auto has_texcoords = primitive.attributes.count("TEXCOORD_0");
+
+            if (!(has_position & has_normals & has_texcoords)) {
+                spdlog::warn("Mesh {} primitive {} is missing required attributes", m, p);
+                continue;
+            }
+
             const tinygltf::Accessor& pos_accessor      = model.accessors[primitive.attributes.at("POSITION")];
             const tinygltf::Accessor& normal_accessor   = model.accessors[primitive.attributes.at("NORMAL")];
             const tinygltf::Accessor& texcoord_accessor = model.accessors[primitive.attributes.at("TEXCOORD_0")];
@@ -398,9 +425,11 @@ void load_scene(
 
             auto* positions =
                 reinterpret_cast<const float*>(&pos_buffer.data[pos_view.byteOffset + pos_accessor.byteOffset]);
+
             auto* normals = reinterpret_cast<const float*>(
                 &normal_buffer.data[normal_view.byteOffset + normal_accessor.byteOffset]
             );
+
             auto* texcoords = reinterpret_cast<const float*>(
                 &texcoord_buffer.data[texcoord_view.byteOffset + texcoord_accessor.byteOffset]
             );
@@ -679,7 +708,7 @@ void load_scene(
             );
             meshlet_primitive_indices_offset += sizeof(unsigned char) * meshlet_triangles.size();
 
-            spdlog::info("Loaded mesh with vertices={}, indices={}", vertices.size(), indices.size());
+            spdlog::info("Loaded mesh {} with vertices={}, indices={}", m, vertices.size(), indices.size());
 
             meshes.emplace_back(
                 mesh_vertex_offset,
@@ -705,7 +734,6 @@ void load_scene(
 
     spdlog::info("Constructing scene");
     const tinygltf::Scene& scene = model.scenes[scene_id];
-    glm::mat4              identity(1.0f);
 
     for (int node_id : scene.nodes) {
         const auto& node = model.nodes[node_id];
@@ -845,7 +873,7 @@ int main() {
     volkLoadDevice(device);
 
     // NOTE: don't need this for now, while it's half-baked
-    use_hardware_rt = false;
+    use_hardware_rt = true;
 
     spdlog::info("Extension support:\n\tMesh shading: {}\n\tRay tracing: {}", use_meshlets, use_hardware_rt);
 
@@ -1001,7 +1029,9 @@ int main() {
     VkShaderModule light_compute_module     = shader_module_from_file(device, "data/shaders/light.comp.spv");
     VkShaderModule composite_compute_module = shader_module_from_file(device, "data/shaders/composite.comp.spv");
 
-    VkShaderModule hiz_module = shader_module_from_file(device, "data/shaders/hi_z.comp.spv");
+    VkShaderModule hiz_module              = shader_module_from_file(device, "data/shaders/hi_z.comp.spv");
+    VkShaderModule bloom_downsample_module = shader_module_from_file(device, "data/shaders/bloom_downsample.comp.spv");
+    VkShaderModule bloom_upsample_module   = shader_module_from_file(device, "data/shaders/bloom_upsample.comp.spv");
 
     VkShaderStageFlags additional_flags =
         use_hardware_rt ? VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR : 0;
@@ -1107,7 +1137,9 @@ int main() {
             scene_ubo_descriptor_layout,
             global_texture_descriptor_layout,
             draw_command_decriptor_layout,
-        }
+        },
+        geometry_pipeline_stage_flags,
+        sizeof(GeometryPushConstants)
     );
 
     std::vector<Shader> geometry_pipeline_shaders;
@@ -1153,6 +1185,12 @@ int main() {
                 .count       = 1,
                 .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
             },
+            {
+                .binding     = 1,
+                .type        = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
         }
     );
 
@@ -1188,7 +1226,7 @@ int main() {
         device,
         {composite_descriptor_layout, scene_ubo_descriptor_layout, global_texture_descriptor_layout},
         VK_SHADER_STAGE_COMPUTE_BIT,
-        sizeof(PostProcesPushConstants)
+        sizeof(CompositePushConstants)
     );
 
     VkPipeline composite_pipeline = create_compute_pipeline(
@@ -1263,6 +1301,76 @@ int main() {
         }
     );
 
+    VkDescriptorSetLayout bloom_descriptor_layout = create_descriptor_set_layout(
+        device,
+        {
+            {
+                .binding     = 0,
+                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            {
+                .binding     = 1,
+                .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+        },
+        true
+    );
+
+    VkPipelineLayout bloom_pipeline_layout = create_pipeline_layout(
+        device, {bloom_descriptor_layout}, VK_SHADER_STAGE_COMPUTE_BIT, sizeof(BloomPushConstants)
+    );
+
+    VkPipeline bloom_downsample_pipeline = create_compute_pipeline(
+        device,
+        bloom_pipeline_layout,
+        {
+            .module = bloom_downsample_module,
+            .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
+        }
+    );
+
+    VkDescriptorSetLayout bloom_upsample_descriptor_layout = create_descriptor_set_layout(
+        device,
+        {
+            {
+                .binding     = 0,
+                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            {
+                .binding     = 1,
+                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+            {
+                .binding     = 2,
+                .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .count       = 1,
+                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+        },
+        true
+    );
+
+    VkPipelineLayout bloom_upsample_pipeline_layout = create_pipeline_layout(
+        device, {bloom_upsample_descriptor_layout}, VK_SHADER_STAGE_COMPUTE_BIT, sizeof(BloomPushConstants)
+    );
+
+    VkPipeline bloom_upsample_pipeline = create_compute_pipeline(
+        device,
+        bloom_upsample_pipeline_layout,
+        {
+            .module = bloom_upsample_module,
+            .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
+        }
+    );
+
     VkSamplerCreateInfo sampler_info = {
         .sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .pNext                   = nullptr,
@@ -1287,10 +1395,14 @@ int main() {
     VkSampler linear_sampler = VK_NULL_HANDLE;
     VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &linear_sampler));
 
-    sampler_info.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+
+    VkSampler linear_sampler_clamped = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &linear_sampler_clamped));
+
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 
     VkSamplerReductionModeCreateInfoEXT reduction_info = {
         .sType         = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO_EXT,
@@ -1353,6 +1465,37 @@ int main() {
         };
 
         VK_CHECK(vkCreateImageView(device, &depth_mip_view_info, nullptr, &depth_mip_views[i]));
+    }
+
+    Image bloom_buffer = create_image(
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        swapchain.width / 2,
+        swapchain.height / 2,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        true,
+        vma_allocator,
+        device
+    );
+    std::vector<VkImageView> bloom_mip_views(bloom_buffer.levels);
+    for (int i = 0; i < bloom_mip_views.size(); i++) {
+        VkImageViewCreateInfo bloom_mip_view_info = {
+            .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext            = nullptr,
+            .flags            = 0,
+            .image            = bloom_buffer.handle,
+            .viewType         = VK_IMAGE_VIEW_TYPE_2D,
+            .format           = bloom_buffer.format,
+            .subresourceRange = {
+                .aspectMask     = bloom_buffer.aspect,
+                .baseMipLevel   = static_cast<uint32_t>(i),
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1
+            },
+        };
+
+        VK_CHECK(vkCreateImageView(device, &bloom_mip_view_info, nullptr, &bloom_mip_views[i]));
     }
 
     Image gbuffer_albedo = create_image(
@@ -1445,6 +1588,17 @@ int main() {
 
         image_pipeline_barrier(
             depth_hiz,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        image_pipeline_barrier(
+            bloom_buffer,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_GENERAL,
@@ -1797,30 +1951,6 @@ int main() {
     VkDescriptorSet compute_descriptor_set = VK_NULL_HANDLE;
     VK_CHECK(vkAllocateDescriptorSets(device, &compute_descriptor_set_info, &compute_descriptor_set));
 
-    VkDescriptorImageInfo compute_image_info = {
-        .sampler     = VK_NULL_HANDLE,
-        .imageView   = lightpass_output.view,
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    };
-
-    std::vector<VkWriteDescriptorSet> compute_write_sets = {
-        {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = compute_descriptor_set,
-            .dstBinding       = 0,
-            .dstArrayElement  = 0,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .pImageInfo       = &compute_image_info,
-            .pBufferInfo      = nullptr,
-            .pTexelBufferView = nullptr,
-        },
-    };
-    vkUpdateDescriptorSets(
-        device, static_cast<uint32_t>(compute_write_sets.size()), compute_write_sets.data(), 0, nullptr
-    );
-
     VkDescriptorSetAllocateInfo compute_cull_descriptor_set_info2 = {
         .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .pNext              = nullptr,
@@ -1996,74 +2126,6 @@ int main() {
         device
     );
 
-    // auto helmet = load_model(
-    //     "data/models/lantern.glb",
-    //     staging_buffer,
-    //     global_vertex_buffer,
-    //     indirect_vertex_buffer_offset,
-    //     global_index_buffer,
-    //     indirect_index_buffer_offset,
-    //     meshlet_buffer,
-    //     meshlet_buffer_offset,
-    //     meshlet_vertex_indices_buffer,
-    //     meshlet_vertex_indices_offset,
-    //     meshlet_primitive_indices_buffer,
-    //     meshlet_vertex_primitive_indices_offset,
-    //     meshlet_bounds_buffer,
-    //     meshlet_bounds_buffer_offset,
-    //     texture_cache,
-    //     loaded_images,
-    //     vma_allocator,
-    //     command_buffers[0],
-    //     graphics_queue,
-    //     device
-    // );
-    //
-    // std::vector<Mesh> meshes;
-    //
-    // for (auto& m : lantern) {
-    //     m.scale = 1.2f;
-    //     meshes.push_back(m);
-    // }
-
-    // for (auto& m : helmet) {
-    //     m.scale = 0.05f;
-    //     meshes.push_back(m);
-    // }
-    //
-    // // Stress test
-    // {
-    //     int row = 0;
-    //     int col = 0;
-    //     int t   = 0;
-    //
-    //     float spacing = 2.0f;
-    //
-    //     int grid_break = 10;
-    //
-    //     for (int i = 0; i < 300; i++) {
-    //
-    //         for (auto mesh : lantern) {
-    //             auto clone     = mesh;
-    //             clone.position = glm::vec3(5 + row * spacing * 0.6, t * spacing, col * spacing * 0.5 - 5);
-    //             clone.scale    = 1;
-    //             meshes.push_back(clone);
-    //         }
-    //
-    //         row++;
-    //
-    //         if (row >= grid_break) {
-    //             row = 0;
-    //             col++;
-    //         }
-    //
-    //         if (col >= grid_break) {
-    //             t++;
-    //             col = 0;
-    //         }
-    //     }
-    // }
-
     uint32_t depth_index = texture_cache.size();
     texture_cache.insert({depth_index, depth_buffer});
 
@@ -2081,6 +2143,9 @@ int main() {
 
     uint32_t gi_output_index = texture_cache.size();
     texture_cache.insert({gi_output_index, gi_output});
+
+    uint32_t bloom_output_index = texture_cache.size();
+    texture_cache.insert({bloom_output_index, bloom_buffer});
 
     populate_materials(texture_cache, global_texture_descriptor_set, linear_sampler, device);
 
@@ -2136,6 +2201,44 @@ int main() {
         );
     }
 
+    VkDescriptorImageInfo compute_image_info = {
+        .sampler     = VK_NULL_HANDLE,
+        .imageView   = lightpass_output.view,
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+    };
+
+    VkWriteDescriptorSetAccelerationStructureKHR descriptor_acceleration_structure_info = {
+        .sType                      = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+        .accelerationStructureCount = 1,
+        .pAccelerationStructures    = &rt_scene.tlas.handle,
+    };
+
+    std::vector<VkWriteDescriptorSet> compute_write_sets = {
+        {
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = compute_descriptor_set,
+            .dstBinding       = 0,
+            .dstArrayElement  = 0,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .pImageInfo       = &compute_image_info,
+            .pBufferInfo      = nullptr,
+            .pTexelBufferView = nullptr,
+        },
+        {
+            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext           = &descriptor_acceleration_structure_info,
+            .dstSet          = compute_descriptor_set,
+            .dstBinding      = 1,
+            .descriptorCount = 1,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+        },
+    };
+    vkUpdateDescriptorSets(
+        device, static_cast<uint32_t>(compute_write_sets.size()), compute_write_sets.data(), 0, nullptr
+    );
+
     VkDescriptorPool imgui_descriptor_pool = init_imgui(
         window,
         instance,
@@ -2183,6 +2286,11 @@ int main() {
 
     bool running = true;
 
+    int   bloom_levels   = (bloom_buffer.levels - 2);
+    bool  mix_bloom      = true;
+    bool  use_karis      = true;
+    float bloom_strength = 0.04f;
+
     uint64_t triangle_count = 0;
 
     Framegraph framegraph(device, graphics_queue, command_buffers[0], FRAMES_IN_FLIGHT, supports_timestamp_queries);
@@ -2195,6 +2303,7 @@ int main() {
     framegraph.import_image(gi_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(bloom_buffer, VK_IMAGE_LAYOUT_GENERAL);
 
     auto cull_early_pass =
         framegraph.add_pass("cull early")
@@ -2381,6 +2490,19 @@ int main() {
 
                 vkCmdBeginRendering(command_buffer, &rendering_info);
                 vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, geometry_pipeline);
+
+                GeometryPushConstants push = {
+                    .screen_size = {swapchain.width, swapchain.height},
+                };
+
+                vkCmdPushConstants(
+                    command_buffer,
+                    geometry_pipeline_layout,
+                    geometry_pipeline_stage_flags,
+                    0,
+                    sizeof(GeometryPushConstants),
+                    &push
+                );
 
                 VkDescriptorSet sets[] = {
                     draw_data_descriptor_set,
@@ -2721,6 +2843,233 @@ int main() {
         vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
     });
 
+    auto& bloom_downsample_pass =
+        framegraph.add_pass("bloom downsample")
+            .reads_image(
+                lightpass_output,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                VK_IMAGE_LAYOUT_GENERAL
+            )
+            .writes_image(
+                bloom_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+                VK_IMAGE_LAYOUT_GENERAL
+            )
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "Bloom Pass");
+                ZoneScopedN("Bloom Pass");
+
+                vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, bloom_downsample_pipeline);
+                for (int i = 0; i < bloom_levels; ++i) {
+                    uint32_t mip_width  = glm::max(1u, bloom_buffer.width >> i);
+                    uint32_t mip_height = glm::max(1u, bloom_buffer.height >> i);
+
+                    BloomPushConstants constants = {
+                        .texel_size = {1.0 / mip_width, 1.0 / mip_height},
+                        .first_pass = static_cast<uint32_t>(use_karis ? (i == 0) : 0),
+                        .padding    = 0.0f,
+                    };
+
+                    VkDescriptorImageInfo image_read_info = {
+                        .sampler     = linear_sampler_clamped,
+                        .imageView   = i == 0 ? lightpass_output.view : bloom_mip_views[i - 1],
+                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    };
+
+                    VkDescriptorImageInfo image_write_info = {
+                        .sampler     = VK_NULL_HANDLE,
+                        .imageView   = bloom_mip_views[i],
+                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    };
+
+                    std::vector<VkWriteDescriptorSet> write_sets = {
+                        {
+                            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext            = nullptr,
+                            .dstBinding       = 0,
+                            .dstArrayElement  = 0,
+                            .descriptorCount  = 1,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .pImageInfo       = &image_read_info,
+                            .pBufferInfo      = nullptr,
+                            .pTexelBufferView = nullptr,
+                        },
+                        {
+                            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext            = nullptr,
+                            .dstBinding       = 1,
+                            .dstArrayElement  = 0,
+                            .descriptorCount  = 1,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .pImageInfo       = &image_write_info,
+                            .pBufferInfo      = nullptr,
+                            .pTexelBufferView = nullptr,
+                        },
+                    };
+
+                    vkCmdPushDescriptorSet(
+                        command_buffer,
+                        VK_PIPELINE_BIND_POINT_COMPUTE,
+                        bloom_pipeline_layout,
+                        0,
+                        static_cast<uint32_t>(write_sets.size()),
+                        write_sets.data()
+                    );
+
+                    vkCmdPushConstants(
+                        command_buffer,
+                        bloom_pipeline_layout,
+                        VK_SHADER_STAGE_COMPUTE_BIT,
+                        0,
+                        sizeof(BloomPushConstants),
+                        &constants
+                    );
+
+                    uint32_t groups_x = (mip_width + 7) / 8;
+                    uint32_t groups_y = (mip_height + 7) / 8;
+                    vkCmdDispatch(command_buffer, groups_x, groups_y, 1);
+
+                    image_pipeline_barrier(
+                        bloom_buffer.handle,
+                        command_buffer,
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                        {
+                            .aspectMask     = bloom_buffer.aspect,
+                            .baseMipLevel   = static_cast<uint32_t>(i),
+                            .levelCount     = 1,
+                            .baseArrayLayer = 0,
+                            .layerCount     = 1,
+                        }
+                    );
+                }
+            });
+
+    auto& bloom_upsample_pass =
+        framegraph.add_pass("bloom upsample")
+            .writes_image(
+                bloom_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+                VK_IMAGE_LAYOUT_GENERAL
+            )
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "Bloom Pass");
+                ZoneScopedN("Bloom Pass");
+
+                vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, bloom_upsample_pipeline);
+                for (int i = bloom_levels - 1; i > 0; --i) {
+                    uint32_t mip_width  = glm::max(1u, bloom_buffer.width >> (i - 1));
+                    uint32_t mip_height = glm::max(1u, bloom_buffer.height >> (i - 1));
+
+                    BloomPushConstants constants = {
+                        .texel_size = {1.0 / mip_width, 1.0 / mip_height},
+                        .first_pass = i == 0,
+                        .padding    = 0.0f,
+                    };
+
+                    VkDescriptorImageInfo image_read_info = {
+                        .sampler     = linear_sampler_clamped,
+                        .imageView   = bloom_mip_views[i],
+                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    };
+
+                    VkDescriptorImageInfo image_read_info2 = {
+                        .sampler     = linear_sampler_clamped,
+                        .imageView   = bloom_mip_views[i - 1],
+                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    };
+
+                    VkDescriptorImageInfo image_write_info = {
+                        .sampler     = VK_NULL_HANDLE,
+                        .imageView   = bloom_mip_views[i - 1],
+                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    };
+
+                    std::vector<VkWriteDescriptorSet> write_sets = {
+                        {
+                            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext            = nullptr,
+                            .dstBinding       = 0,
+                            .dstArrayElement  = 0,
+                            .descriptorCount  = 1,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .pImageInfo       = &image_read_info,
+                            .pBufferInfo      = nullptr,
+                            .pTexelBufferView = nullptr,
+                        },
+                        {
+                            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext            = nullptr,
+                            .dstBinding       = 1,
+                            .dstArrayElement  = 0,
+                            .descriptorCount  = 1,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .pImageInfo       = &image_read_info2,
+                            .pBufferInfo      = nullptr,
+                            .pTexelBufferView = nullptr,
+                        },
+                        {
+                            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext            = nullptr,
+                            .dstBinding       = 2,
+                            .dstArrayElement  = 0,
+                            .descriptorCount  = 1,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .pImageInfo       = &image_write_info,
+                            .pBufferInfo      = nullptr,
+                            .pTexelBufferView = nullptr,
+                        },
+                    };
+
+                    vkCmdPushDescriptorSet(
+                        command_buffer,
+                        VK_PIPELINE_BIND_POINT_COMPUTE,
+                        bloom_upsample_pipeline_layout,
+                        0,
+                        static_cast<uint32_t>(write_sets.size()),
+                        write_sets.data()
+                    );
+
+                    vkCmdPushConstants(
+                        command_buffer,
+                        bloom_upsample_pipeline_layout,
+                        VK_SHADER_STAGE_COMPUTE_BIT,
+                        0,
+                        sizeof(BloomPushConstants),
+                        &constants
+                    );
+
+                    uint32_t groups_x = (mip_width + 7) / 8;
+                    uint32_t groups_y = (mip_height + 7) / 8;
+                    vkCmdDispatch(command_buffer, groups_x, groups_y, 1);
+
+                    image_pipeline_barrier(
+                        bloom_buffer.handle,
+                        command_buffer,
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                        {
+                            .aspectMask     = bloom_buffer.aspect,
+                            .baseMipLevel   = static_cast<uint32_t>(i - 1),
+                            .levelCount     = 1,
+                            .baseArrayLayer = 0,
+                            .layerCount     = 1,
+                        }
+                    );
+                }
+            });
+
     auto& composite_pass =
         framegraph.add_pass("composite")
             .reads_buffer_dynamic(
@@ -2730,6 +3079,7 @@ int main() {
                 scene_ubo_buffer.size / FRAMES_IN_FLIGHT
             )
             .samples_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(bloom_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(composite_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Composite Pass");
@@ -2745,14 +3095,11 @@ int main() {
                     static_cast<uint32_t>(command_ptr_frame_offset),
                 };
 
-                PostProcesPushConstants post_process_push = {
-                    .depth_index     = depth_index,
-                    .albedo_index    = albedo_index,
-                    .normals_index   = normals_index,
-                    .material_index  = material_index,
+                CompositePushConstants push_constants = {
                     .lightpass_index = lightpass_output_index,
-                    .rt_output_index = 0,
-                    .frame_index     = frame_count,
+                    .bloom_index     = bloom_output_index,
+                    .bloom_strength  = bloom_strength,
+                    .mix_bloom       = mix_bloom,
                 };
 
                 VkDescriptorSet composite_sets[] = {
@@ -2774,8 +3121,8 @@ int main() {
                     composite_pipeline_layout,
                     VK_SHADER_STAGE_COMPUTE_BIT,
                     0,
-                    sizeof(PostProcesPushConstants),
-                    &post_process_push
+                    sizeof(CompositePushConstants),
+                    &push_constants
                 );
 
                 vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
@@ -2912,7 +3259,14 @@ int main() {
             frozen_frustum[2] = frustum_y.y;
             frozen_frustum[3] = frustum_y.z;
         }
+        ImGui::SameLine();
         ImGui::Checkbox("Disable culling", &disable_culling);
+
+        ImGui::Checkbox("Mix Bloom", &mix_bloom);
+        ImGui::SameLine();
+        ImGui::Checkbox("Karis Average", &use_karis);
+        ImGui::SliderFloat("Bloom Strength", &bloom_strength, 0.0, 1.0);
+        ImGui::SliderInt("Bloom Levels", &bloom_levels, 0, bloom_buffer.levels);
         ImGui::NewLine();
         ImGui::End();
 
@@ -3231,6 +3585,7 @@ int main() {
                 VK_QUERY_RESULT_64_BIT
             );
         }
+        VK_CHECK(vkDeviceWaitIdle(device));
     }
 
     VK_CHECK(vkDeviceWaitIdle(device));

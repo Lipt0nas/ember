@@ -553,6 +553,22 @@ struct Framegraph {
                 };
             }
         }
+
+        for (int i = 0; i < passes.size(); i++) {
+            auto& pass = passes[i];
+
+            spdlog::info("---- Pass {} transitions:", pass.name);
+            for (int b = 0; b < image_barriers[i].size(); b++) {
+                auto& barrier = image_barriers[i][b];
+                spdlog::info(
+                    "\tTransition image 0x{:x}: {} -> {}",
+                    (uintptr_t)barrier.image,
+                    string_VkImageLayout(barrier.old_layout),
+                    string_VkImageLayout(barrier.new_layout)
+                );
+            }
+            spdlog::info("---- ");
+        }
     }
 
     void execute(VkCommandBuffer command_buffer, uint32_t frame_index) {
@@ -677,7 +693,7 @@ struct Framegraph {
             uint64_t availability;
         };
 
-        VkQueryPool              prev_query_pool = timestamp_query_pools[query_pool_index];
+        VkQueryPool prev_query_pool = timestamp_query_pools[(query_pool_index + 1) % timestamp_query_pools.size()];
         std::vector<QueryResult> timestamps(next_query_index);
 
         VkResult result = vkGetQueryPoolResults(

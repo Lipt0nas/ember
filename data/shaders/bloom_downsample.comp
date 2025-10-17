@@ -1,0 +1,95 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform sampler2D input_tex;
+layout(binding = 1, rgba16f) uniform writeonly image2D output_tex;
+
+layout(push_constant) uniform PushConstants {
+    vec2 texel_size;
+
+    uint first_pass;
+    float padding;
+} pc;
+
+// a - b - c
+// - j - k -
+// d - e - f
+// - l - m -
+// g - h - i
+vec3 downsampleBox13(sampler2D srcTex, vec2 uv, vec2 texelSize) {
+    vec3 a = texture(srcTex, uv + vec2(-2.0, 2.0) * texelSize).rgb;
+    vec3 b = texture(srcTex, uv + vec2(0.0, 2.0) * texelSize).rgb;
+    vec3 c = texture(srcTex, uv + vec2(-2.0, 2.0) * texelSize).rgb;
+
+    vec3 j = texture(srcTex, uv + vec2(-1.0, 1.0) * texelSize).rgb;
+    vec3 k = texture(srcTex, uv + vec2(1.0, 1.0) * texelSize).rgb;
+
+    vec3 d = texture(srcTex, uv + vec2(-2.0, 0.0) * texelSize).rgb;
+    vec3 e = texture(srcTex, uv + vec2(0.0, 0.0) * texelSize).rgb;
+    vec3 f = texture(srcTex, uv + vec2(2.0, 0.0) * texelSize).rgb;
+
+    vec3 l = texture(srcTex, uv + vec2(-1.0, -1.0) * texelSize).rgb;
+    vec3 m = texture(srcTex, uv + vec2(1.0, -1.0) * texelSize).rgb;
+
+    vec3 g = texture(srcTex, uv + vec2(-2.0, -2.0) * texelSize).rgb;
+    vec3 h = texture(srcTex, uv + vec2(0.0, -2.0) * texelSize).rgb;
+    vec3 i = texture(srcTex, uv + vec2(2.0, -2.0) * texelSize).rgb;
+
+    vec3 result = e * 0.125;
+    result += (a + c + g + i) * 0.03125;
+    result += (b + d + f + h) * 0.0625;
+    result += (j + k + l + m) * 0.125;
+
+    return result;
+}
+
+vec3 downsampleBox13Karis(sampler2D srcTex, vec2 uv, vec2 texelSize) {
+    vec3 a = texture(srcTex, uv + vec2(-2.0, 2.0) * texelSize).rgb;
+    vec3 b = texture(srcTex, uv + vec2(0.0, 2.0) * texelSize).rgb;
+    vec3 c = texture(srcTex, uv + vec2(-2.0, 2.0) * texelSize).rgb;
+
+    vec3 j = texture(srcTex, uv + vec2(-1.0, 1.0) * texelSize).rgb;
+    vec3 k = texture(srcTex, uv + vec2(1.0, 1.0) * texelSize).rgb;
+
+    vec3 d = texture(srcTex, uv + vec2(-2.0, 0.0) * texelSize).rgb;
+    vec3 e = texture(srcTex, uv + vec2(0.0, 0.0) * texelSize).rgb;
+    vec3 f = texture(srcTex, uv + vec2(2.0, 0.0) * texelSize).rgb;
+
+    vec3 l = texture(srcTex, uv + vec2(-1.0, -1.0) * texelSize).rgb;
+    vec3 m = texture(srcTex, uv + vec2(1.0, -1.0) * texelSize).rgb;
+
+    vec3 g = texture(srcTex, uv + vec2(-2.0, -2.0) * texelSize).rgb;
+    vec3 h = texture(srcTex, uv + vec2(0.0, -2.0) * texelSize).rgb;
+    vec3 i = texture(srcTex, uv + vec2(2.0, -2.0) * texelSize).rgb;
+
+    vec3 groups[5];
+    groups[0] = (a + b + d + e) * 0.25;
+    groups[1] = (b + c + e + f) * 0.25;
+    groups[2] = (d + e + g + h) * 0.25;
+    groups[3] = (e + f + h + i) * 0.25;
+    groups[4] = (j + k + l + m) * 0.25;
+
+    float kw[5];
+    kw[0] = 1.0 / (1.0 + dot(groups[0], vec3(0.2126, 0.7152, 0.0722)));
+    kw[1] = 1.0 / (1.0 + dot(groups[1], vec3(0.2126, 0.7152, 0.0722)));
+    kw[2] = 1.0 / (1.0 + dot(groups[2], vec3(0.2126, 0.7152, 0.0722)));
+    kw[3] = 1.0 / (1.0 + dot(groups[3], vec3(0.2126, 0.7152, 0.0722)));
+    kw[4] = 1.0 / (1.0 + dot(groups[4], vec3(0.2126, 0.7152, 0.0722)));
+
+    return (kw[0] * groups[0] + kw[1] * groups[1] + kw[2] * groups[2] + kw[3] * groups[3] + kw[4] * groups[4]) / (kw[0] + kw[1] + kw[2] + kw[3] + kw[4]);
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv = (vec2(coord) + 0.5) * pc.texel_size;
+
+    vec3 color = vec3(0.0);
+    if (pc.first_pass == 1) {
+        color = downsampleBox13Karis(input_tex, uv, pc.texel_size);
+    } else {
+        color = downsampleBox13(input_tex, uv, pc.texel_size);
+    }
+
+    imageStore(output_tex, coord, vec4(color, 1.0));
+}

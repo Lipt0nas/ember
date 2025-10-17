@@ -21,6 +21,10 @@ layout(location = 6) out vec3 out_world_pos[];
 
 taskPayloadSharedEXT TaskPayload payload;
 
+layout(push_constant, std430) uniform push {
+    vec2 screen_size;
+} pc;
+
 shared vec3 vertex_clip[64];
 
 void main() {
@@ -62,7 +66,7 @@ void main() {
         out_material_index[thread_id] = draw.material_index;
         out_world_pos[thread_id] = world_pos.xyz;
 
-        vertex_clip[thread_id] = vec3((clip.xy / clip.w * 0.5 + vec2(0.5)) * vec2(1920, 1080), clip.w);
+        vertex_clip[thread_id] = vec3((clip.xy / clip.w * 0.5 + vec2(0.5)) * pc.screen_size, clip.w);
     }
 
     barrier();
