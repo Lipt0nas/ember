@@ -19,6 +19,10 @@ layout(location = 4) flat out uint out_normals_index[];
 layout(location = 5) flat out uint out_material_index[];
 layout(location = 6) out vec3 out_world_pos[];
 
+layout(binding = 0) uniform UBO {
+    SceneUBO scene;
+};
+
 taskPayloadSharedEXT TaskPayload payload;
 
 layout(push_constant, std430) uniform push {

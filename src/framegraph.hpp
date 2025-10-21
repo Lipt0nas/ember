@@ -435,7 +435,15 @@ struct Framegraph {
                     needs_barrier = true;
                 }
 
-                if (last_access.pass_idx != -1 && last_access.write_access) {
+                // TODO: Over-synchronization, we need to merge the barriers
+                // eg:
+                // gpass -> writes to albedo
+                // rt pass -> reads albedo
+                // light pass -> reads albedo
+                // in this case, only one barrier for gpass -> rt pass would be generated
+                // since both passes only read from the image, they can technically happen at different times
+                // leading to incorrect barriers
+                if (last_access.pass_idx != -1) {
                     needs_barrier = true;
                 }
 
@@ -574,19 +582,19 @@ struct Framegraph {
     void execute(VkCommandBuffer command_buffer, uint32_t frame_index) {
         // NOTE: this is for cross-frame barrier debugging
 
-        // VkMemoryBarrier2 full_barrier = {
-        //     .sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        //     .srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        //     .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-        //     .dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        //     .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT
-        // };
-        //
-        // VkDependencyInfo dep = {
-        //     .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &full_barrier
-        // };
-        //
-        // vkCmdPipelineBarrier2(command_buffer, &dep);
+        VkMemoryBarrier2 full_barrier = {
+            .sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT
+        };
+
+        VkDependencyInfo dep = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &full_barrier
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &dep);
 
         VkQueryPool query_pool = timestamp_query_pools[query_pool_index];
         if (enable_timings) {

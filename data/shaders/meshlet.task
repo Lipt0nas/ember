@@ -15,7 +15,11 @@ taskPayloadSharedEXT TaskPayload payload;
 shared uint visible_count;
 shared uint visible_meshlet_indices[MESHLETS_PER_TASK];
 
-layout(scalar, set = 3, binding = 0) readonly buffer MeshDrawCommands {
+layout(binding = 0) uniform UBO {
+    SceneUBO scene;
+};
+
+layout(scalar, binding = 1) readonly buffer MeshDrawCommands {
     uint culled_count;
     MeshDrawCommand cmds[];
 } draw_commands;

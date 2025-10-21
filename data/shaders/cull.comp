@@ -6,30 +6,62 @@
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_nonuniform_qualifier : enable
 
-#include "common_geometry.glsl"
+#include "common.glsl"
 
 layout(local_size_x = 256) in;
 
-layout(scalar, set = 2, binding = 0) buffer IndexedDrawCommands {
+layout(binding = 0) uniform sampler2D depth_texture;
+
+layout(binding = 1) uniform UBO {
+    SceneUBO scene;
+};
+
+layout(scalar, binding = 2) buffer MeshDrawCommands {
     uint culled_count;
     IndexedDrawCommand cmds[];
-} commands;
+} draw_commands;
 
-layout(push_constant, std430) uniform pc {
+layout(scalar, binding = 3) readonly buffer DrawDataBuffer {
+    DrawData draw_data[];
+} uniforms;
+
+layout(scalar, binding = 4) readonly buffer IndexBuffer {
+    uint indices[];
+} global_indices;
+
+layout(scalar, binding = 5) readonly buffer VertexBuffer {
+    Vertex vertices[];
+} global_vertices;
+
+layout(scalar, binding = 6) readonly buffer MeshletBuffer {
+    Meshlet meshlets[];
+} meshlets;
+
+layout(scalar, binding = 7) readonly buffer MeshletBoundsBuffer {
+    MeshletBounds bounds[];
+} meshlet_bounds;
+
+layout(scalar, binding = 8) readonly buffer MeshletVertexIndices {
+    uint indices[];
+} meshlet_vertex_indices;
+
+layout(scalar, binding = 9) readonly buffer MeshletPrimitiveIndices {
+    uint8_t indices[];
+} meshlet_primitive_indices;
+
+layout(push_constant, std430) uniform PushConstants {
     vec2 screen_size;
 
     uint draw_count;
     uint command_count_offset;
 
     uint depth_pyramid_index;
-} push_constants;
-
-layout(set = 3, binding = 0) uniform sampler2D depth;
+} push;
 
 void main() {
     uint object_id = gl_GlobalInvocationID.x;
 
-    if (object_id >= push_constants.draw_count) return;
+    if (object_id >= push.draw_count) return;
 
     DrawData draw_data = uniforms.draw_data[object_id];
 
@@ -55,12 +87,12 @@ void main() {
 
     vec4 aabb;
     if (project_sphere(center, radius, scene.near_plane, scene.P00, scene.P11, aabb)) {
-        float width = (aabb.z - aabb.x) * push_constants.screen_size.x;
-        float height = (aabb.w - aabb.y) * push_constants.screen_size.y;
+        float width = (aabb.z - aabb.x) * push.screen_size.x;
+        float height = (aabb.w - aabb.y) * push.screen_size.y;
 
         float level = ceil(log2(max(width, height)));
 
-        float depth = textureLod(depth, (aabb.xy + aabb.zw) * 0.5, level).r;
+        float depth = textureLod(depth_texture, (aabb.xy + aabb.zw) * 0.5, level).r;
         float depth_sphere = scene.near_plane / (center.z - radius);
 
         visible = visible && depth_sphere > depth;
@@ -71,12 +103,12 @@ void main() {
     }
 
     if (visible) {
-        uint cmd_index = atomicAdd(commands.culled_count, 1);
+        uint cmd_index = atomicAdd(draw_commands.culled_count, 1);
 
-        commands.cmds[cmd_index].index_count = draw_data.index_count;
-        commands.cmds[cmd_index].instance_count = 1;
-        commands.cmds[cmd_index].first_index = draw_data.first_index;
-        commands.cmds[cmd_index].vertex_offset = draw_data.vertex_offset;
-        commands.cmds[cmd_index].first_instance = object_id;
+        draw_commands.cmds[cmd_index].index_count = draw_data.index_count;
+        draw_commands.cmds[cmd_index].instance_count = 1;
+        draw_commands.cmds[cmd_index].first_index = draw_data.first_index;
+        draw_commands.cmds[cmd_index].vertex_offset = draw_data.vertex_offset;
+        draw_commands.cmds[cmd_index].first_instance = object_id;
     }
 }

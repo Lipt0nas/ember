@@ -10,11 +10,8 @@ RTScene create_rt_scene(
     const std::vector<MeshInstance>& mesh_instances,
     VkDeviceAddress                  global_vertex_buffer_address,
     VkDeviceAddress                  global_index_buffer_address,
-    VkPipelineLayout                 pipeline_layout,
-    const std::filesystem::path&     ray_generation_shader,
-    const std::filesystem::path&     ray_miss_shader,
-    const std::filesystem::path&     ray_closest_hit_shader,
-    const std::filesystem::path&     ray_any_hit_shader
+    const Program&                   program,
+    VkPipeline                       pipeline
 ) {
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR ray_tracing_properties = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR
@@ -348,88 +345,11 @@ RTScene create_rt_scene(
     top_level_acceleration_structure.buffer  = top_level_acceleration_structure_buffer;
     top_level_acceleration_structure.address = top_level_acceleration_structure_address;
 
-    std::vector<VkPipelineShaderStageCreateInfo>      shader_stages;
-    std::vector<VkRayTracingShaderGroupCreateInfoKHR> shader_groups;
-
-    auto load_shader =
-        [device](const std::filesystem::path& path, VkShaderStageFlagBits stages) -> VkPipelineShaderStageCreateInfo {
-        auto module = shader_module_from_file(device, path);
-
-        return {
-            .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .pNext               = nullptr,
-            .flags               = 0,
-            .stage               = stages,
-            .module              = module,
-            .pName               = "main",
-            .pSpecializationInfo = nullptr,
-        };
-    };
-
-    // Ray generation group
-    {
-        shader_stages.push_back(load_shader(ray_generation_shader, VK_SHADER_STAGE_RAYGEN_BIT_KHR));
-        VkRayTracingShaderGroupCreateInfoKHR raygen_group_ci{};
-        raygen_group_ci.sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-        raygen_group_ci.type               = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-        raygen_group_ci.generalShader      = static_cast<uint32_t>(shader_stages.size()) - 1;
-        raygen_group_ci.closestHitShader   = VK_SHADER_UNUSED_KHR;
-        raygen_group_ci.anyHitShader       = VK_SHADER_UNUSED_KHR;
-        raygen_group_ci.intersectionShader = VK_SHADER_UNUSED_KHR;
-        shader_groups.push_back(raygen_group_ci);
-    }
-
-    // Ray miss group
-    {
-        shader_stages.push_back(load_shader(ray_miss_shader, VK_SHADER_STAGE_MISS_BIT_KHR));
-        VkRayTracingShaderGroupCreateInfoKHR miss_group_ci{};
-        miss_group_ci.sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-        miss_group_ci.type               = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-        miss_group_ci.generalShader      = static_cast<uint32_t>(shader_stages.size()) - 1;
-        miss_group_ci.closestHitShader   = VK_SHADER_UNUSED_KHR;
-        miss_group_ci.anyHitShader       = VK_SHADER_UNUSED_KHR;
-        miss_group_ci.intersectionShader = VK_SHADER_UNUSED_KHR;
-        shader_groups.push_back(miss_group_ci);
-    }
-
-    // Ray closest hit group
-    {
-        shader_stages.push_back(load_shader(ray_closest_hit_shader, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR));
-        VkRayTracingShaderGroupCreateInfoKHR closes_hit_group_ci{};
-        closes_hit_group_ci.sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-        closes_hit_group_ci.type               = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-        closes_hit_group_ci.generalShader      = VK_SHADER_UNUSED_KHR;
-        closes_hit_group_ci.closestHitShader   = static_cast<uint32_t>(shader_stages.size()) - 1;
-        closes_hit_group_ci.anyHitShader       = VK_SHADER_UNUSED_KHR;
-        closes_hit_group_ci.intersectionShader = VK_SHADER_UNUSED_KHR;
-
-        if (!ray_any_hit_shader.empty()) {
-            shader_stages.push_back(load_shader(ray_any_hit_shader, VK_SHADER_STAGE_ANY_HIT_BIT_KHR));
-            closes_hit_group_ci.anyHitShader = static_cast<uint32_t>(shader_stages.size()) - 1;
-        }
-
-        shader_groups.push_back(closes_hit_group_ci);
-    }
-
-    VkRayTracingPipelineCreateInfoKHR raytracing_pipeline_create_info{};
-    raytracing_pipeline_create_info.sType      = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
-    raytracing_pipeline_create_info.stageCount = static_cast<uint32_t>(shader_stages.size());
-    raytracing_pipeline_create_info.pStages    = shader_stages.data();
-    raytracing_pipeline_create_info.groupCount = static_cast<uint32_t>(shader_groups.size());
-    raytracing_pipeline_create_info.pGroups    = shader_groups.data();
-    raytracing_pipeline_create_info.maxPipelineRayRecursionDepth = 3;
-    raytracing_pipeline_create_info.layout                       = pipeline_layout;
-
-    VkPipeline rt_pipeline;
-    VK_CHECK(vkCreateRayTracingPipelinesKHR(
-        device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &raytracing_pipeline_create_info, nullptr, &rt_pipeline
-    ));
-
     const uint32_t handle_size = ray_tracing_properties.shaderGroupHandleSize;
     const uint32_t handle_size_aligned =
         aligned_size(ray_tracing_properties.shaderGroupHandleSize, ray_tracing_properties.shaderGroupHandleAlignment);
     const uint32_t           handle_alignment       = ray_tracing_properties.shaderGroupHandleAlignment;
-    const uint32_t           group_count            = static_cast<uint32_t>(shader_groups.size());
+    const uint32_t           group_count            = static_cast<uint32_t>(3);
     const uint32_t           sbt_size               = group_count * handle_size_aligned;
     const VkBufferUsageFlags sbt_buffer_usage_flags = VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
                                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
@@ -459,9 +379,9 @@ RTScene create_rt_scene(
     );
 
     std::vector<uint8_t> shader_handle_storage(sbt_size);
-    VK_CHECK(vkGetRayTracingShaderGroupHandlesKHR(
-        device, rt_pipeline, 0, group_count, sbt_size, shader_handle_storage.data()
-    ));
+    VK_CHECK(
+        vkGetRayTracingShaderGroupHandlesKHR(device, pipeline, 0, group_count, sbt_size, shader_handle_storage.data())
+    );
 
     copy_to_buffer(raygen_shader_binding_table, allocator, shader_handle_storage.data(), handle_size);
     copy_to_buffer(
@@ -486,16 +406,11 @@ RTScene create_rt_scene(
     hit_shader_sbt_entry.stride        = handle_size_aligned;
     hit_shader_sbt_entry.size          = handle_size_aligned;
 
-    for (auto& stage : shader_stages) {
-        vkDestroyShaderModule(device, stage.module, nullptr);
-    }
-
     RTScene scene = {
         .blas_instances                  = bottom_level_acceleration_structures,
         .tlas                            = top_level_acceleration_structure,
         .rt_properties                   = ray_tracing_properties,
         .acceleration_structure_features = acceleration_structure_features,
-        .pipeline                        = rt_pipeline,
         .raygen_shader_binding_table     = raygen_shader_binding_table,
         .miss_shader_binding_table       = miss_shader_binding_table,
         .hit_shader_binding_table        = hit_shader_binding_table,
@@ -515,7 +430,6 @@ void destroy_rt_scene(const RTScene& scene, VkDevice device, VmaAllocator alloca
     vkDestroyAccelerationStructureKHR(device, scene.tlas.handle, nullptr);
     destroy_buffer(scene.tlas.buffer, device, allocator);
 
-    vkDestroyPipeline(device, scene.pipeline, nullptr);
     destroy_buffer(scene.raygen_shader_binding_table, device, allocator);
     destroy_buffer(scene.hit_shader_binding_table, device, allocator);
     destroy_buffer(scene.miss_shader_binding_table, device, allocator);

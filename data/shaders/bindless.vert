@@ -3,6 +3,8 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 
+#include "common_geometry.glsl"
+
 layout(location = 0) out vec3 out_normal;
 layout(location = 1) out vec2 out_uv;
 layout(location = 2) out vec3 out_meshlet_color;
@@ -11,7 +13,9 @@ layout(location = 4) flat out uint out_normals_index;
 layout(location = 5) flat out uint out_material_index;
 layout(location = 6) out vec3 out_world_pos;
 
-#include "common_geometry.glsl"
+layout(set = 1, binding = 0) uniform UBO {
+    SceneUBO scene;
+};
 
 void main() {
     DrawData draw = uniforms.draw_data[gl_BaseInstance];

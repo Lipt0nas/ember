@@ -78,6 +78,15 @@ FetchContent_Declare(
   GIT_SHALLOW TRUE
 )
 
+set(SPIRV_REFLECT_STATIC_LIB "" ON)
+set(SPIRV_REFLECT_INSTALL "" OFF)
+FetchContent_Declare(
+  spirv-reflect
+  GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Reflect
+  GIT_TAG vulkan-sdk-1.4.328.1
+  GIT_SHALLOW TRUE
+)
+
 add_compile_options("-DTRACY_ENABLE")
 add_compile_options("-DTRACY_ONLY_LOCALHOST")
 add_compile_options("-DTRACY_VK_USE_SYMBOL_TABLE")
@@ -96,6 +105,7 @@ FetchContent_MakeAvailable(
     imgui
     implot
     tracy
+    spirv-reflect
 )
 
 add_library(imgui STATIC
@@ -107,7 +117,7 @@ add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
 )
-target_include_directories(imgui PUBLIC 
+target_include_directories(imgui PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
 )
@@ -138,6 +148,7 @@ set(SOURCES
     "src/ui.cpp"
     "src/rt_scene.cpp"
     "src/framegraph.cpp"
+    "src/shader.cpp"
 )
 add_executable(Ember ${SOURCES})
 
@@ -154,6 +165,7 @@ target_link_libraries(Ember PRIVATE
     stb
     implot
     TracyClient
+    spirv-reflect-static
 )
 
 # TODO: temporary convenience
@@ -163,7 +175,7 @@ if(NOT GLSLC)
 endif()
 
 set(SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data/shaders")
-file(GLOB_RECURSE SHADER_SOURCES 
+file(GLOB_RECURSE SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/*"
 )
 list(FILTER SHADER_SOURCES EXCLUDE REGEX ".*\\.(spv|glsl)$")
@@ -171,7 +183,7 @@ list(FILTER SHADER_SOURCES EXCLUDE REGEX ".*\\.(spv|glsl)$")
 set(SHADER_OUTPUTS)
 foreach(SHADER_SOURCE ${SHADER_SOURCES})
     set(SHADER_OUTPUT "${SHADER_SOURCE}.spv")
-    
+
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
         COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT} --target-env=vulkan1.4 --target-spv=spv1.6 -g
@@ -179,7 +191,7 @@ foreach(SHADER_SOURCE ${SHADER_SOURCES})
         COMMENT "Compiling shader: ${SHADER_SOURCE}"
         VERBATIM
     )
-    
+
     list(APPEND SHADER_OUTPUTS ${SHADER_OUTPUT})
 endforeach()
 

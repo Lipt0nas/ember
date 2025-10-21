@@ -211,7 +211,8 @@ VkDevice create_device(
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
         .pNext = &ray_tracing_pipeline_features,
     };
-    acceleration_structure_features.accelerationStructure = VK_TRUE;
+    acceleration_structure_features.accelerationStructure                                 = VK_TRUE;
+    acceleration_structure_features.descriptorBindingAccelerationStructureUpdateAfterBind = VK_TRUE;
 
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features = {
         .sType                                  = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
@@ -242,19 +243,22 @@ VkDevice create_device(
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .pNext = &vulkan_features_11,
     };
-    vulkan_features_12.storageBuffer8BitAccess                      = VK_TRUE;
-    vulkan_features_12.drawIndirectCount                            = VK_TRUE;
-    vulkan_features_12.scalarBlockLayout                            = VK_TRUE;
-    vulkan_features_12.bufferDeviceAddress                          = VK_TRUE;
-    vulkan_features_12.descriptorIndexing                           = VK_TRUE;
-    vulkan_features_12.runtimeDescriptorArray                       = VK_TRUE;
-    vulkan_features_12.descriptorBindingPartiallyBound              = VK_TRUE;
-    vulkan_features_12.descriptorBindingVariableDescriptorCount     = VK_TRUE;
-    vulkan_features_12.shaderSampledImageArrayNonUniformIndexing    = VK_TRUE;
-    vulkan_features_12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
-    vulkan_features_12.hostQueryReset                               = VK_TRUE;
-    vulkan_features_12.uniformAndStorageBuffer8BitAccess            = VK_TRUE;
-    vulkan_features_12.samplerFilterMinmax                          = VK_TRUE;
+    vulkan_features_12.storageBuffer8BitAccess                       = VK_TRUE;
+    vulkan_features_12.drawIndirectCount                             = VK_TRUE;
+    vulkan_features_12.scalarBlockLayout                             = VK_TRUE;
+    vulkan_features_12.bufferDeviceAddress                           = VK_TRUE;
+    vulkan_features_12.descriptorIndexing                            = VK_TRUE;
+    vulkan_features_12.runtimeDescriptorArray                        = VK_TRUE;
+    vulkan_features_12.descriptorBindingPartiallyBound               = VK_TRUE;
+    vulkan_features_12.descriptorBindingVariableDescriptorCount      = VK_TRUE;
+    vulkan_features_12.shaderSampledImageArrayNonUniformIndexing     = VK_TRUE;
+    vulkan_features_12.descriptorBindingSampledImageUpdateAfterBind  = VK_TRUE;
+    vulkan_features_12.hostQueryReset                                = VK_TRUE;
+    vulkan_features_12.uniformAndStorageBuffer8BitAccess             = VK_TRUE;
+    vulkan_features_12.samplerFilterMinmax                           = VK_TRUE;
+    vulkan_features_12.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+    vulkan_features_12.descriptorBindingStorageImageUpdateAfterBind  = VK_TRUE;
+    vulkan_features_12.descriptorBindingUniformBufferUpdateAfterBind = VK_TRUE;
 
     VkPhysicalDeviceVulkan13Features vulkan_features_13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,

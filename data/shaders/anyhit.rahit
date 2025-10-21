@@ -1,5 +1,8 @@
 #version 460
 #extension GL_EXT_ray_tracing : enable
+#extension GL_EXT_scalar_block_layout : require
+
+#include "common.glsl"
 
 struct HitPayload {
     vec3 world_pos;
@@ -8,7 +11,29 @@ struct HitPayload {
     bool hit;
 };
 
+layout(binding = 0, rgba16f) uniform image2D image;
+
 layout(location = 0) rayPayloadInEXT HitPayload payload;
+
+layout(binding = 1) uniform accelerationStructureEXT top_level_as;
+
+layout(binding = 2) uniform UBO {
+    SceneUBO scene;
+};
+
+layout(scalar, binding = 3) readonly buffer DrawDataBuffer {
+    DrawData draw_data[];
+} uniforms;
+
+layout(scalar, binding = 4) readonly buffer IndexBuffer {
+    uint indices[];
+} global_indices;
+
+layout(scalar, binding = 5) readonly buffer VertexBuffer {
+    Vertex vertices[];
+} global_vertices;
+
+layout(set = 1, binding = 0) uniform sampler2D textures[];
 
 void main() {
     payload.hit = true;
