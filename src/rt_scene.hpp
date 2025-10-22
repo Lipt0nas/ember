@@ -67,16 +67,6 @@ struct RTScene {
 
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR  rt_properties;
     VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features;
-
-    VkPipeline pipeline;
-    Buffer     raygen_shader_binding_table;
-    Buffer     miss_shader_binding_table;
-    Buffer     hit_shader_binding_table;
-
-    uint32_t                        handle_size_aligned;
-    VkStridedDeviceAddressRegionKHR raygen_shader_sbt_entry;
-    VkStridedDeviceAddressRegionKHR miss_shader_sbt_entry;
-    VkStridedDeviceAddressRegionKHR hit_shader_sbt_entry;
 };
 
 bool is_mesh_same(const Mesh& m1, const Mesh& m2);
@@ -92,12 +82,7 @@ RTScene create_rt_scene(
     const std::vector<Mesh>&         meshes,
     const std::vector<MeshInstance>& mesh_instances,
     VkDeviceAddress                  global_vertex_buffer_address,
-    VkDeviceAddress                  global_index_buffer_address,
-    VkPipelineLayout                 pipeline_layout,
-    const std::filesystem::path&     ray_generation_shader,
-    const std::filesystem::path&     ray_miss_shader,
-    const std::filesystem::path&     ray_closest_hit_shader,
-    const std::filesystem::path&     ray_any_hit_shader
+    VkDeviceAddress                  global_index_buffer_address
 );
 
 void destroy_rt_scene(const RTScene& scene, VkDevice device, VmaAllocator allocator);

@@ -6,21 +6,18 @@
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_nonuniform_qualifier : enable
 
-#include "common_post_process.glsl"
+#include "common.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-layout(set = 2, binding = 0) uniform sampler2D textures[];
-
 layout(set = 0, binding = 0, rgba8) uniform image2D out_color;
 
-layout(push_constant, std430) uniform pc {
-    uint lightpass_index;
-    uint bloom_index;
+layout(set = 0, binding = 1) uniform sampler2D scene_texture;
+layout(set = 0, binding = 2) uniform sampler2D bloom_texture;
 
+layout(push_constant, std430) uniform pc {
     float bloom_strength;
-    uint mix_bloom;
-} push_constants;
+} push;
 
 vec3 aces_film(vec3 x) {
     float a = 2.51;
@@ -41,15 +38,10 @@ void main() {
 
     vec2 uv = (vec2(pixel_coord) + 0.5) / vec2(image_size);
 
-    vec3 scene = texture(textures[push_constants.lightpass_index], uv).rgb;
-    vec3 bloom = texture(textures[push_constants.bloom_index], uv).rgb;
+    vec3 scene = texture(scene_texture, uv).rgb;
+    vec3 bloom = texture(bloom_texture, uv).rgb;
 
-    vec3 color = vec3(0.0);
-    if (push_constants.mix_bloom == 1) {
-        color = mix(scene, bloom, push_constants.bloom_strength);
-    } else {
-        color = scene + bloom * push_constants.bloom_strength;
-    }
+    vec3 color = mix(scene, bloom, push.bloom_strength);
 
     vec3 tonemapped = aces_film(color);
 

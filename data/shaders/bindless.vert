@@ -11,7 +11,44 @@ layout(location = 4) flat out uint out_normals_index;
 layout(location = 5) flat out uint out_material_index;
 layout(location = 6) out vec3 out_world_pos;
 
-#include "common_geometry.glsl"
+#include "common.glsl"
+
+layout(set = 0, binding = 0) uniform UBO {
+    SceneUBO scene;
+};
+
+layout(scalar, set = 1, binding = 0) readonly buffer DrawDataBuffer {
+    DrawData draw_data[];
+} uniforms;
+
+layout(scalar, set = 1, binding = 1) readonly buffer MeshDrawCommands {
+    uint culled_count;
+    MeshDrawCommand cmds[];
+} draw_commands;
+
+layout(scalar, set = 2, binding = 0) readonly buffer IndexBuffer {
+    uint indices[];
+} global_indices;
+
+layout(scalar, set = 2, binding = 1) readonly buffer VertexBuffer {
+    Vertex vertices[];
+} global_vertices;
+
+layout(scalar, set = 2, binding = 2) readonly buffer MeshletBuffer {
+    Meshlet meshlets[];
+} meshlets;
+
+layout(scalar, set = 2, binding = 3) readonly buffer MeshletBoundsBuffer {
+    MeshletBounds bounds[];
+} meshlet_bounds;
+
+layout(scalar, set = 2, binding = 4) readonly buffer MeshletVertexIndices {
+    uint indices[];
+} meshlet_vertex_indices;
+
+layout(scalar, set = 2, binding = 5) readonly buffer MeshletPrimitiveIndices {
+    uint8_t indices[];
+} meshlet_primitive_indices;
 
 void main() {
     DrawData draw = uniforms.draw_data[gl_BaseInstance];

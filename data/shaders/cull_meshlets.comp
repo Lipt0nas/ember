@@ -6,11 +6,19 @@
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_nonuniform_qualifier : enable
 
-#include "common_geometry.glsl"
+#include "common.glsl"
 
 layout(local_size_x = 256) in;
 
-layout(scalar, set = 2, binding = 0) buffer MeshDrawCommands {
+layout(set = 0, binding = 0) uniform UBO {
+    SceneUBO scene;
+};
+
+layout(scalar, set = 1, binding = 0) readonly buffer DrawDataBuffer {
+    DrawData draw_data[];
+} uniforms;
+
+layout(scalar, set = 1, binding = 1) buffer MeshDrawCommands {
     uint culled_count;
     MeshDrawCommand cmds[];
 } draw_commands;
@@ -19,12 +27,12 @@ layout(push_constant, std430) uniform pc {
     vec2 screen_size;
 
     uint draw_count;
-    uint command_count_offset;
 
-    uint depth_pyramid_index;
+    uint disable_frustum_cull;
+    uint disable_depth_cull;
 } push_constants;
 
-layout(set = 3, binding = 0) uniform sampler2D depth;
+layout(set = 2, binding = 0) uniform sampler2D depth;
 
 void main() {
     uint object_id = gl_GlobalInvocationID.x;
@@ -48,22 +56,26 @@ void main() {
 
     bool visible = true;
 
-    visible = visible && center.z * frustum[1] - abs(center.x) * frustum[0] > -radius;
-    visible = visible && center.z * frustum[3] - abs(center.y) * frustum[2] > -radius;
+    if (push_constants.disable_frustum_cull == 0) {
+        visible = visible && center.z * frustum[1] - abs(center.x) * frustum[0] > -radius;
+        visible = visible && center.z * frustum[3] - abs(center.y) * frustum[2] > -radius;
 
-    visible = visible && center.z + radius > scene.near_plane && center.z - radius < scene.far_plane;
+        visible = visible && center.z + radius > scene.near_plane && center.z - radius < scene.far_plane;
+    }
 
-    vec4 aabb;
-    if (project_sphere(center, radius, scene.near_plane, scene.P00, scene.P11, aabb)) {
-        float width = (aabb.z - aabb.x) * push_constants.screen_size.x;
-        float height = (aabb.w - aabb.y) * push_constants.screen_size.y;
+    if (push_constants.disable_depth_cull == 0) {
+        vec4 aabb;
+        if (project_sphere(center, radius, scene.near_plane, scene.P00, scene.P11, aabb)) {
+            float width = (aabb.z - aabb.x) * push_constants.screen_size.x;
+            float height = (aabb.w - aabb.y) * push_constants.screen_size.y;
 
-        float level = ceil(log2(max(width, height)));
+            float level = ceil(log2(max(width, height)));
 
-        float depth = textureLod(depth, (aabb.xy + aabb.zw) * 0.5, level).r;
-        float depth_sphere = scene.near_plane / (center.z - radius);
+            float depth = textureLod(depth, (aabb.xy + aabb.zw) * 0.5, level).r;
+            float depth_sphere = scene.near_plane / (center.z - radius);
 
-        visible = visible && depth_sphere > depth;
+            visible = visible && depth_sphere > depth;
+        }
     }
 
     if (scene.disable_culling == 1) {

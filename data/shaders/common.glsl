@@ -1,5 +1,26 @@
 #define MESHLETS_PER_TASK 32
 
+struct MeshletTaskPayload {
+    uint draw_id;
+    uint meshlet_offset;
+    uint meshlet_indices[MESHLETS_PER_TASK];
+};
+
+struct IndexedDrawCommand {
+    uint index_count;
+    uint instance_count;
+    uint first_index;
+    uint vertex_offset;
+    uint first_instance;
+};
+
+struct MeshDrawCommand {
+    uint group_count_x;
+    uint group_count_y;
+    uint group_count_z;
+    uint object_id;
+};
+
 struct DrawData {
     vec3 center;
     float radius;
@@ -44,7 +65,7 @@ struct Vertex {
     vec2 uv;
 };
 
-layout(set = 1, binding = 0) uniform SceneUBO {
+struct SceneUBO {
     mat4 proj;
     vec4 camera_position;
 
@@ -65,7 +86,7 @@ layout(set = 1, binding = 0) uniform SceneUBO {
 
     float near_plane;
     float far_plane;
-} scene;
+};
 
 vec3 rotate_quat(vec3 v, vec4 q) {
     return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
@@ -90,4 +111,8 @@ bool project_sphere(vec3 c, float r, float znear, float P00, float P11, out vec4
     aabb = aabb.xwzy * vec4(0.5f, -0.5f, 0.5f, -0.5f) + vec4(0.5f); // clip space -> uv space
 
     return true;
+}
+
+bool cone_cull(vec3 center, float radius, vec3 cone_axis, float cone_cutoff) {
+    return dot(center, cone_axis) >= cone_cutoff * length(center) + radius;
 }

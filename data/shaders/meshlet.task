@@ -6,23 +6,62 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 #extension GL_GOOGLE_include_directive : enable
 
-#include "common_geometry.glsl"
+#include "common.glsl"
 
 layout(local_size_x = MESHLETS_PER_TASK, local_size_y = 1, local_size_z = 1) in;
 
-taskPayloadSharedEXT TaskPayload payload;
+taskPayloadSharedEXT MeshletTaskPayload payload;
 
 shared uint visible_count;
 shared uint visible_meshlet_indices[MESHLETS_PER_TASK];
 
-layout(scalar, set = 3, binding = 0) readonly buffer MeshDrawCommands {
+layout(set = 0, binding = 0) uniform UBO {
+    SceneUBO scene;
+};
+
+layout(scalar, set = 1, binding = 0) readonly buffer DrawDataBuffer {
+    DrawData draw_data[];
+} uniforms;
+
+layout(scalar, set = 1, binding = 1) readonly buffer MeshDrawCommands {
     uint culled_count;
     MeshDrawCommand cmds[];
 } draw_commands;
 
-bool cone_cull(vec3 center, float radius, vec3 cone_axis, float cone_cutoff, vec3 camera_position) {
-    return dot(center - camera_position, cone_axis) >= cone_cutoff * length(center - camera_position) + radius;
-}
+layout(scalar, set = 2, binding = 0) readonly buffer IndexBuffer {
+    uint indices[];
+} global_indices;
+
+layout(scalar, set = 2, binding = 1) readonly buffer VertexBuffer {
+    Vertex vertices[];
+} global_vertices;
+
+layout(scalar, set = 2, binding = 2) readonly buffer MeshletBuffer {
+    Meshlet meshlets[];
+} meshlets;
+
+layout(scalar, set = 2, binding = 3) readonly buffer MeshletBoundsBuffer {
+    MeshletBounds bounds[];
+} meshlet_bounds;
+
+layout(scalar, set = 2, binding = 4) readonly buffer MeshletVertexIndices {
+    uint indices[];
+} meshlet_vertex_indices;
+
+layout(scalar, set = 2, binding = 5) readonly buffer MeshletPrimitiveIndices {
+    uint8_t indices[];
+} meshlet_primitive_indices;
+
+layout(set = 3, binding = 0) uniform sampler2D depth;
+
+layout(push_constant, std430) uniform push {
+    vec2 screen_size;
+
+    uint disable_frustum_cull;
+    uint disable_depth_cull;
+    uint disable_cone_cull;
+    uint disable_small_triangle_cull;
+} pc;
 
 void main() {
     uint thread_id = gl_LocalInvocationIndex;
@@ -62,12 +101,31 @@ void main() {
 
         float cone_cutoff = bounds.cone_cutoff;
 
-        visible = visible && !cone_cull(center, radius, cone_axis, cone_cutoff, vec3(0, 0, 0));
+        if (pc.disable_cone_cull == 0) {
+            visible = visible && !cone_cull(center, radius, cone_axis, cone_cutoff);
+        }
 
-        visible = visible && center.z * frustum[1] - abs(center.x) * frustum[0] > -radius;
-        visible = visible && center.z * frustum[3] - abs(center.y) * frustum[2] > -radius;
+        if (pc.disable_frustum_cull == 0) {
+            visible = visible && center.z * frustum[1] - abs(center.x) * frustum[0] > -radius;
+            visible = visible && center.z * frustum[3] - abs(center.y) * frustum[2] > -radius;
 
-        visible = visible && center.z + radius > scene.near_plane && center.z - radius < scene.far_plane;
+            visible = visible && center.z + radius > scene.near_plane && center.z - radius < scene.far_plane;
+        }
+
+        if (pc.disable_depth_cull == 0) {
+            vec4 aabb;
+            if (project_sphere(center, radius, scene.near_plane, scene.P00, scene.P11, aabb)) {
+                float width = (aabb.z - aabb.x) * pc.screen_size.x;
+                float height = (aabb.w - aabb.y) * pc.screen_size.y;
+
+                float level = ceil(log2(max(width, height)));
+
+                float depth = textureLod(depth, (aabb.xy + aabb.zw) * 0.5, level).r;
+                float depth_sphere = scene.near_plane / (center.z - radius);
+
+                visible = visible && depth_sphere > depth;
+            }
+        }
 
         if (scene.disable_culling == 1) {
             visible = true;

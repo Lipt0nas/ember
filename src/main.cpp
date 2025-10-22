@@ -95,7 +95,7 @@ void draw_pass_stats(const std::vector<std::pair<std::string, PassTiming>>& pass
         ImGui::TextColored(ImVec4(1, 1, 0, 1), "%.2f Theoretical FPS", 1000.0f / total_avg);
         ImGui::EndTable();
 
-        ImGui::Text("Percentage:");
+        ImGui::SeparatorText("Percentage:");
         for (size_t i = 0; i < passes.size(); i++) {
             float percentage = (avg_timings[i] / total_avg) * 100.0f;
             ImGui::Text("%s", passes[i].first.c_str());
@@ -161,42 +161,25 @@ struct CullPassPushConstants {
     glm::vec2 screen_size;
 
     uint32_t draw_count;
-    uint32_t command_count_offset;
 
-    uint32_t depth_pyramid_index;
+    uint32_t disable_frustum_cull;
+    uint32_t disable_depth_cull;
 };
 
 struct DepthReduceConstants {
     glm::vec2 size;
 };
 
-struct PostProcesPushConstants {
-    uint32_t depth_index;
-    uint32_t albedo_index;
-    uint32_t normals_index;
-    uint32_t material_index;
-
-    uint32_t lightpass_index;
-    uint32_t rt_output_index;
-
-    uint32_t frame_index;
-};
-
 struct LightpassPushConstants {
-    uint32_t depth_index;
-    uint32_t albedo_index;
-    uint32_t normals_index;
-    uint32_t material_index;
+    glm::vec3 light_direction;
+    float     ambient_intensity;
 
-    uint32_t gi_output_index;
+    glm::vec3 light_color;
+    float     light_intensity;
 };
 
 struct CompositePushConstants {
-    uint32_t lightpass_index;
-    uint32_t bloom_index;
-
-    float    bloom_strength = 0.04f;
-    uint32_t mix_bloom      = 1;
+    float bloom_strength;
 };
 
 struct BloomPushConstants {
@@ -208,6 +191,11 @@ struct BloomPushConstants {
 
 struct GeometryPushConstants {
     glm::vec2 screen_size;
+
+    uint32_t disable_frustum_cull;
+    uint32_t disable_depth_cull;
+    uint32_t disable_cone_cull;
+    uint32_t disable_small_triangle_cull;
 };
 
 struct DrawData {
@@ -929,7 +917,8 @@ int main() {
             .flags              = 0,
             .queryType          = VK_QUERY_TYPE_PIPELINE_STATISTICS,
             .queryCount         = 1,
-            .pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT,
+            .pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT |
+                                  VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT,
         };
 
         VK_CHECK(vkCreateQueryPool(device, &pool_info, nullptr, &statistics_pools[i]));
@@ -1013,364 +1002,6 @@ int main() {
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
     VK_CHECK(vkCreateDescriptorPool(device, &descriptor_pool_info, nullptr, &descriptor_pool));
 
-    VkShaderModule mesh_module =
-        use_meshlets ? shader_module_from_file(device, "data/shaders/meshlet.mesh.spv") : VK_NULL_HANDLE;
-    VkShaderModule task_module =
-        use_meshlets ? shader_module_from_file(device, "data/shaders/meshlet.task.spv") : VK_NULL_HANDLE;
-
-    VkShaderModule vertex_module =
-        use_meshlets ? VK_NULL_HANDLE : shader_module_from_file(device, "data/shaders/bindless.vert.spv");
-    VkShaderModule compute_cull_module = use_meshlets
-                                             ? shader_module_from_file(device, "data/shaders/cull_meshlets.comp.spv")
-                                             : shader_module_from_file(device, "data/shaders/cull.comp.spv");
-
-    VkShaderModule fragment_module = shader_module_from_file(device, "data/shaders/bindless.frag.spv");
-
-    VkShaderModule light_compute_module     = shader_module_from_file(device, "data/shaders/light.comp.spv");
-    VkShaderModule composite_compute_module = shader_module_from_file(device, "data/shaders/composite.comp.spv");
-
-    VkShaderModule hiz_module              = shader_module_from_file(device, "data/shaders/hi_z.comp.spv");
-    VkShaderModule bloom_downsample_module = shader_module_from_file(device, "data/shaders/bloom_downsample.comp.spv");
-    VkShaderModule bloom_upsample_module   = shader_module_from_file(device, "data/shaders/bloom_upsample.comp.spv");
-
-    VkShaderStageFlags additional_flags =
-        use_hardware_rt ? VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR : 0;
-    VkDescriptorSetLayout draw_data_descriptor_layout = create_descriptor_set_layout(
-        device,
-        {
-            {
-                .binding     = 0,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT | additional_flags,
-            },
-            {
-                .binding     = 1,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
-                               VK_SHADER_STAGE_VERTEX_BIT | additional_flags,
-            },
-            {
-                .binding     = 2,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
-                               VK_SHADER_STAGE_VERTEX_BIT | additional_flags,
-            },
-            {
-                .binding     = 3,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
-                               VK_SHADER_STAGE_VERTEX_BIT | additional_flags,
-            },
-            {
-                .binding     = 4,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
-                               VK_SHADER_STAGE_VERTEX_BIT | additional_flags,
-            },
-            {
-                .binding     = 5,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
-                               VK_SHADER_STAGE_VERTEX_BIT | additional_flags,
-            },
-            {
-                .binding     = 6,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT |
-                               VK_SHADER_STAGE_VERTEX_BIT | additional_flags,
-            },
-        }
-    );
-
-    VkDescriptorSetLayout scene_ubo_descriptor_layout = create_descriptor_set_layout(
-        device,
-        {
-            {
-                .binding     = 0,
-                .type        = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_ALL,
-            },
-        }
-    );
-
-    VkDescriptorSetLayout global_texture_descriptor_layout = create_descriptor_set_layout(
-        device,
-        {
-            {
-                .binding     = 0,
-                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .count       = 10000,
-                .stage_flags = VK_SHADER_STAGE_ALL,
-                .bindless    = true,
-            },
-        }
-    );
-
-    VkDescriptorSetLayout draw_command_decriptor_layout = create_descriptor_set_layout(
-        device,
-        {
-            {
-                .binding     = 0,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_MESH_BIT_EXT |
-                               VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT,
-            },
-        }
-    );
-
-    VkShaderStageFlags geometry_pipeline_stage_flags =
-        use_meshlets ? VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
-    VkPipelineLayout geometry_pipeline_layout = create_pipeline_layout(
-        device,
-        {
-            draw_data_descriptor_layout,
-            scene_ubo_descriptor_layout,
-            global_texture_descriptor_layout,
-            draw_command_decriptor_layout,
-        },
-        geometry_pipeline_stage_flags,
-        sizeof(GeometryPushConstants)
-    );
-
-    std::vector<Shader> geometry_pipeline_shaders;
-    if (use_meshlets) {
-        geometry_pipeline_shaders.push_back({
-            .module = task_module,
-            .stage  = VK_SHADER_STAGE_TASK_BIT_EXT,
-        });
-
-        geometry_pipeline_shaders.push_back({
-            .module = mesh_module,
-            .stage  = VK_SHADER_STAGE_MESH_BIT_EXT,
-        });
-    } else {
-        geometry_pipeline_shaders.push_back({
-            .module = vertex_module,
-            .stage  = VK_SHADER_STAGE_VERTEX_BIT,
-        });
-    }
-    geometry_pipeline_shaders.push_back({
-        .module = fragment_module,
-        .stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
-    });
-
-    VkPipeline geometry_pipeline = create_graphics_pipeline(
-        device,
-        geometry_pipeline_layout,
-        geometry_pipeline_shaders,
-        {
-            VK_FORMAT_R8G8B8A8_UNORM,
-            VK_FORMAT_R16G16B16A16_SFLOAT,
-            VK_FORMAT_R8G8B8A8_UNORM,
-        },
-        VK_FORMAT_D32_SFLOAT
-    );
-
-    VkDescriptorSetLayout compute_descriptor_layout = create_descriptor_set_layout(
-        device,
-        {
-            {
-                .binding     = 0,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            {
-                .binding     = 1,
-                .type        = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-        }
-    );
-
-    VkPipelineLayout compute_pipeline_layout = create_pipeline_layout(
-        device,
-        {{compute_descriptor_layout, scene_ubo_descriptor_layout, global_texture_descriptor_layout}},
-        VK_SHADER_STAGE_COMPUTE_BIT,
-        sizeof(LightpassPushConstants)
-    );
-
-    VkPipeline lightpass_pipeline = create_compute_pipeline(
-        device,
-        compute_pipeline_layout,
-        {
-            .module = light_compute_module,
-            .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
-        }
-    );
-
-    VkDescriptorSetLayout composite_descriptor_layout = create_descriptor_set_layout(
-        device,
-        {
-            {
-                .binding     = 0,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-        }
-    );
-
-    VkPipelineLayout composite_pipeline_layout = create_pipeline_layout(
-        device,
-        {composite_descriptor_layout, scene_ubo_descriptor_layout, global_texture_descriptor_layout},
-        VK_SHADER_STAGE_COMPUTE_BIT,
-        sizeof(CompositePushConstants)
-    );
-
-    VkPipeline composite_pipeline = create_compute_pipeline(
-        device,
-        composite_pipeline_layout,
-        {
-            .module = composite_compute_module,
-            .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
-        }
-    );
-
-    VkDescriptorSetLayout compute_cull_depth_layout = create_descriptor_set_layout(
-        device,
-        {
-            {
-                .binding     = 0,
-                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-        }
-    );
-
-    VkPipelineLayout compute_cull_pipeline_layout = create_pipeline_layout(
-        device,
-        {draw_data_descriptor_layout,
-         scene_ubo_descriptor_layout,
-         draw_command_decriptor_layout,
-         compute_cull_depth_layout},
-        VK_SHADER_STAGE_COMPUTE_BIT,
-        sizeof(CullPassPushConstants)
-    );
-
-    VkPipeline compute_cull_pipeline = create_compute_pipeline(
-        device,
-        compute_cull_pipeline_layout,
-        {
-            .module = compute_cull_module,
-            .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
-        }
-    );
-
-    VkDescriptorSetLayout hiz_descriptor_layout = create_descriptor_set_layout(
-        device,
-        {
-            {
-                .binding     = 0,
-                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            {
-                .binding     = 1,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-        },
-        true
-    );
-
-    VkPipelineLayout hiz_pipeline_layout = create_pipeline_layout(
-        device, {hiz_descriptor_layout}, VK_SHADER_STAGE_COMPUTE_BIT, sizeof(DepthReduceConstants)
-    );
-
-    VkPipeline hiz_pipeline = create_compute_pipeline(
-        device,
-        hiz_pipeline_layout,
-        {
-            .module = hiz_module,
-            .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
-        }
-    );
-
-    VkDescriptorSetLayout bloom_descriptor_layout = create_descriptor_set_layout(
-        device,
-        {
-            {
-                .binding     = 0,
-                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            {
-                .binding     = 1,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-        },
-        true
-    );
-
-    VkPipelineLayout bloom_pipeline_layout = create_pipeline_layout(
-        device, {bloom_descriptor_layout}, VK_SHADER_STAGE_COMPUTE_BIT, sizeof(BloomPushConstants)
-    );
-
-    VkPipeline bloom_downsample_pipeline = create_compute_pipeline(
-        device,
-        bloom_pipeline_layout,
-        {
-            .module = bloom_downsample_module,
-            .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
-        }
-    );
-
-    VkDescriptorSetLayout bloom_upsample_descriptor_layout = create_descriptor_set_layout(
-        device,
-        {
-            {
-                .binding     = 0,
-                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            {
-                .binding     = 1,
-                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-            {
-                .binding     = 2,
-                .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .count       = 1,
-                .stage_flags = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-        },
-        true
-    );
-
-    VkPipelineLayout bloom_upsample_pipeline_layout = create_pipeline_layout(
-        device, {bloom_upsample_descriptor_layout}, VK_SHADER_STAGE_COMPUTE_BIT, sizeof(BloomPushConstants)
-    );
-
-    VkPipeline bloom_upsample_pipeline = create_compute_pipeline(
-        device,
-        bloom_upsample_pipeline_layout,
-        {
-            .module = bloom_upsample_module,
-            .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
-        }
-    );
-
     VkSamplerCreateInfo sampler_info = {
         .sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .pNext                   = nullptr,
@@ -1434,8 +1065,7 @@ int main() {
 
     uint32_t depth_pyramid_width  = previous_pow2(swapchain.width);
     uint32_t depth_pyramid_height = previous_pow2(swapchain.height);
-
-    Image depth_hiz = create_image(
+    Image    depth_hiz            = create_image(
         VK_FORMAT_R32_SFLOAT,
         depth_pyramid_width,
         depth_pyramid_height,
@@ -1553,17 +1183,6 @@ int main() {
         device
     );
 
-    Image gi_output = create_image(
-        VK_FORMAT_R16G16B16A16_SFLOAT,
-        swapchain.width / 4,
-        swapchain.height / 4,
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT,
-        false,
-        vma_allocator,
-        device
-    );
-
     std::vector<std::reference_wrapper<Image>> gbuffer_images = {
         gbuffer_albedo,
         gbuffer_normals,
@@ -1601,7 +1220,7 @@ int main() {
             bloom_buffer,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_GENERAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
             0,
             VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
@@ -1634,17 +1253,6 @@ int main() {
 
         image_pipeline_barrier(
             lightpass_output,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            0,
-            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-            0
-        );
-
-        image_pipeline_barrier(
-            gi_output,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_GENERAL,
@@ -1747,17 +1355,6 @@ int main() {
     VkDeviceSize indirect_vertex_buffer_offset = 0;
     VkDeviceSize indirect_index_buffer_offset  = 0;
 
-    VkDescriptorSetAllocateInfo draw_data_descriptor_set_info = {
-        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .pNext              = nullptr,
-        .descriptorPool     = descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts        = &draw_data_descriptor_layout
-    };
-
-    VkDescriptorSet draw_data_descriptor_set = VK_NULL_HANDLE;
-    VK_CHECK(vkAllocateDescriptorSets(device, &draw_data_descriptor_set_info, &draw_data_descriptor_set));
-
     uint32_t bindless_texture_count = 10000;
 
     VkDescriptorSetVariableDescriptorCountAllocateInfo variable_count_info = {
@@ -1765,6 +1362,19 @@ int main() {
         .descriptorSetCount = 1,
         .pDescriptorCounts  = &bindless_texture_count,
     };
+
+    VkDescriptorSetLayout global_texture_descriptor_layout = create_descriptor_set_layout(
+        device,
+        {
+            {
+                .binding     = 0,
+                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .count       = 10000,
+                .stage_flags = VK_SHADER_STAGE_ALL,
+                .bindless    = true,
+            },
+        }
+    );
 
     VkDescriptorSetAllocateInfo global_texture_descriptor_set_info = {
         .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -1776,277 +1386,6 @@ int main() {
 
     VkDescriptorSet global_texture_descriptor_set = VK_NULL_HANDLE;
     VK_CHECK(vkAllocateDescriptorSets(device, &global_texture_descriptor_set_info, &global_texture_descriptor_set));
-
-    VkDescriptorSetAllocateInfo scene_uvo_descriptor_set_info = {
-        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .pNext              = nullptr,
-        .descriptorPool     = descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts        = &scene_ubo_descriptor_layout
-    };
-
-    VkDescriptorSet scene_ubo_descriptor_set = VK_NULL_HANDLE;
-    VK_CHECK(vkAllocateDescriptorSets(device, &scene_uvo_descriptor_set_info, &scene_ubo_descriptor_set));
-
-    VkDescriptorBufferInfo scene_ubo_set_info = {
-        .buffer = scene_ubo_buffer.handle,
-        .offset = 0,
-        .range  = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT),
-    };
-
-    VkWriteDescriptorSet scene_ubo_write_set = {
-        .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .pNext            = nullptr,
-        .dstSet           = scene_ubo_descriptor_set,
-        .dstBinding       = 0,
-        .dstArrayElement  = 0,
-        .descriptorCount  = 1,
-        .descriptorType   = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-        .pImageInfo       = nullptr,
-        .pBufferInfo      = &scene_ubo_set_info,
-        .pTexelBufferView = nullptr
-    };
-    vkUpdateDescriptorSets(device, 1, &scene_ubo_write_set, 0, nullptr);
-
-    std::vector<VkDescriptorBufferInfo> draw_data_descriptor_buffer_set_infos = {
-        {
-            .buffer = draw_data_buffer.handle,
-            .offset = 0,
-            .range  = (draw_data_buffer.size / FRAMES_IN_FLIGHT),
-        },
-        {
-            .buffer = global_index_buffer.handle,
-            .offset = 0,
-            .range  = global_index_buffer.size,
-        },
-        {
-            .buffer = global_vertex_buffer.handle,
-            .offset = 0,
-            .range  = global_vertex_buffer.size,
-        },
-        {
-            .buffer = meshlet_buffer.handle,
-            .offset = 0,
-            .range  = meshlet_buffer.size,
-        },
-        {
-            .buffer = meshlet_bounds_buffer.handle,
-            .offset = 0,
-            .range  = meshlet_bounds_buffer.size,
-        },
-        {
-            .buffer = meshlet_vertex_indices_buffer.handle,
-            .offset = 0,
-            .range  = meshlet_vertex_indices_buffer.size,
-        },
-        {
-            .buffer = meshlet_primitive_indices_buffer.handle,
-            .offset = 0,
-            .range  = meshlet_primitive_indices_buffer.size,
-        },
-    };
-
-    std::vector<VkWriteDescriptorSet> draw_data_buffer_write_sets = {
-        {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = draw_data_descriptor_set,
-            .dstBinding       = 0,
-            .dstArrayElement  = 0,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-            .pImageInfo       = nullptr,
-            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[0],
-            .pTexelBufferView = nullptr,
-        },
-        {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = draw_data_descriptor_set,
-            .dstBinding       = 1,
-            .dstArrayElement  = 0,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .pImageInfo       = nullptr,
-            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[1],
-            .pTexelBufferView = nullptr,
-        },
-        {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = draw_data_descriptor_set,
-            .dstBinding       = 2,
-            .dstArrayElement  = 0,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .pImageInfo       = nullptr,
-            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[2],
-            .pTexelBufferView = nullptr,
-        },
-        {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = draw_data_descriptor_set,
-            .dstBinding       = 3,
-            .dstArrayElement  = 0,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .pImageInfo       = nullptr,
-            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[3],
-            .pTexelBufferView = nullptr,
-        },
-        {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = draw_data_descriptor_set,
-            .dstBinding       = 4,
-            .dstArrayElement  = 0,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .pImageInfo       = nullptr,
-            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[4],
-            .pTexelBufferView = nullptr,
-        },
-        {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = draw_data_descriptor_set,
-            .dstBinding       = 5,
-            .dstArrayElement  = 0,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .pImageInfo       = nullptr,
-            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[5],
-            .pTexelBufferView = nullptr,
-        },
-        {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = draw_data_descriptor_set,
-            .dstBinding       = 6,
-            .dstArrayElement  = 0,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .pImageInfo       = nullptr,
-            .pBufferInfo      = &draw_data_descriptor_buffer_set_infos[6],
-            .pTexelBufferView = nullptr,
-        },
-    };
-    vkUpdateDescriptorSets(
-        device,
-        static_cast<uint32_t>(draw_data_buffer_write_sets.size()),
-        draw_data_buffer_write_sets.data(),
-        0,
-        nullptr
-    );
-
-    VkDescriptorSetAllocateInfo compute_descriptor_set_info = {
-        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .pNext              = nullptr,
-        .descriptorPool     = descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts        = &compute_descriptor_layout
-    };
-
-    VkDescriptorSet compute_descriptor_set = VK_NULL_HANDLE;
-    VK_CHECK(vkAllocateDescriptorSets(device, &compute_descriptor_set_info, &compute_descriptor_set));
-
-    VkDescriptorSetAllocateInfo compute_cull_descriptor_set_info2 = {
-        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .pNext              = nullptr,
-        .descriptorPool     = descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts        = &compute_cull_depth_layout
-    };
-
-    VkDescriptorSet compute_cull_descriptor_set = VK_NULL_HANDLE;
-    VK_CHECK(vkAllocateDescriptorSets(device, &compute_cull_descriptor_set_info2, &compute_cull_descriptor_set));
-
-    VkDescriptorImageInfo compute_cull_image_info = {
-        .sampler     = depth_sampler,
-        .imageView   = depth_hiz.view,
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    };
-
-    std::vector<VkWriteDescriptorSet> compute_cull_write_sets = {
-        {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = compute_cull_descriptor_set,
-            .dstBinding       = 0,
-            .dstArrayElement  = 0,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .pImageInfo       = &compute_cull_image_info,
-            .pBufferInfo      = nullptr,
-            .pTexelBufferView = nullptr,
-        },
-    };
-    vkUpdateDescriptorSets(
-        device, static_cast<uint32_t>(compute_cull_write_sets.size()), compute_cull_write_sets.data(), 0, nullptr
-    );
-
-    VkDescriptorSetAllocateInfo composite_descriptor_set_info = {
-        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .pNext              = nullptr,
-        .descriptorPool     = descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts        = &composite_descriptor_layout
-    };
-
-    VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
-    VK_CHECK(vkAllocateDescriptorSets(device, &composite_descriptor_set_info, &composite_descriptor_set));
-
-    VkDescriptorImageInfo composite_image_info = {
-        .sampler     = VK_NULL_HANDLE,
-        .imageView   = composite_output.view,
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    };
-
-    VkWriteDescriptorSet composite_write_set = {
-        .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .pNext            = nullptr,
-        .dstSet           = composite_descriptor_set,
-        .dstBinding       = 0,
-        .dstArrayElement  = 0,
-        .descriptorCount  = 1,
-        .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        .pImageInfo       = &composite_image_info,
-        .pBufferInfo      = nullptr,
-        .pTexelBufferView = nullptr
-    };
-    vkUpdateDescriptorSets(device, 1, &composite_write_set, 0, nullptr);
-
-    VkDescriptorSetAllocateInfo compute_cull_descriptor_set_info = {
-        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .pNext              = nullptr,
-        .descriptorPool     = descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts        = &draw_command_decriptor_layout
-    };
-
-    VkDescriptorSet draw_command_descriptor_set = VK_NULL_HANDLE;
-    VK_CHECK(vkAllocateDescriptorSets(device, &compute_cull_descriptor_set_info, &draw_command_descriptor_set));
-
-    VkDescriptorBufferInfo compute_cull_command_buffer_info = {
-        .buffer = indirect_command_buffer.handle,
-        .offset = 0,
-        .range  = (indirect_command_buffer.size / FRAMES_IN_FLIGHT)
-    };
-
-    VkWriteDescriptorSet draw_data_write_set = {
-        .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .pNext            = nullptr,
-        .dstSet           = draw_command_descriptor_set,
-        .dstBinding       = 0,
-        .dstArrayElement  = 0,
-        .descriptorCount  = 1,
-        .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-        .pImageInfo       = nullptr,
-        .pBufferInfo      = &compute_cull_command_buffer_info,
-        .pTexelBufferView = nullptr
-    };
-    vkUpdateDescriptorSets(device, 1, &draw_data_write_set, 0, nullptr);
 
     std::unordered_map<uint32_t, Image> texture_cache;
     std::vector<Image>                  loaded_images;
@@ -2126,63 +1465,12 @@ int main() {
         device
     );
 
-    uint32_t depth_index = texture_cache.size();
-    texture_cache.insert({depth_index, depth_buffer});
-
-    uint32_t albedo_index = texture_cache.size();
-    texture_cache.insert({albedo_index, gbuffer_albedo});
-
-    uint32_t normals_index = texture_cache.size();
-    texture_cache.insert({normals_index, gbuffer_normals});
-
-    uint32_t material_index = texture_cache.size();
-    texture_cache.insert({material_index, gbuffer_material});
-
-    uint32_t lightpass_output_index = texture_cache.size();
-    texture_cache.insert({lightpass_output_index, lightpass_output});
-
-    uint32_t gi_output_index = texture_cache.size();
-    texture_cache.insert({gi_output_index, gi_output});
-
-    uint32_t bloom_output_index = texture_cache.size();
-    texture_cache.insert({bloom_output_index, bloom_buffer});
-
     populate_materials(texture_cache, global_texture_descriptor_set, linear_sampler, device);
 
-    RTScene               rt_scene                 = {};
-    VkDescriptorSetLayout rt_descriptor_set_layout = VK_NULL_HANDLE;
-    VkPipelineLayout      rt_pipeline_layout       = VK_NULL_HANDLE;
-    VkDescriptorSet       rt_descriptor_set        = VK_NULL_HANDLE;
+    RTScene rt_scene = {};
 
     if (use_hardware_rt) {
         spdlog::info("Setting up hardware raytracing scene");
-        rt_descriptor_set_layout = create_descriptor_set_layout(
-            device,
-            {{
-                 .binding     = 0,
-                 .type        = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-                 .count       = 1,
-                 .stage_flags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
-             },
-             {
-                 .binding     = 1,
-                 .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                 .count       = 1,
-                 .stage_flags = VK_SHADER_STAGE_RAYGEN_BIT_KHR,
-             }},
-            true
-        );
-
-        rt_pipeline_layout = create_pipeline_layout(
-            device,
-            {draw_data_descriptor_layout,
-             scene_ubo_descriptor_layout,
-             global_texture_descriptor_layout,
-             rt_descriptor_set_layout},
-            VK_SHADER_STAGE_RAYGEN_BIT_KHR,
-            sizeof(PostProcesPushConstants)
-        );
-
         rt_scene = create_rt_scene(
             device,
             physical_device,
@@ -2192,52 +1480,9 @@ int main() {
             meshes,
             mesh_instances,
             get_buffer_device_address(global_vertex_buffer, device),
-            get_buffer_device_address(global_index_buffer, device),
-            rt_pipeline_layout,
-            "data/shaders/raygen.rgen.spv",
-            "data/shaders/miss.rmiss.spv",
-            "data/shaders/closesthit.rchit.spv",
-            "data/shaders/anyhit.rahit.spv"
+            get_buffer_device_address(global_index_buffer, device)
         );
     }
-
-    VkDescriptorImageInfo compute_image_info = {
-        .sampler     = VK_NULL_HANDLE,
-        .imageView   = lightpass_output.view,
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    };
-
-    VkWriteDescriptorSetAccelerationStructureKHR descriptor_acceleration_structure_info = {
-        .sType                      = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
-        .accelerationStructureCount = 1,
-        .pAccelerationStructures    = &rt_scene.tlas.handle,
-    };
-
-    std::vector<VkWriteDescriptorSet> compute_write_sets = {
-        {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = compute_descriptor_set,
-            .dstBinding       = 0,
-            .dstArrayElement  = 0,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .pImageInfo       = &compute_image_info,
-            .pBufferInfo      = nullptr,
-            .pTexelBufferView = nullptr,
-        },
-        {
-            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext           = &descriptor_acceleration_structure_info,
-            .dstSet          = compute_descriptor_set,
-            .dstBinding      = 1,
-            .descriptorCount = 1,
-            .descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-        },
-    };
-    vkUpdateDescriptorSets(
-        device, static_cast<uint32_t>(compute_write_sets.size()), compute_write_sets.data(), 0, nullptr
-    );
 
     VkDescriptorPool imgui_descriptor_pool = init_imgui(
         window,
@@ -2286,12 +1531,292 @@ int main() {
 
     bool running = true;
 
-    int   bloom_levels   = (bloom_buffer.levels - 2);
-    bool  mix_bloom      = true;
-    bool  use_karis      = true;
-    float bloom_strength = 0.04f;
+    int bloom_levels = (bloom_buffer.levels - 2);
 
-    uint64_t triangle_count = 0;
+    std::array<uint64_t, 2> pipeline_stats;
+
+    DescriptorLayout scene_data_layout = {
+        .bindings = {
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                .write_info = DescriptorInfo(scene_ubo_buffer.handle, 0, scene_ubo_buffer.size / FRAMES_IN_FLIGHT)
+            },
+        }
+    };
+
+    DescriptorLayout draw_data_layout = {
+        .bindings = {
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                .write_info = DescriptorInfo(draw_data_buffer.handle, 0, draw_data_buffer.size / FRAMES_IN_FLIGHT),
+            },
+            DescriptorBinding{
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                .write_info =
+                    DescriptorInfo(indirect_command_buffer.handle, 0, indirect_command_buffer.size / FRAMES_IN_FLIGHT)
+            },
+        },
+    };
+
+    DescriptorLayout geometry_data_layout = {
+        .bindings = {
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .write_info = DescriptorInfo(global_index_buffer.handle),
+            },
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .write_info = DescriptorInfo(global_vertex_buffer.handle),
+            },
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .write_info = DescriptorInfo(meshlet_buffer.handle),
+            },
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .write_info = DescriptorInfo(meshlet_bounds_buffer.handle),
+            },
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .write_info = DescriptorInfo(meshlet_vertex_indices_buffer.handle),
+            },
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .write_info = DescriptorInfo(meshlet_primitive_indices_buffer.handle),
+            },
+        },
+    };
+
+    // COMPUTE CULL
+    Pipeline cull_pipeline = create_compute_pipeline2(
+        device,
+        use_meshlets ? shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/cull_meshlets.comp.spv")
+                     : shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/cull.comp.spv"),
+        {
+            scene_data_layout,
+            draw_data_layout,
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(depth_sampler, depth_hiz.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                    }
+            },
+        },
+        sizeof(CullPassPushConstants)
+    );
+
+    std::vector<VkDescriptorSet> cull_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, cull_pipeline);
+
+    CullPassPushConstants cull_push_constants = {
+        .screen_size = {depth_pyramid_width, depth_pyramid_height},
+        .draw_count  = 0,
+    };
+
+    // GPASS
+    std::vector<Shader> gpass_shaders = {
+        shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/bindless.frag.spv"),
+    };
+
+    if (use_meshlets) {
+        gpass_shaders.emplace_back(
+            shader_from_file(device, VK_SHADER_STAGE_TASK_BIT_EXT, "data/shaders/meshlet.task.spv")
+        );
+        gpass_shaders.emplace_back(
+            shader_from_file(device, VK_SHADER_STAGE_MESH_BIT_EXT, "data/shaders/meshlet.mesh.spv")
+        );
+    } else {
+        gpass_shaders.emplace_back(
+            shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/bindless.vert.spv")
+        );
+    }
+
+    Pipeline gpass_pipeline = create_graphics_pipeline2(
+        device,
+        gpass_shaders,
+        {
+            scene_data_layout,
+            draw_data_layout,
+            geometry_data_layout,
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(depth_sampler, depth_hiz.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                    }
+            },
+
+        },
+        {
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_FORMAT_R8G8B8A8_UNORM,
+        },
+        VK_FORMAT_D32_SFLOAT,
+        sizeof(GeometryPushConstants),
+        global_texture_descriptor_layout
+    );
+
+    std::vector<VkDescriptorSet> gpass_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, gpass_pipeline);
+
+    GeometryPushConstants gpass_push_constants = {
+        .screen_size                 = {swapchain.width, swapchain.height},
+        .disable_cone_cull           = false,
+        .disable_small_triangle_cull = false,
+    };
+
+    // HI-Z
+    Pipeline hiz_pipeline = create_compute_pipeline2(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/hi_z.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
+                        DescriptorBinding{.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER},
+                    },
+                .is_push_set = true
+            },
+        },
+        sizeof(DepthReduceConstants)
+    );
+
+    // LIGHT
+    Pipeline light_pipeline = create_compute_pipeline2(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/light.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(lightpass_output.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, gbuffer_albedo.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, gbuffer_normals.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, gbuffer_material.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, depth_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                            .write_info = DescriptorInfo(rt_scene.tlas.handle)
+                        },
+                    }
+            },
+            scene_data_layout,
+        },
+        sizeof(LightpassPushConstants)
+    );
+    std::vector<VkDescriptorSet> light_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, light_pipeline);
+
+    LightpassPushConstants light_constants = {
+        .light_direction   = glm::vec3(0.2, -0.9, 0.1),
+        .ambient_intensity = 0.3,
+        .light_color       = glm::vec3(1.0, 1.0, 1.0),
+        .light_intensity   = 10.0f
+    };
+
+    // BLOOM DOWNSAMPLE
+    Pipeline bloom_downsample_pipeline = create_compute_pipeline2(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/bloom_downsample.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
+                        DescriptorBinding{.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER},
+                    },
+                .is_push_set = true
+            },
+        },
+        sizeof(BloomPushConstants)
+    );
+
+    // BLOOM UPSAMPLE
+    Pipeline bloom_upsample_pipeline = create_compute_pipeline2(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/bloom_upsample.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
+                        DescriptorBinding{.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER},
+                        DescriptorBinding{.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER},
+                    },
+                .is_push_set = true
+            },
+        },
+        sizeof(BloomPushConstants)
+    );
+
+    // COMPOSITE
+    Pipeline composite_pipeline = create_compute_pipeline2(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/composite.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(composite_output.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, lightpass_output.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, bloom_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                    }
+            },
+        },
+        sizeof(CompositePushConstants)
+    );
+
+    std::vector<VkDescriptorSet> composite_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, composite_pipeline);
+
+    CompositePushConstants composite_push_constants{
+        .bloom_strength = 0.04f,
+    };
+
+    std::vector<uint32_t> dynamic_offsets = {0, 0, 0};
 
     Framegraph framegraph(device, graphics_queue, command_buffers[0], FRAMES_IN_FLIGHT, supports_timestamp_queries);
 
@@ -2300,10 +1825,9 @@ int main() {
     framegraph.import_image(gbuffer_albedo, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_normals, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_material, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    framegraph.import_image(gi_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
-    framegraph.import_image(bloom_buffer, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(bloom_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     auto cull_early_pass =
         framegraph.add_pass("cull early")
@@ -2330,48 +1854,26 @@ int main() {
                 TracyVkZone(tracy_vk_context, command_buffer, "Early Cull Pass");
                 ZoneScopedN("Early Cull Pass");
 
-                size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-                size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-                size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-
-                std::vector<uint32_t> dynamic_offsets = {
-                    static_cast<uint32_t>(draw_data_ptr_frame_offset),
-                    static_cast<uint32_t>(ubo_ptr_offset),
-                    static_cast<uint32_t>(command_ptr_frame_offset),
-                };
-
-                VkDescriptorSet cull_sets[] = {
-                    draw_data_descriptor_set,
-                    scene_ubo_descriptor_set,
-                    draw_command_descriptor_set,
-                    compute_cull_descriptor_set
-                };
-                vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute_cull_pipeline);
+                vkCmdBindPipeline(command_buffer, cull_pipeline.bind_point, cull_pipeline.pipeline_handle);
                 vkCmdBindDescriptorSets(
                     command_buffer,
                     VK_PIPELINE_BIND_POINT_COMPUTE,
-                    compute_cull_pipeline_layout,
+                    cull_pipeline.pipeline_layout,
                     0,
-                    4,
-                    cull_sets,
+                    3,
+                    cull_descriptor_sets.data(),
                     3,
                     dynamic_offsets.data()
                 );
 
-                CullPassPushConstants cull_constants = {
-                    .screen_size          = {depth_pyramid_width, depth_pyramid_height},
-                    .draw_count           = static_cast<uint32_t>(bindless_draw_data_cpu_buffer.size()),
-                    .command_count_offset = 0,
-                    .depth_pyramid_index  = depth_index,
-                };
-
+                cull_push_constants.draw_count = static_cast<uint32_t>(bindless_draw_data_cpu_buffer.size());
                 vkCmdPushConstants(
                     command_buffer,
-                    compute_cull_pipeline_layout,
+                    cull_pipeline.pipeline_layout,
                     VK_SHADER_STAGE_COMPUTE_BIT,
                     0,
                     sizeof(CullPassPushConstants),
-                    &cull_constants
+                    &cull_push_constants
                 );
 
                 vkCmdDispatch(command_buffer, (bindless_draw_data_cpu_buffer.size() + 255) / 256, 1, 1);
@@ -2408,16 +1910,6 @@ int main() {
                 ZoneScopedN("Gbuffer Pass");
 
                 vkCmdBeginQuery(command_buffer, statistics_pools[frame_index], 0, 0);
-
-                size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-                size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-                size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-
-                std::vector<uint32_t> dynamic_offsets = {
-                    static_cast<uint32_t>(draw_data_ptr_frame_offset),
-                    static_cast<uint32_t>(ubo_ptr_offset),
-                    static_cast<uint32_t>(command_ptr_frame_offset),
-                };
 
                 std::vector<VkRenderingAttachmentInfo> gbuffer_color_attachments = {
                     {
@@ -2489,34 +1981,31 @@ int main() {
                 };
 
                 vkCmdBeginRendering(command_buffer, &rendering_info);
-                vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, geometry_pipeline);
-
-                GeometryPushConstants push = {
-                    .screen_size = {swapchain.width, swapchain.height},
-                };
+                vkCmdBindPipeline(command_buffer, gpass_pipeline.bind_point, gpass_pipeline.pipeline_handle);
 
                 vkCmdPushConstants(
                     command_buffer,
-                    geometry_pipeline_layout,
-                    geometry_pipeline_stage_flags,
+                    gpass_pipeline.pipeline_layout,
+                    gpass_pipeline.stage_flags,
                     0,
                     sizeof(GeometryPushConstants),
-                    &push
+                    &gpass_push_constants
                 );
 
                 VkDescriptorSet sets[] = {
-                    draw_data_descriptor_set,
-                    scene_ubo_descriptor_set,
+                    gpass_descriptor_sets[0],
+                    gpass_descriptor_sets[1],
+                    gpass_descriptor_sets[2],
+                    gpass_descriptor_sets[3],
                     global_texture_descriptor_set,
-                    draw_command_descriptor_set
                 };
 
                 vkCmdBindDescriptorSets(
                     command_buffer,
                     VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    geometry_pipeline_layout,
+                    gpass_pipeline.pipeline_layout,
                     0,
-                    4,
+                    5,
                     sets,
                     3,
                     &dynamic_offsets[0]
@@ -2526,9 +2015,9 @@ int main() {
                     vkCmdDrawMeshTasksIndirectCountEXT(
                         command_buffer,
                         indirect_command_buffer.handle,
-                        command_ptr_frame_offset + sizeof(uint32_t),
+                        dynamic_offsets[2] + sizeof(uint32_t),
                         indirect_command_buffer.handle,
-                        command_ptr_frame_offset,
+                        dynamic_offsets[2],
                         bindless_draw_data_cpu_buffer.size(),
                         sizeof(MeshIndirectDrawCommand)
                     );
@@ -2538,9 +2027,9 @@ int main() {
                     vkCmdDrawIndexedIndirectCount(
                         command_buffer,
                         indirect_command_buffer.handle,
-                        command_ptr_frame_offset + sizeof(uint32_t),
+                        dynamic_offsets[2] + sizeof(uint32_t),
                         indirect_command_buffer.handle,
-                        command_ptr_frame_offset,
+                        dynamic_offsets[2],
                         bindless_draw_data_cpu_buffer.size(),
                         sizeof(VkDrawIndexedIndirectCommand)
                     );
@@ -2567,7 +2056,11 @@ int main() {
                                       TracyVkZone(tracy_vk_context, command_buffer, "Depth Pyramid");
                                       ZoneScopedN("Depth Pyramid");
 
-                                      vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_pipeline);
+                                      VkPipelineBindPoint bind_point      = hiz_pipeline.bind_point;
+                                      VkPipeline          pipeline        = hiz_pipeline.pipeline_handle;
+                                      VkPipelineLayout    pipeline_layout = hiz_pipeline.pipeline_layout;
+
+                                      vkCmdBindPipeline(command_buffer, bind_point, pipeline);
                                       for (int i = 0; i < depth_hiz.levels; ++i) {
                                           uint32_t mip_width  = glm::max(1u, depth_hiz.width >> i);
                                           uint32_t mip_height = glm::max(1u, depth_hiz.height >> i);
@@ -2595,8 +2088,8 @@ int main() {
                                                   .dstBinding       = 0,
                                                   .dstArrayElement  = 0,
                                                   .descriptorCount  = 1,
-                                                  .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                                  .pImageInfo       = &image_read_info,
+                                                  .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                  .pImageInfo       = &image_write_info,
                                                   .pBufferInfo      = nullptr,
                                                   .pTexelBufferView = nullptr,
                                               },
@@ -2606,8 +2099,8 @@ int main() {
                                                   .dstBinding       = 1,
                                                   .dstArrayElement  = 0,
                                                   .descriptorCount  = 1,
-                                                  .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                                  .pImageInfo       = &image_write_info,
+                                                  .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                  .pImageInfo       = &image_read_info,
                                                   .pBufferInfo      = nullptr,
                                                   .pTexelBufferView = nullptr,
                                               },
@@ -2616,7 +2109,7 @@ int main() {
                                           vkCmdPushDescriptorSet(
                                               command_buffer,
                                               VK_PIPELINE_BIND_POINT_COMPUTE,
-                                              hiz_pipeline_layout,
+                                              pipeline_layout,
                                               0,
                                               static_cast<uint32_t>(write_sets.size()),
                                               write_sets.data()
@@ -2624,7 +2117,7 @@ int main() {
 
                                           vkCmdPushConstants(
                                               command_buffer,
-                                              hiz_pipeline_layout,
+                                              pipeline_layout,
                                               VK_SHADER_STAGE_COMPUTE_BIT,
                                               0,
                                               sizeof(DepthReduceConstants),
@@ -2655,193 +2148,46 @@ int main() {
                                       }
                                   });
 
-    if (use_hardware_rt) {
-        auto rtgi_pass =
-            framegraph.add_pass("rtgi")
-                .reads_buffer_dynamic(
-                    draw_data_buffer,
-                    VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-                    VK_ACCESS_2_UNIFORM_READ_BIT,
-                    draw_data_buffer.size / FRAMES_IN_FLIGHT
-                )
-                .reads_buffer_dynamic(
-                    scene_ubo_buffer,
-                    VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-                    VK_ACCESS_2_UNIFORM_READ_BIT,
-                    scene_ubo_buffer.size / FRAMES_IN_FLIGHT
-                )
-                .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR)
-                .writes_storage_image(gi_output, VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR)
-                .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                    TracyVkZone(tracy_vk_context, command_buffer, "RTGI Pass");
-                    ZoneScopedN("RTGI Pass");
+    auto& light_pass =
+        framegraph.add_pass("lighting")
+            .reads_buffer_dynamic(
+                scene_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(gbuffer_material, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "Light Pass");
+                ZoneScopedN("Light Pass");
 
-                    size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-                    size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-                    size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+                vkCmdBindPipeline(command_buffer, light_pipeline.bind_point, light_pipeline.pipeline_handle);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    light_pipeline.bind_point,
+                    light_pipeline.pipeline_layout,
+                    0,
+                    light_descriptor_sets.size(),
+                    light_descriptor_sets.data(),
+                    1,
+                    &dynamic_offsets[0]
+                );
 
-                    std::vector<uint32_t> dynamic_offsets = {
-                        static_cast<uint32_t>(draw_data_ptr_frame_offset),
-                        static_cast<uint32_t>(ubo_ptr_offset),
-                        static_cast<uint32_t>(command_ptr_frame_offset),
-                    };
+                vkCmdPushConstants(
+                    command_buffer,
+                    light_pipeline.pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    sizeof(LightpassPushConstants),
+                    &light_constants
+                );
 
-                    PostProcesPushConstants post_process_push = {
-                        .depth_index     = depth_index,
-                        .albedo_index    = albedo_index,
-                        .normals_index   = normals_index,
-                        .material_index  = material_index,
-                        .lightpass_index = lightpass_output_index,
-                        .rt_output_index = 0,
-                        .frame_index     = frame_count,
-                    };
-
-                    const uint32_t handle_size_aligned = aligned_size(
-                        rt_scene.rt_properties.shaderGroupHandleSize, rt_scene.rt_properties.shaderGroupHandleAlignment
-                    );
-
-                    VkStridedDeviceAddressRegionKHR callable_shader_sbt_entry{};
-
-                    VkDescriptorSet rt_sets[] = {
-                        draw_data_descriptor_set, scene_ubo_descriptor_set, global_texture_descriptor_set
-                    };
-                    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_scene.pipeline);
-                    vkCmdBindDescriptorSets(
-                        command_buffer,
-                        VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
-                        rt_pipeline_layout,
-                        0,
-                        3,
-                        rt_sets,
-                        2,
-                        &dynamic_offsets[0]
-                    );
-                    vkCmdPushConstants(
-                        command_buffer,
-                        rt_pipeline_layout,
-                        VK_SHADER_STAGE_RAYGEN_BIT_KHR,
-                        0,
-                        sizeof(PostProcesPushConstants),
-                        &post_process_push
-                    );
-
-                    VkWriteDescriptorSetAccelerationStructureKHR descriptor_acceleration_structure_info = {
-                        .sType                      = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
-                        .accelerationStructureCount = 1,
-                        .pAccelerationStructures    = &rt_scene.tlas.handle,
-                    };
-
-                    VkDescriptorImageInfo rt_image_descriptor = {
-                        .imageView   = gi_output.view,
-                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-                    };
-
-                    std::vector<VkWriteDescriptorSet> acceleration_structure_writes = {
-                        {
-                            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                            .pNext           = &descriptor_acceleration_structure_info,
-                            .dstSet          = rt_descriptor_set,
-                            .dstBinding      = 0,
-                            .descriptorCount = 1,
-                            .descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-                        },
-                        {
-                            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                            .pNext           = nullptr,
-                            .dstSet          = rt_descriptor_set,
-                            .dstBinding      = 1,
-                            .descriptorCount = 1,
-                            .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                            .pImageInfo      = &rt_image_descriptor,
-                        },
-                    };
-                    vkCmdPushDescriptorSet(
-                        command_buffer,
-                        VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
-                        rt_pipeline_layout,
-                        3,
-                        static_cast<uint32_t>(acceleration_structure_writes.size()),
-                        acceleration_structure_writes.data()
-                    );
-
-                    vkCmdTraceRaysKHR(
-                        command_buffer,
-                        &rt_scene.raygen_shader_sbt_entry,
-                        &rt_scene.miss_shader_sbt_entry,
-                        &rt_scene.hit_shader_sbt_entry,
-                        &callable_shader_sbt_entry,
-                        gi_output.width,
-                        gi_output.height,
-                        1
-                    );
-                });
-    }
-
-    auto& light_pass = framegraph.add_pass("lighting")
-                           .reads_buffer_dynamic(
-                               scene_ubo_buffer,
-                               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                               VK_ACCESS_2_UNIFORM_READ_BIT,
-                               scene_ubo_buffer.size / FRAMES_IN_FLIGHT
-                           )
-                           .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                           .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                           .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                           .samples_image(gbuffer_material, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                           .writes_storage_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
-
-    if (use_hardware_rt) {
-        light_pass.samples_image(gi_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
-    }
-
-    light_pass.render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-        TracyVkZone(tracy_vk_context, command_buffer, "Light Pass");
-        ZoneScopedN("Light Pass");
-
-        size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-        size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-        size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-
-        std::vector<uint32_t> dynamic_offsets = {
-            static_cast<uint32_t>(draw_data_ptr_frame_offset),
-            static_cast<uint32_t>(ubo_ptr_offset),
-            static_cast<uint32_t>(command_ptr_frame_offset),
-        };
-
-        VkDescriptorSet compute_sets[] = {
-            compute_descriptor_set, scene_ubo_descriptor_set, global_texture_descriptor_set
-        };
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, lightpass_pipeline);
-        vkCmdBindDescriptorSets(
-            command_buffer,
-            VK_PIPELINE_BIND_POINT_COMPUTE,
-            compute_pipeline_layout,
-            0,
-            3,
-            compute_sets,
-            1,
-            &dynamic_offsets[1]
-        );
-
-        LightpassPushConstants light_constants = {
-            .depth_index     = depth_index,
-            .albedo_index    = albedo_index,
-            .normals_index   = normals_index,
-            .material_index  = material_index,
-            .gi_output_index = gi_output_index,
-        };
-
-        vkCmdPushConstants(
-            command_buffer,
-            compute_pipeline_layout,
-            VK_SHADER_STAGE_COMPUTE_BIT,
-            0,
-            sizeof(LightpassPushConstants),
-            &light_constants
-        );
-
-        vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
-    });
+                vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
+            });
 
     auto& bloom_downsample_pass =
         framegraph.add_pass("bloom downsample")
@@ -2858,17 +2204,22 @@ int main() {
                 VK_IMAGE_LAYOUT_GENERAL
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "Bloom Pass");
-                ZoneScopedN("Bloom Pass");
+                TracyVkZone(tracy_vk_context, command_buffer, "Bloom Downsample Pass");
+                ZoneScopedN("Bloom Downsample Pass");
 
-                vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, bloom_downsample_pipeline);
+                VkPipelineBindPoint bind_point      = bloom_downsample_pipeline.bind_point;
+                VkPipeline          pipeline        = bloom_downsample_pipeline.pipeline_handle;
+                VkPipelineLayout    pipeline_layout = bloom_downsample_pipeline.pipeline_layout;
+                VkShaderStageFlags  stage_flags     = bloom_downsample_pipeline.stage_flags;
+
+                vkCmdBindPipeline(command_buffer, bind_point, pipeline);
                 for (int i = 0; i < bloom_levels; ++i) {
                     uint32_t mip_width  = glm::max(1u, bloom_buffer.width >> i);
                     uint32_t mip_height = glm::max(1u, bloom_buffer.height >> i);
 
                     BloomPushConstants constants = {
                         .texel_size = {1.0 / mip_width, 1.0 / mip_height},
-                        .first_pass = static_cast<uint32_t>(use_karis ? (i == 0) : 0),
+                        .first_pass = i == 0,
                         .padding    = 0.0f,
                     };
 
@@ -2891,8 +2242,8 @@ int main() {
                             .dstBinding       = 0,
                             .dstArrayElement  = 0,
                             .descriptorCount  = 1,
-                            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            .pImageInfo       = &image_read_info,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .pImageInfo       = &image_write_info,
                             .pBufferInfo      = nullptr,
                             .pTexelBufferView = nullptr,
                         },
@@ -2902,8 +2253,8 @@ int main() {
                             .dstBinding       = 1,
                             .dstArrayElement  = 0,
                             .descriptorCount  = 1,
-                            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                            .pImageInfo       = &image_write_info,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .pImageInfo       = &image_read_info,
                             .pBufferInfo      = nullptr,
                             .pTexelBufferView = nullptr,
                         },
@@ -2911,20 +2262,15 @@ int main() {
 
                     vkCmdPushDescriptorSet(
                         command_buffer,
-                        VK_PIPELINE_BIND_POINT_COMPUTE,
-                        bloom_pipeline_layout,
+                        bind_point,
+                        pipeline_layout,
                         0,
                         static_cast<uint32_t>(write_sets.size()),
                         write_sets.data()
                     );
 
                     vkCmdPushConstants(
-                        command_buffer,
-                        bloom_pipeline_layout,
-                        VK_SHADER_STAGE_COMPUTE_BIT,
-                        0,
-                        sizeof(BloomPushConstants),
-                        &constants
+                        command_buffer, pipeline_layout, stage_flags, 0, sizeof(BloomPushConstants), &constants
                     );
 
                     uint32_t groups_x = (mip_width + 7) / 8;
@@ -2960,10 +2306,15 @@ int main() {
                 VK_IMAGE_LAYOUT_GENERAL
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "Bloom Pass");
-                ZoneScopedN("Bloom Pass");
+                TracyVkZone(tracy_vk_context, command_buffer, "Bloom Upsample Pass");
+                ZoneScopedN("Bloom Upsample Pass");
 
-                vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, bloom_upsample_pipeline);
+                VkPipelineBindPoint bind_point      = bloom_upsample_pipeline.bind_point;
+                VkPipeline          pipeline        = bloom_upsample_pipeline.pipeline_handle;
+                VkPipelineLayout    pipeline_layout = bloom_upsample_pipeline.pipeline_layout;
+                VkShaderStageFlags  stage_flags     = bloom_upsample_pipeline.stage_flags;
+
+                vkCmdBindPipeline(command_buffer, bind_point, pipeline);
                 for (int i = bloom_levels - 1; i > 0; --i) {
                     uint32_t mip_width  = glm::max(1u, bloom_buffer.width >> (i - 1));
                     uint32_t mip_height = glm::max(1u, bloom_buffer.height >> (i - 1));
@@ -2980,7 +2331,7 @@ int main() {
                         .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
                     };
 
-                    VkDescriptorImageInfo image_read_info2 = {
+                    VkDescriptorImageInfo last_mip_read_info = {
                         .sampler     = linear_sampler_clamped,
                         .imageView   = bloom_mip_views[i - 1],
                         .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -2999,8 +2350,8 @@ int main() {
                             .dstBinding       = 0,
                             .dstArrayElement  = 0,
                             .descriptorCount  = 1,
-                            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            .pImageInfo       = &image_read_info,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .pImageInfo       = &image_write_info,
                             .pBufferInfo      = nullptr,
                             .pTexelBufferView = nullptr,
                         },
@@ -3011,7 +2362,7 @@ int main() {
                             .dstArrayElement  = 0,
                             .descriptorCount  = 1,
                             .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            .pImageInfo       = &image_read_info2,
+                            .pImageInfo       = &image_read_info,
                             .pBufferInfo      = nullptr,
                             .pTexelBufferView = nullptr,
                         },
@@ -3021,8 +2372,8 @@ int main() {
                             .dstBinding       = 2,
                             .dstArrayElement  = 0,
                             .descriptorCount  = 1,
-                            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                            .pImageInfo       = &image_write_info,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .pImageInfo       = &last_mip_read_info,
                             .pBufferInfo      = nullptr,
                             .pTexelBufferView = nullptr,
                         },
@@ -3030,20 +2381,15 @@ int main() {
 
                     vkCmdPushDescriptorSet(
                         command_buffer,
-                        VK_PIPELINE_BIND_POINT_COMPUTE,
-                        bloom_upsample_pipeline_layout,
+                        bind_point,
+                        pipeline_layout,
                         0,
                         static_cast<uint32_t>(write_sets.size()),
                         write_sets.data()
                     );
 
                     vkCmdPushConstants(
-                        command_buffer,
-                        bloom_upsample_pipeline_layout,
-                        VK_SHADER_STAGE_COMPUTE_BIT,
-                        0,
-                        sizeof(BloomPushConstants),
-                        &constants
+                        command_buffer, pipeline_layout, stage_flags, 0, sizeof(BloomPushConstants), &constants
                     );
 
                     uint32_t groups_x = (mip_width + 7) / 8;
@@ -3085,44 +2431,24 @@ int main() {
                 TracyVkZone(tracy_vk_context, command_buffer, "Composite Pass");
                 ZoneScopedN("Composite Pass");
 
-                size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-                size_t command_ptr_frame_offset   = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-                size_t ubo_ptr_offset             = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-
-                std::vector<uint32_t> dynamic_offsets = {
-                    static_cast<uint32_t>(draw_data_ptr_frame_offset),
-                    static_cast<uint32_t>(ubo_ptr_offset),
-                    static_cast<uint32_t>(command_ptr_frame_offset),
-                };
-
-                CompositePushConstants push_constants = {
-                    .lightpass_index = lightpass_output_index,
-                    .bloom_index     = bloom_output_index,
-                    .bloom_strength  = bloom_strength,
-                    .mix_bloom       = mix_bloom,
-                };
-
-                VkDescriptorSet composite_sets[] = {
-                    composite_descriptor_set, scene_ubo_descriptor_set, global_texture_descriptor_set
-                };
-                vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, composite_pipeline);
+                vkCmdBindPipeline(command_buffer, composite_pipeline.bind_point, composite_pipeline.pipeline_handle);
                 vkCmdBindDescriptorSets(
                     command_buffer,
-                    VK_PIPELINE_BIND_POINT_COMPUTE,
-                    composite_pipeline_layout,
+                    composite_pipeline.bind_point,
+                    composite_pipeline.pipeline_layout,
                     0,
-                    3,
-                    composite_sets,
-                    1,
-                    &dynamic_offsets[1]
+                    composite_descriptor_sets.size(),
+                    composite_descriptor_sets.data(),
+                    0,
+                    nullptr
                 );
                 vkCmdPushConstants(
                     command_buffer,
-                    composite_pipeline_layout,
+                    composite_pipeline.pipeline_layout,
                     VK_SHADER_STAGE_COMPUTE_BIT,
                     0,
                     sizeof(CompositePushConstants),
-                    &push_constants
+                    &composite_push_constants
                 );
 
                 vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
@@ -3236,38 +2562,58 @@ int main() {
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::Begin("Debug");
+        bool open = true;
+        ImGui::Begin("Debug", &open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
 
         ImGui::SeparatorText("Info");
         ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
         ImGui::Text("FPS: %u", fps);
-        ImGui::Text("Triangles Rendered: %.3fM", (double(triangle_count) / 1'000'000.0));
+        ImGui::Text("Triangles Rendered: %.3fM", (double(pipeline_stats[0]) / 1'000'000.0));
+        ImGui::Text("Fragment shader invocations: %.3fM", (double(pipeline_stats[1]) / 1'000'000.0));
         ImGui::NewLine();
 
-        std::vector<std::pair<std::string, PassTiming>> pass_timings = {};
-        for (const auto& pass : framegraph.passes) {
-            pass_timings.push_back(std::make_pair(pass.name, framegraph.get_pass_timing(pass.name)));
+        if (ImGui::TreeNode("Performance")) {
+            std::vector<std::pair<std::string, PassTiming>> pass_timings = {};
+            for (const auto& pass : framegraph.passes) {
+                pass_timings.push_back(std::make_pair(pass.name, framegraph.get_pass_timing(pass.name)));
+            }
+
+            draw_pass_profiler(pass_timings);
+            ImGui::TreePop();
         }
 
-        draw_pass_profiler(pass_timings);
+        if (ImGui::TreeNode("Config")) {
+            ImGui::SeparatorText("Cull");
+            if (ImGui::Checkbox("Freeze frustum", &debug_frustum)) {
+                frozen_view       = camera.view_matrix;
+                frozen_frustum[0] = frustum_x.x;
+                frozen_frustum[1] = frustum_x.z;
+                frozen_frustum[2] = frustum_y.y;
+                frozen_frustum[3] = frustum_y.z;
+            }
+            ImGui::SameLine();
+            ImGui::Checkbox("Disable culling (global)", &disable_culling);
+            ImGui::Checkbox("Disable frustum cull (compute)", (bool*)&cull_push_constants.disable_frustum_cull);
+            ImGui::Checkbox("Disable depth cull (compute)", (bool*)&cull_push_constants.disable_depth_cull);
+            ImGui::Checkbox("Disable frustum cull (mesh)", (bool*)&gpass_push_constants.disable_frustum_cull);
+            ImGui::Checkbox("Disable depth cull (mesh)", (bool*)&gpass_push_constants.disable_depth_cull);
+            ImGui::Checkbox("Disable cone cull (mesh)", (bool*)&gpass_push_constants.disable_cone_cull);
+            ImGui::Checkbox(
+                "Disable small triangle cull (mesh)", (bool*)&gpass_push_constants.disable_small_triangle_cull
+            );
 
-        ImGui::SeparatorText("Debug");
-        if (ImGui::Checkbox("Freeze frustum", &debug_frustum)) {
-            frozen_view       = camera.view_matrix;
-            frozen_frustum[0] = frustum_x.x;
-            frozen_frustum[1] = frustum_x.z;
-            frozen_frustum[2] = frustum_y.y;
-            frozen_frustum[3] = frustum_y.z;
+            ImGui::SeparatorText("Light");
+            ImGui::SliderFloat3("Light direction", &light_constants.light_direction.x, -1.0, 1.0);
+            ImGui::SliderFloat3("Light color", &light_constants.light_color.x, 0.0, 1.0);
+            ImGui::SliderFloat("Light intensity", &light_constants.light_intensity, 0.0, 100.0);
+            ImGui::SliderFloat("Ambient intensity", &light_constants.ambient_intensity, 0.0, 1.0);
+
+            ImGui::SeparatorText("Bloom");
+            ImGui::SliderFloat("Bloom strength", &composite_push_constants.bloom_strength, 0.0, 1.0);
+            ImGui::SliderInt("Bloom levels", &bloom_levels, 0, bloom_buffer.levels);
+
+            ImGui::TreePop();
         }
-        ImGui::SameLine();
-        ImGui::Checkbox("Disable culling", &disable_culling);
-
-        ImGui::Checkbox("Mix Bloom", &mix_bloom);
-        ImGui::SameLine();
-        ImGui::Checkbox("Karis Average", &use_karis);
-        ImGui::SliderFloat("Bloom Strength", &bloom_strength, 0.0, 1.0);
-        ImGui::SliderInt("Bloom Levels", &bloom_levels, 0, bloom_buffer.levels);
-        ImGui::NewLine();
         ImGui::End();
 
         ImGui::Render();
@@ -3396,6 +2742,10 @@ int main() {
             command_ptr_frame_offset,
             indirect_command_buffer.size / FRAMES_IN_FLIGHT
         );
+
+        dynamic_offsets[0] = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[1] = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[2] = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
 
         framegraph.execute(command_buffer, frame_index);
 
@@ -3579,13 +2929,12 @@ int main() {
                 statistics_pools[frame_index],
                 0,
                 1,
-                sizeof(uint64_t),
-                &triangle_count,
+                pipeline_stats.size() * sizeof(uint64_t),
+                &pipeline_stats[0],
                 0,
                 VK_QUERY_RESULT_64_BIT
             );
         }
-        VK_CHECK(vkDeviceWaitIdle(device));
     }
 
     VK_CHECK(vkDeviceWaitIdle(device));
@@ -3617,60 +2966,40 @@ int main() {
     destroy_image(gbuffer_material, device, vma_allocator);
     destroy_image(gbuffer_normals, device, vma_allocator);
     destroy_image(depth_hiz, device, vma_allocator);
-    destroy_image(gi_output, device, vma_allocator);
+    destroy_image(bloom_buffer, device, vma_allocator);
 
     for (auto view : depth_mip_views) {
         vkDestroyImageView(device, view, nullptr);
     }
+
+    for (auto view : bloom_mip_views) {
+        vkDestroyImageView(device, view, nullptr);
+    }
+
+    destroy_pipeline(device, cull_pipeline);
+    destroy_pipeline(device, gpass_pipeline);
+    destroy_pipeline(device, hiz_pipeline);
+    destroy_pipeline(device, light_pipeline);
+    destroy_pipeline(device, bloom_downsample_pipeline);
+    destroy_pipeline(device, bloom_upsample_pipeline);
+    destroy_pipeline(device, composite_pipeline);
 
     for (auto image : loaded_images) {
         destroy_image(image, device, vma_allocator);
     }
 
     if (use_hardware_rt) {
-        vkDestroyPipelineLayout(device, rt_pipeline_layout, nullptr);
-        vkDestroyDescriptorSetLayout(device, rt_descriptor_set_layout, nullptr);
         destroy_rt_scene(rt_scene, device, vma_allocator);
     }
 
     vmaDestroyAllocator(vma_allocator);
 
     vkDestroyDescriptorSetLayout(device, global_texture_descriptor_layout, nullptr);
-    vkDestroyDescriptorSetLayout(device, scene_ubo_descriptor_layout, nullptr);
-    vkDestroyDescriptorSetLayout(device, draw_data_descriptor_layout, nullptr);
-    vkDestroyDescriptorSetLayout(device, compute_descriptor_layout, nullptr);
-    vkDestroyDescriptorSetLayout(device, composite_descriptor_layout, nullptr);
-    vkDestroyDescriptorSetLayout(device, draw_command_decriptor_layout, nullptr);
-    vkDestroyDescriptorSetLayout(device, compute_cull_depth_layout, nullptr);
-    vkDestroyDescriptorSetLayout(device, hiz_descriptor_layout, nullptr);
-    vkDestroyPipelineLayout(device, compute_pipeline_layout, nullptr);
-    vkDestroyPipelineLayout(device, composite_pipeline_layout, nullptr);
-    vkDestroyPipelineLayout(device, hiz_pipeline_layout, nullptr);
-    vkDestroyPipeline(device, lightpass_pipeline, nullptr);
-    vkDestroyPipeline(device, composite_pipeline, nullptr);
-    vkDestroyPipeline(device, hiz_pipeline, nullptr);
     vkDestroySampler(device, linear_sampler, nullptr);
+    vkDestroySampler(device, linear_sampler_clamped, nullptr);
     vkDestroySampler(device, depth_sampler, nullptr);
     vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
     vkDestroyDescriptorPool(device, imgui_descriptor_pool, nullptr);
-    if (mesh_module != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(device, mesh_module, nullptr);
-    }
-    if (task_module != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(device, task_module, nullptr);
-    }
-    vkDestroyShaderModule(device, fragment_module, nullptr);
-    vkDestroyShaderModule(device, composite_compute_module, nullptr);
-    vkDestroyShaderModule(device, light_compute_module, nullptr);
-    if (vertex_module != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(device, vertex_module, nullptr);
-    }
-    vkDestroyShaderModule(device, compute_cull_module, nullptr);
-    vkDestroyShaderModule(device, hiz_module, nullptr);
-    vkDestroyPipelineLayout(device, compute_cull_pipeline_layout, nullptr);
-    vkDestroyPipelineLayout(device, geometry_pipeline_layout, nullptr);
-    vkDestroyPipeline(device, geometry_pipeline, nullptr);
-    vkDestroyPipeline(device, compute_cull_pipeline, nullptr);
     vkDestroyCommandPool(device, command_pool, nullptr);
     for (int i = 0; i < swapchain.images.size(); i++) {
         vkDestroySemaphore(device, image_available_semaphores[i], nullptr);
