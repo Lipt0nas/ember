@@ -107,7 +107,7 @@ add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
 )
-target_include_directories(imgui PUBLIC 
+target_include_directories(imgui PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
 )
@@ -163,7 +163,7 @@ if(NOT GLSLC)
 endif()
 
 set(SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data/shaders")
-file(GLOB_RECURSE SHADER_SOURCES 
+file(GLOB_RECURSE SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/*"
 )
 list(FILTER SHADER_SOURCES EXCLUDE REGEX ".*\\.(spv|glsl)$")
@@ -171,7 +171,7 @@ list(FILTER SHADER_SOURCES EXCLUDE REGEX ".*\\.(spv|glsl)$")
 set(SHADER_OUTPUTS)
 foreach(SHADER_SOURCE ${SHADER_SOURCES})
     set(SHADER_OUTPUT "${SHADER_SOURCE}.spv")
-    
+
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
         COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT} --target-env=vulkan1.4 --target-spv=spv1.6 -g
@@ -179,7 +179,7 @@ foreach(SHADER_SOURCE ${SHADER_SOURCES})
         COMMENT "Compiling shader: ${SHADER_SOURCE}"
         VERBATIM
     )
-    
+
     list(APPEND SHADER_OUTPUTS ${SHADER_OUTPUT})
 endforeach()
 

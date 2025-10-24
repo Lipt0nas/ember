@@ -2,45 +2,10 @@
 
 #include "ember.hpp"
 
-struct DescriptorLayoutBinding {
-    uint32_t           binding;
-    VkDescriptorType   type;
-    uint32_t           count;
-    VkShaderStageFlags stage_flags;
-    bool               bindless;
-};
-
 struct Shader {
     VkShaderModule        module = VK_NULL_HANDLE;
     VkShaderStageFlagBits stage;
 };
-
-Shader shader_from_file(VkDevice device, VkShaderStageFlagBits stage, const std::filesystem::path& path);
-
-VkShaderModule shader_module_from_file(VkDevice device, const std::filesystem::path& path);
-
-VkPipelineLayout create_pipeline_layout(
-    VkDevice                                  device,
-    const std::vector<VkDescriptorSetLayout>& descriptor_set_layouts,
-    VkShaderStageFlags                        push_constants_stages = 0,
-    uint32_t                                  push_constants_size   = 0
-);
-
-VkPipeline create_graphics_pipeline(
-    VkDevice                     device,
-    VkPipelineLayout             pipeline_layout,
-    const std::vector<Shader>&   shaders,
-    const std::vector<VkFormat>& color_attachment_formats,
-    VkFormat                     depth_format = VK_FORMAT_UNDEFINED
-);
-
-VkPipeline create_compute_pipeline(VkDevice device, VkPipelineLayout pipeline_layout, const Shader& shader);
-
-VkDescriptorSetLayout create_descriptor_set_layout(
-    VkDevice device, const std::vector<DescriptorLayoutBinding>& bindings, bool push_set = false
-);
-
-// ------------------
 
 enum class DescriptorType {
     NONE,
@@ -123,7 +88,7 @@ struct Pipeline {
 std::vector<VkDescriptorSet>
 allocate_descriptor_sets(VkDevice device, VkDescriptorPool descriptor_pool, const Pipeline& pipeline);
 
-Pipeline create_graphics_pipeline2(
+Pipeline create_graphics_pipeline(
     VkDevice                             device,
     const std::vector<Shader>&           shaders,
     const std::vector<DescriptorLayout>& descriptor_sets,
@@ -133,7 +98,7 @@ Pipeline create_graphics_pipeline2(
     VkDescriptorSetLayout                additional_set      = VK_NULL_HANDLE
 );
 
-Pipeline create_compute_pipeline2(
+Pipeline create_compute_pipeline(
     VkDevice                             device,
     const Shader&                        shader,
     const std::vector<DescriptorLayout>& descriptor_sets,
@@ -143,4 +108,11 @@ Pipeline create_compute_pipeline2(
 
 void destroy_pipeline(VkDevice device, const Pipeline& pipeline);
 
-// ------------------
+Shader shader_from_file(VkDevice device, VkShaderStageFlagBits stage, const std::filesystem::path& path);
+
+VkDescriptorSetLayout create_descriptor_set_layout(
+    VkDevice                              device,
+    VkShaderStageFlags                    stage_flags,
+    const std::vector<DescriptorBinding>& bindings,
+    bool                                  push_set = false
+);

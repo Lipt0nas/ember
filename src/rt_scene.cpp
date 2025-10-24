@@ -343,24 +343,6 @@ RTScene create_rt_scene(
     top_level_acceleration_structure.buffer  = top_level_acceleration_structure_buffer;
     top_level_acceleration_structure.address = top_level_acceleration_structure_address;
 
-    std::vector<VkPipelineShaderStageCreateInfo>      shader_stages;
-    std::vector<VkRayTracingShaderGroupCreateInfoKHR> shader_groups;
-
-    auto load_shader =
-        [device](const std::filesystem::path& path, VkShaderStageFlagBits stages) -> VkPipelineShaderStageCreateInfo {
-        auto module = shader_module_from_file(device, path);
-
-        return {
-            .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .pNext               = nullptr,
-            .flags               = 0,
-            .stage               = stages,
-            .module              = module,
-            .pName               = "main",
-            .pSpecializationInfo = nullptr,
-        };
-    };
-
     RTScene scene = {
         .blas_instances                  = bottom_level_acceleration_structures,
         .tlas                            = top_level_acceleration_structure,

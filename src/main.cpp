@@ -860,9 +860,6 @@ int main() {
     );
     volkLoadDevice(device);
 
-    // NOTE: don't need this for now, while it's half-baked
-    use_hardware_rt = true;
-
     spdlog::info("Extension support:\n\tMesh shading: {}\n\tRay tracing: {}", use_meshlets, use_hardware_rt);
 
     VmaAllocatorCreateInfo allocator_info = {
@@ -1355,37 +1352,32 @@ int main() {
     VkDeviceSize indirect_vertex_buffer_offset = 0;
     VkDeviceSize indirect_index_buffer_offset  = 0;
 
-    uint32_t bindless_texture_count = 10000;
-
-    VkDescriptorSetVariableDescriptorCountAllocateInfo variable_count_info = {
-        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
-        .descriptorSetCount = 1,
-        .pDescriptorCounts  = &bindless_texture_count,
-    };
-
     VkDescriptorSetLayout global_texture_descriptor_layout = create_descriptor_set_layout(
         device,
+        VK_SHADER_STAGE_ALL,
         {
-            {
-                .binding     = 0,
-                .type        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .count       = 10000,
-                .stage_flags = VK_SHADER_STAGE_ALL,
-                .bindless    = true,
-            },
+            {.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .is_array = true},
         }
     );
 
-    VkDescriptorSetAllocateInfo global_texture_descriptor_set_info = {
-        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .pNext              = &variable_count_info,
-        .descriptorPool     = descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts        = &global_texture_descriptor_layout
-    };
-
+    uint32_t        bindless_texture_count        = 10000;
     VkDescriptorSet global_texture_descriptor_set = VK_NULL_HANDLE;
-    VK_CHECK(vkAllocateDescriptorSets(device, &global_texture_descriptor_set_info, &global_texture_descriptor_set));
+    {
+        VkDescriptorSetVariableDescriptorCountAllocateInfo variable_count_info = {
+            .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+            .descriptorSetCount = 1,
+            .pDescriptorCounts  = &bindless_texture_count,
+        };
+
+        VkDescriptorSetAllocateInfo global_texture_descriptor_set_info = {
+            .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .pNext              = &variable_count_info,
+            .descriptorPool     = descriptor_pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts        = &global_texture_descriptor_layout
+        };
+        VK_CHECK(vkAllocateDescriptorSets(device, &global_texture_descriptor_set_info, &global_texture_descriptor_set));
+    }
 
     std::unordered_map<uint32_t, Image> texture_cache;
     std::vector<Image>                  loaded_images;
@@ -1588,7 +1580,7 @@ int main() {
     };
 
     // COMPUTE CULL
-    Pipeline cull_pipeline = create_compute_pipeline2(
+    Pipeline cull_pipeline = create_compute_pipeline(
         device,
         use_meshlets ? shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/cull_meshlets.comp.spv")
                      : shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/cull.comp.spv"),
@@ -1634,7 +1626,7 @@ int main() {
         );
     }
 
-    Pipeline gpass_pipeline = create_graphics_pipeline2(
+    Pipeline gpass_pipeline = create_graphics_pipeline(
         device,
         gpass_shaders,
         {
@@ -1672,7 +1664,7 @@ int main() {
     };
 
     // HI-Z
-    Pipeline hiz_pipeline = create_compute_pipeline2(
+    Pipeline hiz_pipeline = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/hi_z.comp.spv"),
         {
@@ -1689,7 +1681,7 @@ int main() {
     );
 
     // LIGHT
-    Pipeline light_pipeline = create_compute_pipeline2(
+    Pipeline light_pipeline = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/light.comp.spv"),
         {
@@ -1724,10 +1716,10 @@ int main() {
                                 linear_sampler, depth_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
-                        DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-                            .write_info = DescriptorInfo(rt_scene.tlas.handle)
-                        },
+                        // DescriptorBinding{
+                        //     .type       = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                        //     .write_info = DescriptorInfo(rt_scene.tlas.handle)
+                        // },
                     }
             },
             scene_data_layout,
@@ -1745,7 +1737,7 @@ int main() {
     };
 
     // BLOOM DOWNSAMPLE
-    Pipeline bloom_downsample_pipeline = create_compute_pipeline2(
+    Pipeline bloom_downsample_pipeline = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/bloom_downsample.comp.spv"),
         {
@@ -1762,7 +1754,7 @@ int main() {
     );
 
     // BLOOM UPSAMPLE
-    Pipeline bloom_upsample_pipeline = create_compute_pipeline2(
+    Pipeline bloom_upsample_pipeline = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/bloom_upsample.comp.spv"),
         {
@@ -1780,7 +1772,7 @@ int main() {
     );
 
     // COMPOSITE
-    Pipeline composite_pipeline = create_compute_pipeline2(
+    Pipeline composite_pipeline = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/composite.comp.spv"),
         {
@@ -2219,7 +2211,7 @@ int main() {
 
                     BloomPushConstants constants = {
                         .texel_size = {1.0 / mip_width, 1.0 / mip_height},
-                        .first_pass = i == 0,
+                        .first_pass = static_cast<uint32_t>(i == 0 ? 1 : 0),
                         .padding    = 0.0f,
                     };
 
@@ -2325,13 +2317,13 @@ int main() {
                         .padding    = 0.0f,
                     };
 
-                    VkDescriptorImageInfo image_read_info = {
+                    VkDescriptorImageInfo lower_mip_info = {
                         .sampler     = linear_sampler_clamped,
                         .imageView   = bloom_mip_views[i],
                         .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
                     };
 
-                    VkDescriptorImageInfo last_mip_read_info = {
+                    VkDescriptorImageInfo current_mip_read_info = {
                         .sampler     = linear_sampler_clamped,
                         .imageView   = bloom_mip_views[i - 1],
                         .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -2362,7 +2354,7 @@ int main() {
                             .dstArrayElement  = 0,
                             .descriptorCount  = 1,
                             .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            .pImageInfo       = &image_read_info,
+                            .pImageInfo       = &current_mip_read_info,
                             .pBufferInfo      = nullptr,
                             .pTexelBufferView = nullptr,
                         },
@@ -2373,7 +2365,7 @@ int main() {
                             .dstArrayElement  = 0,
                             .descriptorCount  = 1,
                             .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            .pImageInfo       = &last_mip_read_info,
+                            .pImageInfo       = &lower_mip_info,
                             .pBufferInfo      = nullptr,
                             .pTexelBufferView = nullptr,
                         },
