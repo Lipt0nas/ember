@@ -11,6 +11,8 @@
 
 #include <format>
 
+#include <glm/gtc/random.hpp>
+
 #include <tracy/Tracy.hpp>
 #include <tracy/TracyVulkan.hpp>
 
@@ -179,7 +181,8 @@ struct LightpassPushConstants {
 };
 
 struct CompositePushConstants {
-    float bloom_strength;
+    float    bloom_strength;
+    uint32_t tonemapping_type;
 };
 
 struct BloomPushConstants {
@@ -1173,6 +1176,17 @@ int main() {
         VK_FORMAT_R8G8B8A8_UNORM,
         swapchain.width,
         swapchain.height,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image fxaa_output = create_image(
+        VK_FORMAT_R8G8B8A8_UNORM,
+        swapchain.width,
+        swapchain.height,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
         false,
@@ -1270,6 +1284,17 @@ int main() {
             0
         );
 
+        image_pipeline_barrier(
+            fxaa_output,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
         VK_CHECK(vkEndCommandBuffer(command_buffer));
 
         VkSubmitInfo submit_info = {
@@ -1289,7 +1314,7 @@ int main() {
     }
 
     Buffer global_vertex_buffer = create_buffer(
-        1024 * 1024 * 228,
+        1024 * 1024 * 200,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             (use_hardware_rt ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
@@ -1307,7 +1332,7 @@ int main() {
     );
 
     Buffer indirect_command_buffer = create_buffer(
-        1024 * 1024 * 8 * FRAMES_IN_FLIGHT,
+        1024 * 1024 * 12 * FRAMES_IN_FLIGHT,
         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator
     );
@@ -1521,6 +1546,8 @@ int main() {
     bool debug_frustum   = false;
     bool disable_culling = false;
 
+    bool use_fxaa = true;
+
     bool running = true;
 
     int bloom_levels = (bloom_buffer.levels - 2);
@@ -1716,10 +1743,10 @@ int main() {
                                 linear_sampler, depth_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
-                        // DescriptorBinding{
-                        //     .type       = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-                        //     .write_info = DescriptorInfo(rt_scene.tlas.handle)
-                        // },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                            .write_info = DescriptorInfo(rt_scene.tlas.handle)
+                        },
                     }
             },
             scene_data_layout,
@@ -1805,8 +1832,33 @@ int main() {
         allocate_descriptor_sets(device, descriptor_pool, composite_pipeline);
 
     CompositePushConstants composite_push_constants{
-        .bloom_strength = 0.04f,
+        .bloom_strength   = 0.04f,
+        .tonemapping_type = 1,
     };
+
+    Pipeline fxaa_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/fxaa.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings = {
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        .write_info = DescriptorInfo(fxaa_output.view, VK_IMAGE_LAYOUT_GENERAL)
+                    },
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                        .write_info = DescriptorInfo(
+                            linear_sampler_clamped, composite_output.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                        )
+                    }
+                }
+            },
+        }
+    );
+
+    std::vector<VkDescriptorSet> fxaa_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, fxaa_pipeline);
 
     std::vector<uint32_t> dynamic_offsets = {0, 0, 0};
 
@@ -1819,6 +1871,7 @@ int main() {
     framegraph.import_image(gbuffer_material, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(fxaa_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(bloom_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     auto cull_early_pass =
@@ -2410,12 +2463,6 @@ int main() {
 
     auto& composite_pass =
         framegraph.add_pass("composite")
-            .reads_buffer_dynamic(
-                scene_ubo_buffer,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_UNIFORM_READ_BIT,
-                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
-            )
             .samples_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(bloom_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(composite_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
@@ -2441,6 +2488,29 @@ int main() {
                     0,
                     sizeof(CompositePushConstants),
                     &composite_push_constants
+                );
+
+                vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
+            });
+
+    auto& fxaa_pass =
+        framegraph.add_pass("fxaa")
+            .samples_image(composite_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(fxaa_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "FXAA Pass");
+                ZoneScopedN("FXAA Pass");
+
+                vkCmdBindPipeline(command_buffer, fxaa_pipeline.bind_point, fxaa_pipeline.pipeline_handle);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    fxaa_pipeline.bind_point,
+                    fxaa_pipeline.pipeline_layout,
+                    0,
+                    fxaa_descriptor_sets.size(),
+                    fxaa_descriptor_sets.data(),
+                    0,
+                    nullptr
                 );
 
                 vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
@@ -2559,6 +2629,7 @@ int main() {
 
         ImGui::SeparatorText("Info");
         ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
+        ImGui::Text("Draw calls: %lu", bindless_draw_data_cpu_buffer.size());
         ImGui::Text("FPS: %u", fps);
         ImGui::Text("Triangles Rendered: %.3fM", (double(pipeline_stats[0]) / 1'000'000.0));
         ImGui::Text("Fragment shader invocations: %.3fM", (double(pipeline_stats[1]) / 1'000'000.0));
@@ -2604,6 +2675,9 @@ int main() {
             ImGui::SliderFloat("Bloom strength", &composite_push_constants.bloom_strength, 0.0, 1.0);
             ImGui::SliderInt("Bloom levels", &bloom_levels, 0, bloom_buffer.levels);
 
+            ImGui::SeparatorText("Post process");
+            ImGui::Checkbox("Use GT5 tonemapping", (bool*)&composite_push_constants.tonemapping_type);
+            ImGui::Checkbox("Apply FXAA", (bool*)&use_fxaa);
             ImGui::TreePop();
         }
         ImGui::End();
@@ -2741,8 +2815,10 @@ int main() {
 
         framegraph.execute(command_buffer, frame_index);
 
+        auto& blit_source = use_fxaa ? fxaa_output : composite_output;
+
         image_pipeline_barrier(
-            composite_output,
+            blit_source,
             command_buffer,
             VK_IMAGE_LAYOUT_GENERAL,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -2793,7 +2869,7 @@ int main() {
 
         vkCmdBlitImage(
             command_buffer,
-            composite_output.handle,
+            blit_source.handle,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             swapchain.images[image_index],
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -2803,7 +2879,7 @@ int main() {
         );
 
         image_pipeline_barrier(
-            composite_output,
+            blit_source,
             command_buffer,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_IMAGE_LAYOUT_GENERAL,
@@ -2959,6 +3035,7 @@ int main() {
     destroy_image(gbuffer_normals, device, vma_allocator);
     destroy_image(depth_hiz, device, vma_allocator);
     destroy_image(bloom_buffer, device, vma_allocator);
+    destroy_image(fxaa_output, device, vma_allocator);
 
     for (auto view : depth_mip_views) {
         vkDestroyImageView(device, view, nullptr);
@@ -2975,6 +3052,7 @@ int main() {
     destroy_pipeline(device, bloom_downsample_pipeline);
     destroy_pipeline(device, bloom_upsample_pipeline);
     destroy_pipeline(device, composite_pipeline);
+    destroy_pipeline(device, fxaa_pipeline);
 
     for (auto image : loaded_images) {
         destroy_image(image, device, vma_allocator);
