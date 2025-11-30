@@ -1,0 +1,167 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba16f) uniform writeonly imageCube prefilteredMap;
+
+layout(binding = 1) uniform sampler2D equirectangularMap;
+
+layout(push_constant) uniform PushConstants {
+    uint face;
+    uint mipLevel;
+    float roughness;
+} pushConstants;
+
+const float PI = 3.14159265359;
+const uint SAMPLE_COUNT = 1024u;
+
+// Van der Corput sequence
+float radicalInverse_VdC(uint bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10;
+}
+
+vec2 hammersley(uint i, uint N) {
+    return vec2(float(i) / float(N), radicalInverse_VdC(i));
+}
+
+vec3 importanceSampleGGX(vec2 Xi, vec3 N, float roughness) {
+    float a = roughness * roughness;
+
+    float phi = 2.0 * PI * Xi.x;
+    float cosTheta = sqrt((1.0 - Xi.y) / (1.0 + (a * a - 1.0) * Xi.y));
+    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+
+    // Spherical to cartesian
+    vec3 H;
+    H.x = cos(phi) * sinTheta;
+    H.y = sin(phi) * sinTheta;
+    H.z = cosTheta;
+
+    // Tangent space to world space
+    vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(up, N));
+    vec3 bitangent = cross(N, tangent);
+
+    vec3 sampleVec = tangent * H.x + bitangent * H.y + N * H.z;
+    return normalize(sampleVec);
+}
+
+float distributionGGX(vec3 N, vec3 H, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+
+    float nom = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+
+    return nom / denom;
+}
+
+// Convert 3D direction to equirectangular UV coordinates
+vec2 directionToEquirectangular(vec3 dir) {
+    vec2 uv;
+    uv.x = atan(dir.z, dir.x) / (2.0 * PI) + 0.5;
+    uv.y = asin(clamp(dir.y, -1.0, 1.0)) / PI + 0.5;
+    return uv;
+}
+
+// Sample equirectangular map with specified LOD
+vec3 sampleEquirectangular(vec3 direction, float lod) {
+    vec2 uv = directionToEquirectangular(direction);
+    return textureLod(equirectangularMap, uv, lod).rgb;
+}
+
+vec3 getCubeMapDirection(vec2 uv, uint face) {
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    vec3 dir;
+    switch (face) {
+        case 0:
+        dir = vec3(1.0, ndc.y, -ndc.x);
+        break; // +X
+        case 1:
+        dir = vec3(-1.0, ndc.y, ndc.x);
+        break; // -X
+        case 2:
+        dir = vec3(ndc.x, -1.0, ndc.y);
+        break; // +Y
+        case 3:
+        dir = vec3(ndc.x, 1.0, -ndc.y);
+        break; // -Y
+        case 4:
+        dir = vec3(ndc.x, ndc.y, 1.0);
+        break; // +Z
+        case 5:
+        dir = vec3(-ndc.x, ndc.y, -1.0);
+        break; // -Z
+    }
+    return normalize(dir);
+}
+
+void main() {
+    ivec2 texCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 texSize = imageSize(prefilteredMap);
+
+    if (texCoord.x >= texSize.x || texCoord.y >= texSize.y) {
+        return;
+    }
+
+    vec2 uv = (vec2(texCoord) + 0.5) / vec2(texSize);
+    vec3 N = getCubeMapDirection(uv, pushConstants.face);
+
+    // Assume V = R = N for pre-filtering
+    vec3 R = N;
+    vec3 V = R;
+
+    vec3 prefilteredColor = vec3(0.0);
+    float totalWeight = 0.0;
+
+    // For mip 0 (roughness 0), just sample directly
+    if (pushConstants.roughness == 0.0) {
+        prefilteredColor = sampleEquirectangular(N, 0.0);
+        imageStore(prefilteredMap, ivec3(texCoord, pushConstants.face),
+            vec4(prefilteredColor, 1.0));
+        return;
+    }
+
+    // Importance sampling for roughness > 0
+    for (uint i = 0u; i < SAMPLE_COUNT; ++i) {
+        vec2 Xi = hammersley(i, SAMPLE_COUNT);
+        vec3 H = importanceSampleGGX(Xi, N, pushConstants.roughness);
+        vec3 L = normalize(2.0 * dot(V, H) * H - V);
+
+        float NdotL = max(dot(N, L), 0.0);
+        if (NdotL > 0.0) {
+            // Calculate LOD based on PDF
+            float D = distributionGGX(N, H, pushConstants.roughness);
+            float NdotH = max(dot(N, H), 0.0);
+            float HdotV = max(dot(H, V), 0.0);
+            float pdf = D * NdotH / (4.0 * HdotV) + 0.0001;
+
+            // Calculate the mip level to sample from the equirectangular map
+            ivec2 equirectSize = textureSize(equirectangularMap, 0);
+            float resolution = float(max(equirectSize.x, equirectSize.y));
+            float saTexel = (4.0 * PI) / (resolution * resolution * 0.5); // Approximate solid angle
+            float saSample = 1.0 / (float(SAMPLE_COUNT) * pdf + 0.0001);
+
+            float mipLevel = 0.5 * log2(saSample / saTexel);
+            mipLevel = max(0.0, mipLevel);
+
+            // Sample the equirectangular map
+            prefilteredColor += sampleEquirectangular(L, mipLevel) * NdotL;
+            totalWeight += NdotL;
+        }
+    }
+
+    prefilteredColor = prefilteredColor / totalWeight;
+
+    imageStore(prefilteredMap, ivec3(texCoord, pushConstants.face),
+        vec4(prefilteredColor, 1.0));
+}

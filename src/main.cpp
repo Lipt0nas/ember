@@ -159,6 +159,12 @@ struct alignas(16) SceneUBO {
     float far_plane;
 };
 
+struct ShadowBlurConstants {
+    glm::vec2 image_size;
+    float     direction;
+    float     znear;
+};
+
 struct CullPassPushConstants {
     glm::vec2 screen_size;
 
@@ -172,12 +178,45 @@ struct DepthReduceConstants {
     glm::vec2 size;
 };
 
+struct DDGIRay {
+    glm::vec3 direction;
+    float     distance;
+
+    glm::vec3 raddiance;
+    float     padding;
+};
+
+struct XeGTAOConstants {
+    glm::vec2 camera_tan_half_fov;
+    glm::vec2 ndc_to_view_mul;
+    glm::vec2 ndc_to_view_add;
+    glm::vec2 ndc_to_view_mul_x_pixel_size;
+    glm::vec2 camera_near_far;
+
+    uint32_t final_pass;
+};
+
 struct LightpassPushConstants {
     glm::vec3 light_direction;
-    float     ambient_intensity;
+    uint32_t  enable_ao;
 
     glm::vec3 light_color;
     float     light_intensity;
+
+    glm::vec3 grid_origin;
+    float     probe_spacing;
+
+    glm::ivec3 probe_counts;
+    int        texels_per_probe;
+
+    int probes_per_row;
+    int probes_per_col;
+    int ao_only;
+
+    int frame_index;
+
+    glm::vec3 camera_pos;
+    int       full_gi_shading;
 };
 
 struct CompositePushConstants {
@@ -221,6 +260,10 @@ struct DrawData {
     uint32_t albedo_index;
     uint32_t normals_index;
     uint32_t material_index;
+    uint32_t occlusion_index;
+
+    glm::vec3 emissive_color;
+    uint32_t  emissive_index;
 };
 
 struct MeshletBounds {
@@ -233,6 +276,169 @@ struct MeshletBounds {
     glm::vec3 cone_apex;
     float     _pad;
 };
+
+struct DebugVertex {
+    glm::vec3 position;
+    glm::vec4 color;
+};
+
+struct DebugRendererConstants {
+    glm::mat4 combined_matrix;
+};
+
+struct DebugRenderer {
+    Buffer       vertex_buffer;
+    VkDeviceSize vertex_buffer_offset;
+    uint32_t     frames_in_flight;
+
+    Pipeline pipeline;
+
+    std::vector<DebugVertex> vertices;
+    uint32_t                 vertex_count;
+};
+
+void debug_renderer_start_frame(DebugRenderer& renderer, uint32_t frame_index) {
+    renderer.vertex_buffer_offset = (renderer.vertex_buffer.size / renderer.frames_in_flight) * frame_index;
+    renderer.vertex_count         = 0;
+}
+
+void debug_renderer_upload_data(DebugRenderer& renderer, VmaAllocator vma_allocator, uint32_t frame_index) {
+    void*  ptr        = nullptr;
+    size_t ptr_offset = (renderer.vertex_buffer.size / renderer.frames_in_flight) * frame_index;
+    VK_CHECK(vmaMapMemory(vma_allocator, renderer.vertex_buffer.allocation, &ptr));
+    memcpy(
+        reinterpret_cast<char*>(ptr) + ptr_offset, renderer.vertices.data(), sizeof(DebugVertex) * renderer.vertex_count
+    );
+    VK_CHECK(
+        vmaFlushAllocation(vma_allocator, renderer.vertex_buffer.allocation, ptr_offset, renderer.vertex_buffer.size)
+    );
+}
+
+void debug_renderer_draw_line(
+    DebugRenderer& renderer, const glm::vec3& line_start, const glm::vec3& line_end, const glm::vec4& color
+) {
+    renderer.vertices[renderer.vertex_count++] = {.position = line_start, .color = color};
+    renderer.vertices[renderer.vertex_count++] = {.position = line_end, .color = color};
+}
+
+void debug_renderer_draw_triangle(
+    DebugRenderer& renderer, const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2, const glm::vec4& color
+) {
+    debug_renderer_draw_line(renderer, p0, p1, color);
+    debug_renderer_draw_line(renderer, p1, p2, color);
+    debug_renderer_draw_line(renderer, p2, p0, color);
+}
+
+void debug_renderer_draw_box(
+    DebugRenderer& renderer, const glm::vec3& center, const glm::vec3& half_extents, const glm::vec4& color
+) {
+    glm::vec3 corners[8] = {
+        center + glm::vec3(-half_extents.x, -half_extents.y, -half_extents.z),
+        center + glm::vec3(half_extents.x, -half_extents.y, -half_extents.z),
+        center + glm::vec3(half_extents.x, half_extents.y, -half_extents.z),
+        center + glm::vec3(-half_extents.x, half_extents.y, -half_extents.z),
+        center + glm::vec3(-half_extents.x, -half_extents.y, half_extents.z),
+        center + glm::vec3(half_extents.x, -half_extents.y, half_extents.z),
+        center + glm::vec3(half_extents.x, half_extents.y, half_extents.z),
+        center + glm::vec3(-half_extents.x, half_extents.y, half_extents.z)
+    };
+
+    debug_renderer_draw_line(renderer, corners[0], corners[1], color);
+    debug_renderer_draw_line(renderer, corners[1], corners[2], color);
+    debug_renderer_draw_line(renderer, corners[2], corners[3], color);
+    debug_renderer_draw_line(renderer, corners[3], corners[0], color);
+
+    debug_renderer_draw_line(renderer, corners[4], corners[5], color);
+    debug_renderer_draw_line(renderer, corners[5], corners[6], color);
+    debug_renderer_draw_line(renderer, corners[6], corners[7], color);
+    debug_renderer_draw_line(renderer, corners[7], corners[4], color);
+
+    debug_renderer_draw_line(renderer, corners[0], corners[4], color);
+    debug_renderer_draw_line(renderer, corners[1], corners[5], color);
+    debug_renderer_draw_line(renderer, corners[2], corners[6], color);
+    debug_renderer_draw_line(renderer, corners[3], corners[7], color);
+}
+
+void debug_renderer_draw_sphere(
+    DebugRenderer& renderer, const glm::vec3& center, float radius, const glm::vec4& color
+) {
+    const int longitude_segments = 2;
+    const int latitude_segments  = 2;
+
+    const float lon_step = glm::two_pi<float>() / longitude_segments;
+    const float lat_step = glm::pi<float>() / latitude_segments;
+
+    for (int lon = 0; lon < longitude_segments; ++lon) {
+        float lon_angle = lon * lon_step;
+
+        for (int lat = 0; lat < latitude_segments; ++lat) {
+            float lat_angle1 = -glm::half_pi<float>() + lat * lat_step;
+            float lat_angle2 = -glm::half_pi<float>() + (lat + 1) * lat_step;
+
+            glm::vec3 p1 = center + glm::vec3(
+                                        radius * cos(lat_angle1) * cos(lon_angle),
+                                        radius * sin(lat_angle1),
+                                        radius * cos(lat_angle1) * sin(lon_angle)
+                                    );
+
+            glm::vec3 p2 = center + glm::vec3(
+                                        radius * cos(lat_angle2) * cos(lon_angle),
+                                        radius * sin(lat_angle2),
+                                        radius * cos(lat_angle2) * sin(lon_angle)
+                                    );
+
+            debug_renderer_draw_line(renderer, p1, p2, color);
+        }
+    }
+
+    for (int lat = 1; lat < latitude_segments; ++lat) {
+        float lat_angle     = -glm::half_pi<float>() + lat * lat_step;
+        float circle_radius = radius * cos(lat_angle);
+        float y             = radius * sin(lat_angle);
+
+        for (int lon = 0; lon < longitude_segments; ++lon) {
+            float lon_angle1 = lon * lon_step;
+            float lon_angle2 = (lon + 1) * lon_step;
+
+            glm::vec3 p1 = center + glm::vec3(circle_radius * cos(lon_angle1), y, circle_radius * sin(lon_angle1));
+            glm::vec3 p2 = center + glm::vec3(circle_radius * cos(lon_angle2), y, circle_radius * sin(lon_angle2));
+
+            debug_renderer_draw_line(renderer, p1, p2, color);
+        }
+    }
+}
+
+DebugRenderer
+create_debug_renderer(VkDevice device, VmaAllocator vma_allocator, uint32_t frames_in_flight, VkFormat depth_format) {
+    Buffer vertex_buffer = create_buffer(
+        1024 * 1024 * 32 * frames_in_flight,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+
+    Pipeline pipeline = create_debug_render_pipeline(
+        device,
+        {
+            shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/debug.vert.spv"),
+            shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/debug.frag.spv"),
+        },
+        {VK_FORMAT_R8G8B8A8_UNORM},
+        depth_format,
+        sizeof(DebugRendererConstants)
+    );
+
+    return DebugRenderer{
+        .vertex_buffer        = vertex_buffer,
+        .vertex_buffer_offset = 0,
+        .frames_in_flight     = frames_in_flight,
+        .pipeline             = pipeline,
+        .vertices             = std::vector<DebugVertex>(vertex_buffer.size / sizeof(DebugVertex) / frames_in_flight)
+    };
+}
+
+void destroy_debug_renderer(VkDevice device, VmaAllocator vma_allocator) {
+}
 
 // TODO: is not nice
 uint32_t missing_albedo_index   = 0;
@@ -300,9 +506,10 @@ void load_scene(
     for (int i = 0; i < model.materials.size(); i++) {
         auto& mat = model.materials[i];
 
-        uint32_t albedo_index   = missing_albedo_index;
-        uint32_t normals_index  = missing_normals_index;
-        uint32_t material_index = missing_material_index;
+        uint32_t albedo_index    = missing_albedo_index;
+        uint32_t normals_index   = missing_normals_index;
+        uint32_t material_index  = missing_material_index;
+        uint32_t occlusion_index = missing_material_index;
 
         auto upload_texture = [&](int texture_index, VkFormat format) {
             tinygltf::Texture& texture     = model.textures[texture_index];
@@ -370,9 +577,26 @@ void load_scene(
             spdlog::warn("Material id {} \"{}\" does not have a normals texture", i, mat.name);
         }
 
-        materials[i].albedo_index   = albedo_index;
-        materials[i].normals_index  = normals_index;
-        materials[i].material_index = material_index;
+        if (mat.occlusionTexture.index >= 0) {
+            occlusion_index = upload_texture(mat.occlusionTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
+        } else {
+            spdlog::warn("Material id {} \"{}\" does not have an occlusion texture", i, mat.name);
+        }
+
+        if (mat.occlusionTexture.index >= 0) {
+            occlusion_index = upload_texture(mat.emissiveTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
+        } else {
+            spdlog::warn("Material id {} \"{}\" does not have an emissive texture", i, mat.name);
+        }
+
+        materials[i].albedo_index    = albedo_index;
+        materials[i].normals_index   = normals_index;
+        materials[i].material_index  = material_index;
+        materials[i].occlusion_index = material_index;
+        materials[i].emissive_index  = material_index;
+
+        spdlog::info("({}, {}, {}) ", mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
+        materials[i].emissive_color = glm::vec3(mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
     }
 
     int              current_entry = 0;
@@ -390,6 +614,7 @@ void load_scene(
             std::vector<uint32_t> indices;
 
             const tinygltf::Primitive& primitive = mesh.primitives[p];
+            spdlog::info("Loading {}", mesh.name);
 
             auto has_position  = primitive.attributes.count("POSITION");
             auto has_normals   = primitive.attributes.count("NORMAL");
@@ -508,7 +733,6 @@ void load_scene(
             VkDeviceSize mesh_vertex_offset = indirect_vertex_buffer_offset;
             VkDeviceSize mesh_index_offset  = indirect_index_buffer_offset;
 
-            spdlog::debug("Copying vertices into global buffer");
             memcpy(staging_buffer_ptr, vertices.data(), sizeof(Vertex) * vertices.size());
             copy_buffer(
                 staging_buffer,
@@ -737,7 +961,6 @@ void load_scene(
         if (node.translation.size() == 3) {
             position = {node.translation[0], node.translation[1], node.translation[2]};
         } else {
-            spdlog::warn("node missing position");
         }
 
         float scale = 1.0f;
@@ -962,23 +1185,23 @@ int main() {
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 20,
+            .descriptorCount = 30,
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-            .descriptorCount = 20,
+            .descriptorCount = 30,
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .descriptorCount = 50,
+            .descriptorCount = 60,
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 10,
+            .descriptorCount = 20,
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-            .descriptorCount = 10,
+            .descriptorCount = 20,
         },
 
     };
@@ -1046,7 +1269,7 @@ int main() {
     VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &depth_sampler));
 
     Buffer staging_buffer = create_buffer(
-        1024 * 1024 * 64,
+        1024 * 1024 * 128,
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
@@ -1150,6 +1373,17 @@ int main() {
         device
     );
 
+    Image gbuffer_emissive = create_image(
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
     Image gbuffer_material = create_image(
         VK_FORMAT_R8G8B8A8_UNORM,
         swapchain.width,
@@ -1160,6 +1394,86 @@ int main() {
         vma_allocator,
         device
     );
+
+    bool                   visualize_probes = false;
+    LightpassPushConstants light_constants  = {
+         .light_direction  = glm::vec3(-0.2, -0.7, -1),
+         .enable_ao        = 1,
+         .light_color      = glm::vec3(1.0, 1.0, 1.0),
+         .light_intensity  = 10.0f,
+         .grid_origin      = {-15, -15, -15},
+         .probe_spacing    = 4.3f,
+         .probe_counts     = {32, 8, 32},
+         .texels_per_probe = 16,
+         .ao_only          = false,
+         .frame_index      = {},
+         .camera_pos       = {},
+         .full_gi_shading  = true,
+    };
+
+    light_constants.grid_origin = {
+        (-light_constants.probe_spacing * 0.5f) *
+        glm::vec3(light_constants.probe_counts.x, 1.0, light_constants.probe_counts.z)
+    };
+
+    int total_probes = light_constants.probe_counts.x * light_constants.probe_counts.y * light_constants.probe_counts.z;
+    int probes_per_row = glm::ceil(std::sqrt(total_probes));
+    int probes_per_col = glm::ceil((float)total_probes / probes_per_row);
+
+    int atlas_width  = probes_per_row * (light_constants.texels_per_probe + 2);
+    int atlas_height = probes_per_col * (light_constants.texels_per_probe + 2);
+
+    light_constants.probes_per_row = probes_per_row;
+    light_constants.probes_per_col = probes_per_col;
+
+    Image ddgi_depth_atlas = create_image(
+        VK_FORMAT_R16G16_SFLOAT,
+        atlas_width,
+        atlas_height,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image ddgi_depth_atlas_history = create_image(
+        VK_FORMAT_R16G16_SFLOAT,
+        atlas_width,
+        atlas_height,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image ddgi_irradiance = create_image(
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        atlas_width,
+        atlas_height,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image ddgi_irradiance_history = create_image(
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        atlas_width,
+        atlas_height,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    spdlog::info("DDGI Irradiance atlas size: {}x{}", ddgi_irradiance.width, ddgi_irradiance.height);
+    spdlog::info("DDGI Depth atlas size: {}x{}", ddgi_depth_atlas.width, ddgi_depth_atlas.height);
 
     Image lightpass_output = create_image(
         VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -1172,11 +1486,155 @@ int main() {
         device
     );
 
+    Image smaa_edges = create_image(
+        VK_FORMAT_R8G8_UNORM,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image smaa_weights = create_image(
+        VK_FORMAT_R8G8B8A8_UNORM,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image smaa_output = create_image(
+        VK_FORMAT_R8G8B8A8_UNORM,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image directional_shadow_buffer = create_image(
+        VK_FORMAT_R8_UNORM,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image directional_shadow_buffer_pong = create_image(
+        VK_FORMAT_R8_UNORM,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image ao_output = create_image(
+        VK_FORMAT_R32_SFLOAT,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image ao_output_normals = create_image(
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image ao_output_edges = create_image(
+        VK_FORMAT_R8_UNORM,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image ao_output_denoised = create_image(
+        VK_FORMAT_R32_SFLOAT,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image ao_output_denoised_pong = create_image(
+        VK_FORMAT_R32_SFLOAT,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image ao_prefiltered_depth = create_image(
+        VK_FORMAT_R32_SFLOAT,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        true,
+        vma_allocator,
+        device
+    );
+
+    std::vector<VkImageView> ao_depth_mip_views(ao_prefiltered_depth.levels);
+    for (int i = 0; i < ao_depth_mip_views.size(); i++) {
+        VkImageViewCreateInfo mip_view_info = {
+            .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext            = nullptr,
+            .flags            = 0,
+            .image            = ao_prefiltered_depth.handle,
+            .viewType         = VK_IMAGE_VIEW_TYPE_2D,
+            .format           = ao_prefiltered_depth.format,
+            .subresourceRange = {
+                .aspectMask     = ao_prefiltered_depth.aspect,
+                .baseMipLevel   = static_cast<uint32_t>(i),
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1
+            },
+        };
+
+        VK_CHECK(vkCreateImageView(device, &mip_view_info, nullptr, &ao_depth_mip_views[i]));
+    }
+
     Image composite_output = create_image(
         VK_FORMAT_R8G8B8A8_UNORM,
         swapchain.width,
         swapchain.height,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
         false,
         vma_allocator,
@@ -1194,10 +1652,66 @@ int main() {
         device
     );
 
+    Image smaa_area_tex = load_image(
+        "data/textures/smaa_area_tex.png",
+        VK_FORMAT_R8G8B8A8_UNORM,
+        false,
+        staging_buffer,
+        command_buffers[0],
+        graphics_queue,
+        vma_allocator,
+        device
+    );
+
+    Image smaa_search_tex = load_image(
+        "data/textures/smaa_search_tex.png",
+        VK_FORMAT_R8G8B8A8_UNORM,
+        false,
+        staging_buffer,
+        command_buffers[0],
+        graphics_queue,
+        vma_allocator,
+        device
+    );
+
+    Image brdf_lut = create_image(
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        512,
+        512,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image specular_cubemap = create_cubemap_image(
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        512,
+        512,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        true,
+        vma_allocator,
+        device
+    );
+
+    Image irradiance_cubemap = create_cubemap_image(
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        32,
+        32,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
     std::vector<std::reference_wrapper<Image>> gbuffer_images = {
         gbuffer_albedo,
         gbuffer_normals,
         gbuffer_material,
+        gbuffer_emissive,
     };
 
     {
@@ -1263,7 +1777,249 @@ int main() {
         }
 
         image_pipeline_barrier(
+            ddgi_depth_atlas,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT
+        );
+
+        image_pipeline_barrier(
+            ddgi_depth_atlas_history,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT
+        );
+
+        image_pipeline_barrier(
+            ddgi_irradiance,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT
+        );
+
+        image_pipeline_barrier(
+            ddgi_irradiance_history,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT
+        );
+
+        image_pipeline_barrier(
+            directional_shadow_buffer,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT
+        );
+
+        image_pipeline_barrier(
+            smaa_edges,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT
+        );
+
+        image_pipeline_barrier(
+            smaa_weights,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT
+        );
+
+        image_pipeline_barrier(
+            smaa_output,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT
+        );
+
+        VkClearColorValue       clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
+        VkImageSubresourceRange range       = {
+                  .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                  .baseMipLevel   = 0,
+                  .levelCount     = 1,
+                  .baseArrayLayer = 0,
+                  .layerCount     = 1
+        };
+
+        vkCmdClearColorImage(
+            command_buffer,
+            ddgi_irradiance_history.handle,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            &clear_color,
+            1,
+            &range
+        );
+        vkCmdClearColorImage(
+            command_buffer, ddgi_irradiance.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
+        );
+
+        vkCmdClearColorImage(
+            command_buffer, ddgi_depth_atlas.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
+        );
+
+        vkCmdClearColorImage(
+            command_buffer, smaa_output.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
+        );
+
+        vkCmdClearColorImage(
+            command_buffer, smaa_edges.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
+        );
+
+        vkCmdClearColorImage(
+            command_buffer, smaa_weights.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
+        );
+
+        vkCmdClearColorImage(
+            command_buffer,
+            ddgi_depth_atlas_history.handle,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            &clear_color,
+            1,
+            &range
+        );
+
+        image_pipeline_barrier(
+            smaa_edges,
+            command_buffer,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+        );
+
+        image_pipeline_barrier(
+            smaa_weights,
+            command_buffer,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+        );
+
+        image_pipeline_barrier(
+            smaa_output,
+            command_buffer,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+        );
+
+        vkCmdClearColorImage(
+            command_buffer,
+            directional_shadow_buffer.handle,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            &clear_color,
+            1,
+            &range
+        );
+
+        image_pipeline_barrier(
+            directional_shadow_buffer,
+            command_buffer,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+        );
+
+        image_pipeline_barrier(
+            ddgi_irradiance_history,
+            command_buffer,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+        );
+
+        image_pipeline_barrier(
+            ddgi_irradiance,
+            command_buffer,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+        );
+
+        image_pipeline_barrier(
+            ddgi_depth_atlas,
+            command_buffer,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+        );
+
+        image_pipeline_barrier(
+            ddgi_depth_atlas_history,
+            command_buffer,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+        );
+
+        image_pipeline_barrier(
             lightpass_output,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        image_pipeline_barrier(
+            directional_shadow_buffer,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_GENERAL,
@@ -1285,6 +2041,83 @@ int main() {
         );
 
         image_pipeline_barrier(
+            directional_shadow_buffer_pong,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        image_pipeline_barrier(
+            ao_output,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        image_pipeline_barrier(
+            ao_output_normals,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        image_pipeline_barrier(
+            ao_output_edges,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        image_pipeline_barrier(
+            ao_output_denoised,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        image_pipeline_barrier(
+            ao_output_denoised_pong,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        image_pipeline_barrier(
+            ao_prefiltered_depth,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        image_pipeline_barrier(
             fxaa_output,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1294,6 +2127,298 @@ int main() {
             VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
             0
         );
+
+        image_pipeline_barrier(
+            irradiance_cubemap,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        image_pipeline_barrier(
+            specular_cubemap,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        image_pipeline_barrier(
+            brdf_lut,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            0,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            0
+        );
+
+        std::vector<VkImageView> specular_image_views(specular_cubemap.levels);
+        for (int i = 0; i < specular_image_views.size(); i++) {
+            VkImageViewCreateInfo mip_view_info = {
+                .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .pNext            = nullptr,
+                .flags            = 0,
+                .image            = specular_cubemap.handle,
+                .viewType         = VK_IMAGE_VIEW_TYPE_CUBE,
+                .format           = specular_cubemap.format,
+                .subresourceRange = {
+                    .aspectMask     = specular_cubemap.aspect,
+                    .baseMipLevel   = static_cast<uint32_t>(i),
+                    .levelCount     = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount     = 6
+                },
+            };
+
+            VK_CHECK(vkCreateImageView(device, &mip_view_info, nullptr, &specular_image_views[i]));
+        }
+
+        // Framegraph ibl_graph(device, graphics_queue, command_buffer, 1, false);
+        // ibl_graph.import_image(irradiance_cubemap, VK_IMAGE_LAYOUT_GENERAL);
+        // ibl_graph.import_image(specular_cubemap, VK_IMAGE_LAYOUT_GENERAL);
+        // ibl_graph.import_image(brdf_lut, VK_IMAGE_LAYOUT_GENERAL);
+        //
+        // Pipeline irradiance_pipeline = create_compute_pipeline(
+        //     device,
+        //     shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ibl_irradiance.comp.spv"),
+        //     {
+        //         DescriptorLayout{
+        //             .bindings = {
+        //                 DescriptorBinding{
+        //                     .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        //                     .write_info = DescriptorInfo(irradiance_cubemap.view, VK_IMAGE_LAYOUT_GENERAL)
+        //                 },
+        //                 DescriptorBinding{
+        //                     .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        //                     .write_info = DescriptorInfo(
+        //                         linear_sampler, skybox_image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        //                     )
+        //                 },
+        //             }
+        //         },
+        //     }
+        // );
+        // std::vector<VkDescriptorSet> sets = allocate_descriptor_sets(device, descriptor_pool, irradiance_pipeline);
+        //
+        // auto irradiance_pass =
+        //     ibl_graph.add_pass("irradiance")
+        //         .samples_image(skybox_image, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+        //         .writes_storage_image(irradiance_cubemap, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+        //         .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+        //             vkCmdBindPipeline(
+        //                 command_buffer, irradiance_pipeline.bind_point, irradiance_pipeline.pipeline_handle
+        //             );
+        //             vkCmdBindDescriptorSets(
+        //                 command_buffer,
+        //                 irradiance_pipeline.bind_point,
+        //                 irradiance_pipeline.pipeline_layout,
+        //                 0,
+        //                 sets.size(),
+        //                 sets.data(),
+        //                 0,
+        //                 nullptr
+        //             );
+        //
+        //             uint32_t resolution = irradiance_cubemap.width;
+        //             vkCmdDispatch(
+        //                 command_buffer,
+        //                 (resolution + 15) / 16, // X
+        //                 (resolution + 15) / 16, // Y
+        //                 6
+        //             );
+        //
+        //             image_pipeline_barrier(
+        //                 irradiance_cubemap,
+        //                 command_buffer,
+        //                 VK_IMAGE_LAYOUT_GENERAL,
+        //                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        //                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        //                 VK_ACCESS_2_SHADER_WRITE_BIT,
+        //                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        //                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+        //             );
+        //         });
+        //
+        // Pipeline brdf_lut_pipeline = create_compute_pipeline(
+        //     device,
+        //     shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/brdf_lut.comp.spv"),
+        //     {
+        //         DescriptorLayout{
+        //             .bindings = {DescriptorBinding{
+        //                 .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        //                 .write_info = DescriptorInfo(brdf_lut.view, VK_IMAGE_LAYOUT_GENERAL)
+        //             }}
+        //         },
+        //     }
+        // );
+        // std::vector<VkDescriptorSet> lut_sets = allocate_descriptor_sets(device, descriptor_pool, brdf_lut_pipeline);
+        //
+        // auto lut_pass =
+        //     ibl_graph.add_pass("lut")
+        //         .writes_storage_image(brdf_lut, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+        //         .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+        //             vkCmdBindPipeline(command_buffer, brdf_lut_pipeline.bind_point,
+        //             brdf_lut_pipeline.pipeline_handle); vkCmdBindDescriptorSets(
+        //                 command_buffer,
+        //                 brdf_lut_pipeline.bind_point,
+        //                 brdf_lut_pipeline.pipeline_layout,
+        //                 0,
+        //                 lut_sets.size(),
+        //                 lut_sets.data(),
+        //                 0,
+        //                 nullptr
+        //             );
+        //
+        //             uint32_t resolution = brdf_lut.width;
+        //             vkCmdDispatch(
+        //                 command_buffer,
+        //                 (resolution + 15) / 16, // X
+        //                 (resolution + 15) / 16, // Y
+        //                 1
+        //             );
+        //
+        //             image_pipeline_barrier(
+        //                 brdf_lut,
+        //                 command_buffer,
+        //                 VK_IMAGE_LAYOUT_GENERAL,
+        //                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        //                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        //                 VK_ACCESS_2_SHADER_WRITE_BIT,
+        //                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        //                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+        //             );
+        //         });
+        //
+        // struct IBLConstants {
+        //     uint32_t face;
+        //     uint32_t mip_level;
+        //     float    roughness;
+        // } ibl_constants;
+        //
+        // Pipeline specular_pipeline = create_compute_pipeline(
+        //     device,
+        //     shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ibl_specular.comp.spv"),
+        //     {
+        //         DescriptorLayout{
+        //             .bindings =
+        //                 {
+        //                     DescriptorBinding{
+        //                         .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        //                         .write_info = DescriptorInfo(specular_cubemap.view, VK_IMAGE_LAYOUT_GENERAL)
+        //                     },
+        //                     DescriptorBinding{
+        //                         .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        //                         .write_info = DescriptorInfo(
+        //                             linear_sampler, skybox_image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        //                         )
+        //                     },
+        //                 },
+        //             .is_push_set = true,
+        //         },
+        //     },
+        //     sizeof(IBLConstants)
+        // );
+        //
+        // auto specular_pass =
+        //     ibl_graph.add_pass("ibl specular")
+        //         .samples_image(skybox_image, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+        //         .writes_storage_image(specular_cubemap, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+        //         .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+        //             vkCmdBindPipeline(command_buffer, specular_pipeline.bind_point,
+        //             specular_pipeline.pipeline_handle);
+        //
+        //             for (uint32_t mip = 0; mip < specular_cubemap.levels; ++mip) {
+        //                 uint32_t mipSize   = specular_cubemap.width >> mip;
+        //                 float    roughness = (float)mip / (float)(specular_cubemap.levels - 1);
+        //
+        //                 VkDescriptorImageInfo image_write_info = {
+        //                     .sampler     = VK_NULL_HANDLE,
+        //                     .imageView   = specular_image_views[mip],
+        //                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        //                 };
+        //
+        //                 VkDescriptorImageInfo image_read_info = {
+        //                     .sampler     = linear_sampler,
+        //                     .imageView   = skybox_image.view,
+        //                     .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        //                 };
+        //
+        //                 std::vector<VkWriteDescriptorSet> write_sets = {
+        //                     {
+        //                         .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        //                         .pNext            = nullptr,
+        //                         .dstBinding       = 0,
+        //                         .dstArrayElement  = 0,
+        //                         .descriptorCount  = 1,
+        //                         .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        //                         .pImageInfo       = &image_write_info,
+        //                         .pBufferInfo      = nullptr,
+        //                         .pTexelBufferView = nullptr,
+        //                     },
+        //                     {
+        //                         .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        //                         .pNext            = nullptr,
+        //                         .dstBinding       = 1,
+        //                         .dstArrayElement  = 0,
+        //                         .descriptorCount  = 1,
+        //                         .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        //                         .pImageInfo       = &image_read_info,
+        //                         .pBufferInfo      = nullptr,
+        //                         .pTexelBufferView = nullptr,
+        //                     },
+        //                 };
+        //
+        //                 vkCmdPushDescriptorSet(
+        //                     command_buffer,
+        //                     VK_PIPELINE_BIND_POINT_COMPUTE,
+        //                     specular_pipeline.pipeline_layout,
+        //                     0,
+        //                     static_cast<uint32_t>(write_sets.size()),
+        //                     write_sets.data()
+        //                 );
+        //
+        //                 for (uint32_t face = 0; face < 6; ++face) {
+        //                     ibl_constants.face      = face;
+        //                     ibl_constants.mip_level = mip;
+        //                     ibl_constants.roughness = roughness;
+        //
+        //                     vkCmdPushConstants(
+        //                         command_buffer,
+        //                         specular_pipeline.pipeline_layout,
+        //                         VK_SHADER_STAGE_COMPUTE_BIT,
+        //                         0,
+        //                         sizeof(IBLConstants),
+        //                         &ibl_constants
+        //                     );
+        //
+        //                     uint32_t groupCount = (mipSize + 15) / 16;
+        //                     vkCmdDispatch(command_buffer, groupCount, groupCount, 1);
+        //                 }
+        //             }
+        //         });
+        //
+        // ibl_graph.build();
+        // ibl_graph.execute(command_buffer, 0);
+        //
+        // image_pipeline_barrier(
+        //     specular_cubemap,
+        //     command_buffer,
+        //     VK_IMAGE_LAYOUT_GENERAL,
+        //     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        //     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+        //     0,
+        //     VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+        //     0
+        // );
 
         VK_CHECK(vkEndCommandBuffer(command_buffer));
 
@@ -1311,10 +2436,18 @@ int main() {
 
         VK_CHECK(vkQueueSubmit(graphics_queue, 1, &submit_info, VK_NULL_HANDLE));
         VK_CHECK(vkDeviceWaitIdle(device));
+
+        for (auto view : specular_image_views) {
+            vkDestroyImageView(device, view, nullptr);
+        }
+
+        // destroy_pipeline(device, brdf_lut_pipeline);
+        // destroy_pipeline(device, specular_pipeline);
+        // destroy_pipeline(device, irradiance_pipeline);
     }
 
     Buffer global_vertex_buffer = create_buffer(
-        1024 * 1024 * 200,
+        1024 * 1024 * 250,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             (use_hardware_rt ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
@@ -1329,6 +2462,13 @@ int main() {
                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
                              : 0),
         vma_allocator
+    );
+
+    Buffer ddgi_ray_buffer = create_buffer(
+        1024 * 1024 * 64 * FRAMES_IN_FLIGHT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
 
     Buffer indirect_command_buffer = create_buffer(
@@ -1368,6 +2508,9 @@ int main() {
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
+
+    DebugRendererConstants debug_renderer_constants = {};
+    DebugRenderer debug_renderer = create_debug_renderer(device, vma_allocator, FRAMES_IN_FLIGHT, depth_buffer.format);
 
     VkDeviceSize meshlet_buffer_offset                   = 0;
     VkDeviceSize meshlet_vertex_indices_offset           = 0;
@@ -1457,7 +2600,7 @@ int main() {
     std::vector<MeshInstance> mesh_instances;
 
     load_scene(
-        "data/models/sponza/sponza.glb",
+        "data/models/probe_test.glb",
         meshes,
         materials,
         mesh_instances,
@@ -1519,6 +2662,7 @@ int main() {
         .fov             = 90.0f,
         .orientation     = {0.0f, 0.0f, 0.0f, 1.0f}
     };
+    camera.position = glm::vec3(0, 0, 0);
 
     float base_camera_speed        = 10.0f;
     float camera_mouse_sensitivity = 0.003f;
@@ -1536,7 +2680,12 @@ int main() {
     float delta_time      = 0.0f;
     auto  frame_timestamp = std::chrono::high_resolution_clock::now();
 
-    float    time_passed     = 0.0f;
+    float time_passed = 0.0f;
+
+    float total_time      = 0.0;
+    float animation_speed = 10.0f;
+    bool  animate         = false;
+
     uint32_t accumulated_fps = 0;
     uint32_t fps             = 0;
 
@@ -1675,6 +2824,7 @@ int main() {
             VK_FORMAT_R8G8B8A8_UNORM,
             VK_FORMAT_R16G16B16A16_SFLOAT,
             VK_FORMAT_R8G8B8A8_UNORM,
+            VK_FORMAT_R32G32B32A32_SFLOAT,
         },
         VK_FORMAT_D32_SFLOAT,
         sizeof(GeometryPushConstants),
@@ -1706,6 +2856,126 @@ int main() {
         },
         sizeof(DepthReduceConstants)
     );
+
+    // AO Prefilter Depth
+    Pipeline ao_prefilter_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ao_prefilter.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ao_depth_mip_views[0], VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ao_depth_mip_views[1], VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ao_depth_mip_views[2], VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ao_depth_mip_views[3], VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ao_depth_mip_views[4], VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, depth_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                    },
+            },
+            scene_data_layout,
+        },
+        sizeof(XeGTAOConstants)
+    );
+
+    std::vector<VkDescriptorSet> ao_prefilter_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, ao_prefilter_pipeline);
+
+    // AO
+    Pipeline ao_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/xegtao.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ao_output.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ao_output_edges.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ao_output_normals.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped,
+                                ao_prefiltered_depth.view,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, gbuffer_normals.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                    },
+            },
+            scene_data_layout,
+        },
+        sizeof(XeGTAOConstants)
+    );
+
+    std::vector<VkDescriptorSet> ao_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, ao_pipeline);
+
+    // AO Denoise
+    Pipeline ao_denoise_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/xegtao_denoise.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ao_output_denoised.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info =
+                                DescriptorInfo(linear_sampler, ao_output.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, ao_output_edges.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                    },
+                .is_push_set = true,
+            },
+        },
+        sizeof(XeGTAOConstants)
+    );
+
+    std::vector<VkDescriptorSet> ao_denoise_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, ao_denoise_pipeline);
 
     // LIGHT
     Pipeline light_pipeline = create_compute_pipeline(
@@ -1744,8 +3014,42 @@ int main() {
                             )
                         },
                         DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-                            .write_info = DescriptorInfo(rt_scene.tlas.handle)
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, ao_output_denoised.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, ddgi_irradiance.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, gbuffer_emissive.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, ddgi_depth_atlas.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, ao_output_normals.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped,
+                                directional_shadow_buffer.view,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
                         },
                     }
             },
@@ -1755,13 +3059,6 @@ int main() {
     );
     std::vector<VkDescriptorSet> light_descriptor_sets =
         allocate_descriptor_sets(device, descriptor_pool, light_pipeline);
-
-    LightpassPushConstants light_constants = {
-        .light_direction   = glm::vec3(0.2, -0.9, 0.1),
-        .ambient_intensity = 0.3,
-        .light_color       = glm::vec3(1.0, 1.0, 1.0),
-        .light_intensity   = 10.0f
-    };
 
     // BLOOM DOWNSAMPLE
     Pipeline bloom_downsample_pipeline = create_compute_pipeline(
@@ -1849,7 +3146,7 @@ int main() {
                     DescriptorBinding{
                         .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                         .write_info = DescriptorInfo(
-                            linear_sampler_clamped, composite_output.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            linear_sampler_clamped, smaa_output.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                         )
                     }
                 }
@@ -1860,7 +3157,7 @@ int main() {
     std::vector<VkDescriptorSet> fxaa_descriptor_sets =
         allocate_descriptor_sets(device, descriptor_pool, fxaa_pipeline);
 
-    std::vector<uint32_t> dynamic_offsets = {0, 0, 0};
+    std::vector<uint32_t> dynamic_offsets = {0, 0, 0, 0};
 
     Framegraph framegraph(device, graphics_queue, command_buffers[0], FRAMES_IN_FLIGHT, supports_timestamp_queries);
 
@@ -1869,10 +3166,22 @@ int main() {
     framegraph.import_image(gbuffer_albedo, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_normals, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_material, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    framegraph.import_image(gbuffer_emissive, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
-    framegraph.import_image(fxaa_output, VK_IMAGE_LAYOUT_GENERAL);
+    // framegraph.import_image(fxaa_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(bloom_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    framegraph.import_image(ao_output, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(ao_output_normals, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(ao_output_edges, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(ao_output_denoised, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(ao_output_denoised_pong, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(ao_prefiltered_depth, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(directional_shadow_buffer, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(directional_shadow_buffer_pong, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(smaa_edges, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(smaa_weights, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(smaa_output, VK_IMAGE_LAYOUT_GENERAL);
 
     auto cull_early_pass =
         framegraph.add_pass("cull early")
@@ -1930,6 +3239,7 @@ int main() {
             .writes_color_attachment(gbuffer_albedo)
             .writes_color_attachment(gbuffer_normals)
             .writes_color_attachment(gbuffer_material)
+            .writes_color_attachment(gbuffer_emissive)
             .reads_buffer_dynamic(
                 indirect_command_buffer,
                 VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
@@ -1955,6 +3265,8 @@ int main() {
                 ZoneScopedN("Gbuffer Pass");
 
                 vkCmdBeginQuery(command_buffer, statistics_pools[frame_index], 0, 0);
+
+                // rebuild_tlas(rt_scene, device, vma_allocator, command_buffer, meshes, mesh_instances);
 
                 std::vector<VkRenderingAttachmentInfo> gbuffer_color_attachments = {
                     {
@@ -1993,6 +3305,19 @@ int main() {
                         .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
                         .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
                     },
+                    {
+                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                        .pNext              = nullptr,
+                        .imageView          = gbuffer_emissive.view,
+                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .resolveMode        = VK_RESOLVE_MODE_NONE,
+                        .resolveImageView   = VK_NULL_HANDLE,
+                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                    },
+
                 };
 
                 VkRenderingAttachmentInfo depth_attachment_info = {
@@ -2193,6 +3518,875 @@ int main() {
                                       }
                                   });
 
+    XeGTAOConstants xegtao_constants = {};
+
+    auto ao_prefilter_pass =
+        framegraph.add_pass("ao prefilter depth")
+            .reads_buffer_dynamic(
+                scene_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(ao_prefiltered_depth, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "AO Prefilter Pass");
+                ZoneScopedN("AO Prefilter Pass");
+
+                vkCmdBindPipeline(
+                    command_buffer, ao_prefilter_pipeline.bind_point, ao_prefilter_pipeline.pipeline_handle
+                );
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    ao_prefilter_pipeline.bind_point,
+                    ao_prefilter_pipeline.pipeline_layout,
+                    0,
+                    ao_prefilter_descriptor_sets.size(),
+                    ao_prefilter_descriptor_sets.data(),
+                    1,
+                    &dynamic_offsets[0]
+                );
+
+                vkCmdPushConstants(
+                    command_buffer,
+                    ao_prefilter_pipeline.pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    sizeof(XeGTAOConstants),
+                    &xegtao_constants
+                );
+
+                vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
+            });
+
+    auto ao_pass = framegraph.add_pass("ao")
+                       .reads_buffer_dynamic(
+                           scene_ubo_buffer,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_UNIFORM_READ_BIT,
+                           scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+                       )
+                       .samples_image(ao_prefiltered_depth, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                       .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                       .writes_storage_image(ao_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                       .writes_storage_image(ao_output_edges, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                       .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                           TracyVkZone(tracy_vk_context, command_buffer, "AO Pass");
+                           ZoneScopedN("AO Pass");
+
+                           vkCmdBindPipeline(command_buffer, ao_pipeline.bind_point, ao_pipeline.pipeline_handle);
+                           vkCmdBindDescriptorSets(
+                               command_buffer,
+                               ao_pipeline.bind_point,
+                               ao_pipeline.pipeline_layout,
+                               0,
+                               ao_descriptor_sets.size(),
+                               ao_descriptor_sets.data(),
+                               1,
+                               &dynamic_offsets[0]
+                           );
+
+                           vkCmdPushConstants(
+                               command_buffer,
+                               ao_pipeline.pipeline_layout,
+                               VK_SHADER_STAGE_COMPUTE_BIT,
+                               0,
+                               sizeof(XeGTAOConstants),
+                               &xegtao_constants
+                           );
+
+                           vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
+                       });
+
+    auto ao_denoise_pass =
+        framegraph.add_pass("ao denoise")
+            .reads_buffer_dynamic(
+                scene_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .samples_image(ao_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(ao_output_edges, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(ao_output_denoised, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(ao_output_denoised_pong, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "AO Denoise Pass");
+                ZoneScopedN("AO Denoise Pass");
+
+                vkCmdBindPipeline(command_buffer, ao_denoise_pipeline.bind_point, ao_denoise_pipeline.pipeline_handle);
+
+                int denoise_passes = 2;
+
+                VkImageView read_view  = ao_output.view;
+                VkImageView write_view = ao_output_denoised_pong.view;
+
+                for (int i = 0; i < denoise_passes; i++) {
+                    xegtao_constants.final_pass = i == denoise_passes - 1;
+
+                    VkDescriptorImageInfo image_read_info = {
+                        .sampler     = linear_sampler_clamped,
+                        .imageView   = read_view,
+                        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    };
+
+                    VkDescriptorImageInfo edges_info = {
+                        .sampler     = linear_sampler_clamped,
+                        .imageView   = ao_output_edges.view,
+                        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    };
+
+                    VkDescriptorImageInfo image_write_info = {
+                        .sampler     = VK_NULL_HANDLE,
+                        .imageView   = write_view,
+                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    };
+
+                    std::vector<VkWriteDescriptorSet> write_sets = {
+                        {
+                            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext            = nullptr,
+                            .dstBinding       = 0,
+                            .dstArrayElement  = 0,
+                            .descriptorCount  = 1,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .pImageInfo       = &image_write_info,
+                            .pBufferInfo      = nullptr,
+                            .pTexelBufferView = nullptr,
+                        },
+                        {
+                            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext            = nullptr,
+                            .dstBinding       = 1,
+                            .dstArrayElement  = 0,
+                            .descriptorCount  = 1,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .pImageInfo       = &image_read_info,
+                            .pBufferInfo      = nullptr,
+                            .pTexelBufferView = nullptr,
+                        },
+                        {
+                            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext            = nullptr,
+                            .dstBinding       = 2,
+                            .dstArrayElement  = 0,
+                            .descriptorCount  = 1,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .pImageInfo       = &edges_info,
+                            .pBufferInfo      = nullptr,
+                            .pTexelBufferView = nullptr,
+                        },
+                    };
+
+                    vkCmdPushDescriptorSet(
+                        command_buffer,
+                        VK_PIPELINE_BIND_POINT_COMPUTE,
+                        ao_denoise_pipeline.pipeline_layout,
+                        0,
+                        static_cast<uint32_t>(write_sets.size()),
+                        write_sets.data()
+                    );
+
+                    vkCmdPushConstants(
+                        command_buffer,
+                        ao_denoise_pipeline.pipeline_layout,
+                        VK_SHADER_STAGE_COMPUTE_BIT,
+                        0,
+                        sizeof(XeGTAOConstants),
+                        &xegtao_constants
+                    );
+
+                    vkCmdDispatch(command_buffer, (swapchain.width + 15) / 16, (swapchain.height + 7) / 8, 1);
+
+                    if (i != denoise_passes - 1) {
+                        image_pipeline_barrier(
+                            ao_output_denoised_pong,
+                            command_buffer,
+                            VK_IMAGE_LAYOUT_GENERAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            VK_ACCESS_2_SHADER_WRITE_BIT,
+                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+                        );
+                    }
+
+                    read_view  = ao_output_denoised_pong.view;
+                    write_view = ao_output_denoised.view;
+                }
+            });
+
+    Pipeline ddgi_ray_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ddgi_trace_ray.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                            .write_info = DescriptorInfo(rt_scene.tlas.handle)
+                        },
+                        DescriptorBinding{
+                            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                            .write_info =
+                                DescriptorInfo(ddgi_ray_buffer.handle, 0, ddgi_ray_buffer.size / FRAMES_IN_FLIGHT)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, ddgi_irradiance_history.view, VK_IMAGE_LAYOUT_GENERAL
+                            )
+                        },
+                    }
+            },
+            draw_data_layout,
+            geometry_data_layout,
+        },
+        sizeof(LightpassPushConstants),
+        global_texture_descriptor_layout
+    );
+    std::vector<VkDescriptorSet> ddgi_ray_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, ddgi_ray_pipeline);
+
+    auto& ddgi_ray_pass =
+        framegraph.add_pass("ddgi ray")
+            .reads_buffer_dynamic(
+                draw_data_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                draw_data_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .writes_buffer_dynamic(
+                ddgi_ray_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                ddgi_ray_buffer.size / FRAMES_IN_FLIGHT
+            )
+            // .samples_image(ddgi_irradiance_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
+                ZoneScopedN("DDGI Pass");
+
+                const Pipeline& pipeline = ddgi_ray_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                VkDescriptorSet sets[] = {
+                    ddgi_ray_descriptor_sets[0],
+                    ddgi_ray_descriptor_sets[1],
+                    ddgi_ray_descriptor_sets[2],
+                    global_texture_descriptor_set,
+                };
+
+                uint32_t offsets[] = {
+                    dynamic_offsets[3],
+                    dynamic_offsets[1],
+                    dynamic_offsets[2],
+                };
+
+                vkCmdBindDescriptorSets(
+                    command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline_layout, 0, 4, sets, 3, &offsets[0]
+                );
+
+                vkCmdPushConstants(
+                    command_buffer,
+                    pipeline.pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    sizeof(LightpassPushConstants),
+                    &light_constants
+                );
+
+                uint32_t probe_count =
+                    light_constants.probe_counts.x * light_constants.probe_counts.y * light_constants.probe_counts.z;
+
+                vkCmdDispatch(command_buffer, probe_count, 256, 1);
+            });
+
+    Pipeline ddgi_ray_conv_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ddgi_conv.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                            .write_info =
+                                DescriptorInfo(ddgi_ray_buffer.handle, 0, ddgi_ray_buffer.size / FRAMES_IN_FLIGHT)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ddgi_irradiance.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ddgi_irradiance_history.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ddgi_depth_atlas.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ddgi_depth_atlas_history.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                    },
+            },
+        },
+        sizeof(LightpassPushConstants)
+    );
+    std::vector<VkDescriptorSet> ddgi_ray_conv_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, ddgi_ray_conv_pipeline);
+
+    auto& ddgi_ray_conv_pass =
+        framegraph.add_pass("ddgi ray conv")
+            .reads_buffer_dynamic(
+                ddgi_ray_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                ddgi_ray_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .writes_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
+                ZoneScopedN("DDGI Pass");
+
+                const Pipeline& pipeline = ddgi_ray_conv_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    ddgi_ray_conv_descriptor_sets.size(),
+                    ddgi_ray_conv_descriptor_sets.data(),
+                    1,
+                    &dynamic_offsets[3]
+                );
+
+                vkCmdPushConstants(
+                    command_buffer,
+                    pipeline.pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    sizeof(LightpassPushConstants),
+                    &light_constants
+                );
+
+                vkCmdDispatch(command_buffer, (ddgi_irradiance.width + 7) / 8, (ddgi_irradiance.height + 7) / 8, 1);
+
+                image_pipeline_barrier(
+                    ddgi_irradiance,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT
+                );
+
+                image_pipeline_barrier(
+                    ddgi_irradiance_history,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT
+                );
+
+                image_pipeline_barrier(
+                    ddgi_depth_atlas,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT
+                );
+
+                image_pipeline_barrier(
+                    ddgi_depth_atlas_history,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT
+                );
+
+                VkImageBlit blit_region = {
+                    .srcSubresource =
+                        {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
+                    .srcOffsets =
+                        {
+                            {0, 0, 0},
+                            {
+                                static_cast<int32_t>(ddgi_irradiance.width),
+                                static_cast<int32_t>(ddgi_irradiance.height),
+                                1,
+                            },
+                        },
+                    .dstSubresource =
+                        {
+                            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                            .mipLevel       = 0,
+                            .baseArrayLayer = 0,
+                            .layerCount     = 1,
+                        },
+                    .dstOffsets = {
+                        {0, 0, 0},
+                        {
+                            static_cast<int32_t>(ddgi_irradiance_history.width),
+                            static_cast<int32_t>(ddgi_irradiance_history.height),
+                            1,
+                        },
+                    },
+                };
+
+                vkCmdBlitImage(
+                    command_buffer,
+                    ddgi_irradiance.handle,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    ddgi_irradiance_history.handle,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1,
+                    &blit_region,
+                    VK_FILTER_LINEAR
+                );
+
+                blit_region.srcOffsets[1] = {
+                    static_cast<int32_t>(ddgi_depth_atlas.width),
+                    static_cast<int32_t>(ddgi_depth_atlas.height),
+                    1,
+                };
+                blit_region.dstOffsets[1] = {
+                    static_cast<int32_t>(ddgi_depth_atlas_history.width),
+                    static_cast<int32_t>(ddgi_depth_atlas_history.height),
+                    1,
+                };
+
+                vkCmdBlitImage(
+                    command_buffer,
+                    ddgi_depth_atlas.handle,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    ddgi_depth_atlas_history.handle,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1,
+                    &blit_region,
+                    VK_FILTER_LINEAR
+                );
+
+                image_pipeline_barrier(
+                    ddgi_irradiance,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                );
+
+                image_pipeline_barrier(
+                    ddgi_irradiance_history,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+                );
+
+                image_pipeline_barrier(
+                    ddgi_depth_atlas,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                );
+
+                image_pipeline_barrier(
+                    ddgi_depth_atlas_history,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+                );
+            });
+
+    Pipeline ddgi_border_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ddgi_border.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ddgi_irradiance.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(ddgi_depth_atlas.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                    }
+            },
+        },
+        sizeof(LightpassPushConstants)
+    );
+    std::vector<VkDescriptorSet> ddgi_border_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, ddgi_border_pipeline);
+
+    auto& ddgi_border_pass =
+        framegraph.add_pass("ddgi border")
+            .reads_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .reads_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
+                ZoneScopedN("DDGI Pass");
+
+                const Pipeline& pipeline = ddgi_border_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    ddgi_border_descriptor_sets.size(),
+                    ddgi_border_descriptor_sets.data(),
+                    0,
+                    nullptr
+                );
+
+                vkCmdPushConstants(
+                    command_buffer,
+                    pipeline.pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    sizeof(LightpassPushConstants),
+                    &light_constants
+                );
+
+                uint32_t probe_count =
+                    light_constants.probe_counts.x * light_constants.probe_counts.y * light_constants.probe_counts.z;
+
+                vkCmdDispatch(command_buffer, probe_count, 1, 1);
+            });
+
+    Pipeline shadow_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/shadow.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(directional_shadow_buffer.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, gbuffer_normals.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, depth_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                            .write_info = DescriptorInfo(rt_scene.tlas.handle)
+                        },
+                    }
+            },
+            scene_data_layout,
+            draw_data_layout,
+            geometry_data_layout,
+        },
+        sizeof(LightpassPushConstants),
+        global_texture_descriptor_layout
+    );
+    std::vector<VkDescriptorSet> shadow_pass_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, shadow_pipeline);
+
+    auto& shadow_pass = framegraph.add_pass("RT Shadows")
+                            .reads_buffer_dynamic(
+                                scene_ubo_buffer,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_UNIFORM_READ_BIT,
+                                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                            .reads_buffer_dynamic(
+                                draw_data_buffer,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_UNIFORM_READ_BIT,
+                                draw_data_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                            .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                            .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                            .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadows");
+                                ZoneScopedN("RT Shadows");
+
+                                const Pipeline& pipeline = shadow_pipeline;
+
+                                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                                VkDescriptorSet sets[] = {
+                                    shadow_pass_descriptor_sets[0],
+                                    shadow_pass_descriptor_sets[1],
+                                    shadow_pass_descriptor_sets[2],
+                                    shadow_pass_descriptor_sets[3],
+                                    global_texture_descriptor_set,
+                                };
+
+                                vkCmdBindDescriptorSets(
+                                    command_buffer,
+                                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    pipeline.pipeline_layout,
+                                    0,
+                                    5,
+                                    sets,
+                                    2,
+                                    &dynamic_offsets[0]
+                                );
+
+                                vkCmdPushConstants(
+                                    command_buffer,
+                                    pipeline.pipeline_layout,
+                                    VK_SHADER_STAGE_COMPUTE_BIT,
+                                    0,
+                                    sizeof(LightpassPushConstants),
+                                    &light_constants
+                                );
+
+                                vkCmdDispatch(
+                                    command_buffer,
+                                    (((directional_shadow_buffer.width + 1) / 2) + 7) / 8,
+                                    (directional_shadow_buffer.height + 7) / 8,
+                                    1
+                                );
+                            });
+
+    Pipeline shadow_fill_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/shadow_fill.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings = {
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        .write_info = DescriptorInfo(directional_shadow_buffer.view, VK_IMAGE_LAYOUT_GENERAL)
+                    },
+                    DescriptorBinding{
+                        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                        .write_info =
+                            DescriptorInfo(linear_sampler, depth_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                    },
+                }
+            },
+        }
+    );
+    std::vector<VkDescriptorSet> shadow_fill_pass_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, shadow_fill_pipeline);
+
+    auto& shadow_fill_pass =
+        framegraph.add_pass("RT Shadow fill")
+            .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadow Fill");
+                ZoneScopedN("RT Shadow Fill");
+
+                const Pipeline& pipeline = shadow_fill_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    shadow_fill_pass_descriptor_sets.size(),
+                    shadow_fill_pass_descriptor_sets.data(),
+                    0,
+                    nullptr
+                );
+
+                vkCmdDispatch(
+                    command_buffer,
+                    (((directional_shadow_buffer.width + 1) / 2) + 7) / 8,
+                    (directional_shadow_buffer.height + 7) / 8,
+                    1
+                );
+            });
+
+    Pipeline shadow_blur_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/shadow_blur.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(directional_shadow_buffer_pong.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(directional_shadow_buffer.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, depth_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                    },
+                .is_push_set = true
+            },
+        },
+        sizeof(ShadowBlurConstants)
+    );
+
+    auto& shadow_blur_pass =
+        framegraph.add_pass("RT Shadow blur")
+            .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .reads_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(directional_shadow_buffer_pong, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadow Blur");
+                ZoneScopedN("RT Shadow Blur");
+
+                const Pipeline& pipeline = shadow_blur_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                for (int i = 0; i < 2; i++) {
+                    VkDescriptorImageInfo write_info = {
+                        .sampler   = VK_NULL_HANDLE,
+                        .imageView = i % 2 == 0 ? directional_shadow_buffer_pong.view : directional_shadow_buffer.view,
+                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    };
+
+                    VkDescriptorImageInfo read_info = {
+                        .sampler   = linear_sampler_clamped,
+                        .imageView = i % 2 == 0 ? directional_shadow_buffer.view : directional_shadow_buffer_pong.view,
+                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    };
+
+                    VkDescriptorImageInfo depth_info = {
+                        .sampler     = linear_sampler_clamped,
+                        .imageView   = depth_buffer.view,
+                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    };
+
+                    std::vector<VkWriteDescriptorSet> write_sets = {
+                        {
+                            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext            = nullptr,
+                            .dstBinding       = 0,
+                            .dstArrayElement  = 0,
+                            .descriptorCount  = 1,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .pImageInfo       = &write_info,
+                            .pBufferInfo      = nullptr,
+                            .pTexelBufferView = nullptr,
+                        },
+                        {
+                            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext            = nullptr,
+                            .dstBinding       = 1,
+                            .dstArrayElement  = 0,
+                            .descriptorCount  = 1,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .pImageInfo       = &read_info,
+                            .pBufferInfo      = nullptr,
+                            .pTexelBufferView = nullptr,
+                        },
+                        {
+                            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .pNext            = nullptr,
+                            .dstBinding       = 2,
+                            .dstArrayElement  = 0,
+                            .descriptorCount  = 1,
+                            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .pImageInfo       = &depth_info,
+                            .pBufferInfo      = nullptr,
+                            .pTexelBufferView = nullptr,
+                        },
+                    };
+
+                    vkCmdPushDescriptorSet(
+                        command_buffer,
+                        pipeline.bind_point,
+                        pipeline.pipeline_layout,
+                        0,
+                        static_cast<uint32_t>(write_sets.size()),
+                        write_sets.data()
+                    );
+
+                    ShadowBlurConstants constants = {
+                        .image_size = glm::vec2(directional_shadow_buffer.width, directional_shadow_buffer.height),
+                        .direction  = static_cast<float>(i % 2 == 0 ? 0 : 1),
+                        .znear      = camera.near_plane
+                    };
+
+                    vkCmdPushConstants(
+                        command_buffer,
+                        pipeline.pipeline_layout,
+                        VK_SHADER_STAGE_COMPUTE_BIT,
+                        0,
+                        sizeof(ShadowBlurConstants),
+                        &constants
+                    );
+
+                    vkCmdDispatch(
+                        command_buffer,
+                        (directional_shadow_buffer.width + 7) / 8,
+                        (directional_shadow_buffer.height + 7) / 8,
+                        1
+                    );
+
+                    image_pipeline_barrier(
+                        i % 2 == 0 ? directional_shadow_buffer_pong : directional_shadow_buffer,
+                        command_buffer,
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                    );
+                }
+            });
+
     auto& light_pass =
         framegraph.add_pass("lighting")
             .reads_buffer_dynamic(
@@ -2205,6 +4399,12 @@ int main() {
             .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_material, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(ao_output_denoised, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(gbuffer_emissive, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(ao_output_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Light Pass");
@@ -2232,6 +4432,152 @@ int main() {
                 );
 
                 vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
+            });
+
+    Pipeline smaa_edge_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/smaa_edges.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(smaa_edges.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, lightpass_output.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                    }
+            },
+        },
+        sizeof(glm::vec4)
+    );
+    std::vector<VkDescriptorSet> smaa_edge_pass_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, smaa_edge_pipeline);
+
+    auto& smaa_edge_pass =
+        framegraph.add_pass("SMAA edge")
+            .samples_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(smaa_edges, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadow Fill");
+                ZoneScopedN("RT Shadow Fill");
+
+                const Pipeline& pipeline = smaa_edge_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    smaa_edge_pass_descriptor_sets.size(),
+                    smaa_edge_pass_descriptor_sets.data(),
+                    0,
+                    nullptr
+                );
+
+                glm::vec4 constants = {
+                    1.0 / (float)smaa_weights.width,
+                    1.0 / (float)smaa_weights.height,
+                    smaa_weights.width,
+                    smaa_weights.height
+                };
+
+                vkCmdPushConstants(
+                    command_buffer,
+                    pipeline.pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    sizeof(glm::vec4),
+                    &constants
+                );
+
+                vkCmdDispatch(command_buffer, (smaa_edges.width + 7) / 8, (smaa_edges.height + 7) / 8, 1);
+            });
+
+    Pipeline smaa_weights_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/smaa_weights.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(smaa_weights.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, smaa_edges.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, smaa_area_tex.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, smaa_search_tex.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                    }
+            },
+        },
+        sizeof(glm::vec4)
+    );
+    std::vector<VkDescriptorSet> smaa_weights_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, smaa_weights_pipeline);
+
+    auto& smaa_weights_pass =
+        framegraph.add_pass("SMAA weights")
+            .samples_image(smaa_edges, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(smaa_weights, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadow Fill");
+                ZoneScopedN("RT Shadow Fill");
+
+                const Pipeline& pipeline = smaa_weights_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    smaa_weights_descriptor_sets.size(),
+                    smaa_weights_descriptor_sets.data(),
+                    0,
+                    nullptr
+                );
+
+                glm::vec4 constants = {
+                    1.0 / (float)smaa_weights.width,
+                    1.0 / (float)smaa_weights.height,
+                    smaa_weights.width,
+                    smaa_weights.height
+                };
+
+                vkCmdPushConstants(
+                    command_buffer,
+                    pipeline.pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    sizeof(glm::vec4),
+                    &constants
+                );
+
+                vkCmdDispatch(command_buffer, (smaa_weights.width + 7) / 8, (smaa_weights.height + 7) / 8, 1);
             });
 
     auto& bloom_downsample_pass =
@@ -2493,9 +4839,171 @@ int main() {
                 vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
             });
 
+    auto& debug_pass =
+        framegraph.add_pass("debug geometry")
+            .writes_image(
+                composite_output,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+            )
+            .reads_image(
+                depth_buffer,
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+            )
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "Debug Pass");
+                ZoneScopedN("Debug Pass");
+
+                debug_renderer_upload_data(debug_renderer, vma_allocator, frame_index);
+
+                std::vector<VkRenderingAttachmentInfo> color_attachments = {
+                    {
+                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                        .pNext              = nullptr,
+                        .imageView          = composite_output.view,
+                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .resolveMode        = VK_RESOLVE_MODE_NONE,
+                        .resolveImageView   = VK_NULL_HANDLE,
+                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
+                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                    },
+                };
+
+                VkRenderingAttachmentInfo depth_attachment_info = {
+                    .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                    .pNext              = nullptr,
+                    .imageView          = depth_buffer.view,
+                    .imageLayout        = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                    .resolveMode        = VK_RESOLVE_MODE_NONE,
+                    .resolveImageView   = VK_NULL_HANDLE,
+                    .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
+                    .storeOp            = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                    .clearValue         = {.depthStencil = {.depth = 0.0f, .stencil = 0}}
+                };
+
+                VkRenderingInfo rendering_info = {
+                    .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .renderArea =
+                        {
+                            .offset = {.x = 0, .y = 0},
+                            .extent = {.width = swapchain.width, .height = swapchain.height},
+                        },
+                    .layerCount           = 1,
+                    .viewMask             = 0,
+                    .colorAttachmentCount = static_cast<uint32_t>(color_attachments.size()),
+                    .pColorAttachments    = color_attachments.data(),
+                    .pDepthAttachment     = &depth_attachment_info,
+                    .pStencilAttachment   = nullptr
+                };
+
+                vkCmdBeginRendering(command_buffer, &rendering_info);
+
+                vkCmdBindPipeline(
+                    command_buffer, debug_renderer.pipeline.bind_point, debug_renderer.pipeline.pipeline_handle
+                );
+                vkCmdPushConstants(
+                    command_buffer,
+                    debug_renderer.pipeline.pipeline_layout,
+                    debug_renderer.pipeline.stage_flags,
+                    0,
+                    sizeof(DebugRendererConstants),
+                    &debug_renderer_constants
+                );
+
+                VkDeviceSize offset =
+                    (debug_renderer.vertex_buffer.size / debug_renderer.frames_in_flight) * frame_index;
+                vkCmdBindVertexBuffers(command_buffer, 0, 1, &debug_renderer.vertex_buffer.handle, &offset);
+
+                vkCmdDraw(command_buffer, debug_renderer.vertex_count, 1, 0, 0);
+
+                vkCmdEndRendering(command_buffer);
+            });
+
+    Pipeline smaa_blend_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/smaa_blend.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(smaa_output.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, composite_output.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, smaa_weights.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                    }
+            },
+        },
+        sizeof(glm::vec4)
+    );
+    std::vector<VkDescriptorSet> smaa_blend_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, smaa_blend_pipeline);
+
+    auto& smaa_blend_pass =
+        framegraph.add_pass("SMAA blend")
+            .samples_image(smaa_weights, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(composite_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(smaa_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadow Fill");
+                ZoneScopedN("RT Shadow Fill");
+
+                const Pipeline& pipeline = smaa_blend_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    smaa_blend_descriptor_sets.size(),
+                    smaa_blend_descriptor_sets.data(),
+                    0,
+                    nullptr
+                );
+
+                glm::vec4 constants = {
+                    1.0 / (float)smaa_weights.width,
+                    1.0 / (float)smaa_weights.height,
+                    smaa_weights.width,
+                    smaa_weights.height
+                };
+
+                vkCmdPushConstants(
+                    command_buffer,
+                    pipeline.pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    sizeof(glm::vec4),
+                    &constants
+                );
+
+                vkCmdDispatch(command_buffer, (smaa_weights.width + 7) / 8, (smaa_weights.height + 7) / 8, 1);
+            });
+
     auto& fxaa_pass =
         framegraph.add_pass("fxaa")
-            .samples_image(composite_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(smaa_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(fxaa_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "FXAA Pass");
@@ -2527,6 +5035,10 @@ int main() {
 
         accumulated_fps++;
         time_passed += delta_time;
+
+        if (animate) {
+            total_time += delta_time * animation_speed;
+        }
 
         if (time_passed >= 1.0f) {
             fps = accumulated_fps;
@@ -2613,6 +5125,10 @@ int main() {
             move_camera(camera, glm::vec2(0, 1), camera_speed * delta_time);
         }
 
+        if (pressed_keys[SDL_SCANCODE_ESCAPE]) {
+            running = false;
+        }
+
         update_camera(camera);
 
         auto transposed_projection = glm::transpose(camera.projection_matrix);
@@ -2625,15 +5141,20 @@ int main() {
         ImGui::NewFrame();
 
         bool open = true;
-        ImGui::Begin("Debug", &open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
+        ImGui::Begin("Debug", &open, ImGuiWindowFlags_NoTitleBar);
 
         ImGui::SeparatorText("Info");
         ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
-        ImGui::Text("Draw calls: %lu", bindless_draw_data_cpu_buffer.size());
+        ImGui::Text("Objects: %lu", bindless_draw_data_cpu_buffer.size());
         ImGui::Text("FPS: %u", fps);
         ImGui::Text("Triangles Rendered: %.3fM", (double(pipeline_stats[0]) / 1'000'000.0));
         ImGui::Text("Fragment shader invocations: %.3fM", (double(pipeline_stats[1]) / 1'000'000.0));
         ImGui::NewLine();
+        ImGui::Checkbox("Animate", &animate);
+        ImGui::SliderFloat("Animation Speed", &animation_speed, 0.1f, 50.0f);
+        if (ImGui::Button("Reset Animation")) {
+            total_time = 0.0f;
+        }
 
         if (ImGui::TreeNode("Performance")) {
             std::vector<std::pair<std::string, PassTiming>> pass_timings = {};
@@ -2666,10 +5187,19 @@ int main() {
             );
 
             ImGui::SeparatorText("Light");
-            ImGui::SliderFloat3("Light direction", &light_constants.light_direction.x, -1.0, 1.0);
+            ImGui::DragFloat3("Light direction", &light_constants.light_direction.x, 0.01, -1.0, 1.0);
             ImGui::SliderFloat3("Light color", &light_constants.light_color.x, 0.0, 1.0);
             ImGui::SliderFloat("Light intensity", &light_constants.light_intensity, 0.0, 100.0);
-            ImGui::SliderFloat("Ambient intensity", &light_constants.ambient_intensity, 0.0, 1.0);
+            ImGui::Checkbox("AO", (bool*)&light_constants.enable_ao);
+            ImGui::SameLine();
+            ImGui::Checkbox("AO Only", (bool*)&light_constants.ao_only);
+            ImGui::SameLine();
+            ImGui::Checkbox("Full GI Shading", (bool*)&light_constants.full_gi_shading);
+
+            ImGui::SeparatorText("DDGI");
+            ImGui::DragFloat("Probe Spacing", &light_constants.probe_spacing, 0.01, 0.1, 10.0);
+            ImGui::DragFloat3("Grid Origin", &light_constants.grid_origin.x, 0.03, -100.0, 100.0);
+            ImGui::Checkbox("Visualize Probes", (bool*)&visualize_probes);
 
             ImGui::SeparatorText("Bloom");
             ImGui::SliderFloat("Bloom strength", &composite_push_constants.bloom_strength, 0.0, 1.0);
@@ -2693,6 +5223,25 @@ int main() {
         );
         VK_CHECK(vkResetFences(device, 1, &frame_fences[frame_index]));
         vmaSetCurrentFrameIndex(vma_allocator, frame_index);
+
+        float aspect         = camera.viewport_width / camera.viewport_height;
+        float tan_half_fov_y = tanf(glm::radians(camera.fov) / 2.0f);
+        float tan_half_fov_x = tan_half_fov_y * aspect;
+
+        xegtao_constants = {
+            .camera_tan_half_fov = {tan_half_fov_x, tan_half_fov_y},
+            .ndc_to_view_mul     = {tan_half_fov_x * 2.0f, tan_half_fov_y * -2.0f}, // ← Y negative
+            .ndc_to_view_add     = {-tan_half_fov_x, tan_half_fov_y},               // ← Y positive
+        };
+
+        xegtao_constants.ndc_to_view_mul_x_pixel_size = {
+            xegtao_constants.ndc_to_view_mul.x / (float)swapchain.width,
+            xegtao_constants.ndc_to_view_mul.y / (float)swapchain.height
+        };
+        xegtao_constants.camera_near_far = {camera.near_plane, 10000.0f};
+
+        light_constants.frame_index += 1;
+        light_constants.camera_pos = camera.position;
 
         SceneUBO scene_ubo        = {};
         scene_ubo.proj            = camera.projection_matrix;
@@ -2728,6 +5277,25 @@ int main() {
         memcpy(reinterpret_cast<char*>(scene_ubo_ptr) + ubo_ptr_offset, &scene_ubo, sizeof(SceneUBO));
         VK_CHECK(vmaFlushAllocation(vma_allocator, scene_ubo_buffer.allocation, ubo_ptr_offset, scene_ubo_buffer.size));
 
+        debug_renderer_constants.combined_matrix = camera.combined_matrix;
+        debug_renderer_start_frame(debug_renderer, frame_index);
+
+        if (visualize_probes) {
+            for (int x = 0; x < light_constants.probe_counts.x; x++) {
+                for (int y = 0; y < light_constants.probe_counts.y; y++) {
+                    for (int z = 0; z < light_constants.probe_counts.z; z++) {
+                        glm::vec3 probe_pos = light_constants.grid_origin + glm::vec3(
+                                                                                x * light_constants.probe_spacing,
+                                                                                y * light_constants.probe_spacing,
+                                                                                z * light_constants.probe_spacing
+                                                                            );
+
+                        debug_renderer_draw_box(debug_renderer, probe_pos, glm::vec3(0.2), {1, 1, 0, 1});
+                    }
+                }
+            }
+        }
+
         bindless_draw_data_cpu_buffer.clear();
 
         for (auto& instance : mesh_instances) {
@@ -2739,19 +5307,22 @@ int main() {
 
             bindless_draw_data_cpu_buffer.push_back(
                 DrawData{
-                    .center         = mesh.center,
-                    .radius         = mesh.radius,
-                    .position       = instance.position,
-                    .scale          = instance.scale,
-                    .rotation       = instance.rotation,
-                    .index_count    = mesh.index_count,
-                    .first_index    = first_index,
-                    .vertex_offset  = vertex_offset,
-                    .meshlet_offset = mesh.meshlet_offset,
-                    .meshlet_count  = mesh.meshlet_count,
-                    .albedo_index   = material.albedo_index,
-                    .normals_index  = material.normals_index,
-                    .material_index = material.material_index,
+                    .center          = mesh.center,
+                    .radius          = mesh.radius,
+                    .position        = instance.position,
+                    .scale           = instance.scale,
+                    .rotation        = instance.rotation,
+                    .index_count     = mesh.index_count,
+                    .first_index     = first_index,
+                    .vertex_offset   = vertex_offset,
+                    .meshlet_offset  = mesh.meshlet_offset,
+                    .meshlet_count   = mesh.meshlet_count,
+                    .albedo_index    = material.albedo_index,
+                    .normals_index   = material.normals_index,
+                    .material_index  = material.material_index,
+                    .occlusion_index = material.occlusion_index,
+                    .emissive_color  = material.emissive_color,
+                    .emissive_index  = material.emissive_index
                 }
             );
         }
@@ -2812,10 +5383,11 @@ int main() {
         dynamic_offsets[0] = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         dynamic_offsets[1] = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         dynamic_offsets[2] = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[3] = (ddgi_ray_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
 
         framegraph.execute(command_buffer, frame_index);
 
-        auto& blit_source = use_fxaa ? fxaa_output : composite_output;
+        auto& blit_source = use_fxaa ? fxaa_output : smaa_output;
 
         image_pipeline_barrier(
             blit_source,
@@ -3036,8 +5608,20 @@ int main() {
     destroy_image(depth_hiz, device, vma_allocator);
     destroy_image(bloom_buffer, device, vma_allocator);
     destroy_image(fxaa_output, device, vma_allocator);
+    destroy_image(ao_output, device, vma_allocator);
+    destroy_image(ao_output_denoised, device, vma_allocator);
+    destroy_image(ao_output_denoised_pong, device, vma_allocator);
+    destroy_image(ao_output_edges, device, vma_allocator);
+    destroy_image(ao_prefiltered_depth, device, vma_allocator);
+    destroy_image(brdf_lut, device, vma_allocator);
+    destroy_image(specular_cubemap, device, vma_allocator);
+    destroy_image(irradiance_cubemap, device, vma_allocator);
 
     for (auto view : depth_mip_views) {
+        vkDestroyImageView(device, view, nullptr);
+    }
+
+    for (auto view : ao_depth_mip_views) {
         vkDestroyImageView(device, view, nullptr);
     }
 
@@ -3053,6 +5637,9 @@ int main() {
     destroy_pipeline(device, bloom_upsample_pipeline);
     destroy_pipeline(device, composite_pipeline);
     destroy_pipeline(device, fxaa_pipeline);
+    destroy_pipeline(device, ao_prefilter_pipeline);
+    destroy_pipeline(device, ao_pipeline);
+    destroy_pipeline(device, ao_denoise_pipeline);
 
     for (auto image : loaded_images) {
         destroy_image(image, device, vma_allocator);

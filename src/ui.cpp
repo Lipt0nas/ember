@@ -144,12 +144,12 @@ VkDescriptorPool init_imgui(
     }
 
     // NOTE: Little hack to make the ui look a little better when under sRGB
-    for (int i = 0; i < ImGuiCol_COUNT; i++) {
-        ImVec4& col = style.Colors[i];
-        col.x       = col.x <= 0.04045f ? col.x / 12.92f : pow((col.x + 0.055f) / 1.055f, 2.4f);
-        col.y       = col.y <= 0.04045f ? col.y / 12.92f : pow((col.y + 0.055f) / 1.055f, 2.4f);
-        col.z       = col.z <= 0.04045f ? col.z / 12.92f : pow((col.z + 0.055f) / 1.055f, 2.4f);
-    }
+    // for (int i = 0; i < ImGuiCol_COUNT; i++) {
+    //     ImVec4& col = style.Colors[i];
+    //     col.x       = col.x <= 0.04045f ? col.x / 12.92f : pow((col.x + 0.055f) / 1.055f, 2.4f);
+    //     col.y       = col.y <= 0.04045f ? col.y / 12.92f : pow((col.y + 0.055f) / 1.055f, 2.4f);
+    //     col.z       = col.z <= 0.04045f ? col.z / 12.92f : pow((col.z + 0.055f) / 1.055f, 2.4f);
+    // }
 
     VkPipelineRenderingCreateInfo imgui_rendering_info = {
         .sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,

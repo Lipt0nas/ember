@@ -97,5 +97,5 @@ void main() {
         tonemapped = vec3(r, g, b);
     }
 
-    imageStore(out_color, pixel_coord, vec4(tonemapped, 1.0));
+    imageStore(out_color, pixel_coord, vec4(pow(tonemapped, vec3(1.0 / 2.2)), 1.0));
 }

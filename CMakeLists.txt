@@ -166,16 +166,18 @@ set(SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data/shaders")
 file(GLOB_RECURSE SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/*"
 )
-list(FILTER SHADER_SOURCES EXCLUDE REGEX ".*\\.(spv|glsl)$")
+list(FILTER SHADER_SOURCES EXCLUDE REGEX ".*\\.(spv|glsl|d)$")
 
 set(SHADER_OUTPUTS)
 foreach(SHADER_SOURCE ${SHADER_SOURCES})
     set(SHADER_OUTPUT "${SHADER_SOURCE}.spv")
+    set(SHADER_DEPFILE "${SHADER_OUTPUT}.d")
 
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
-        COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT} --target-env=vulkan1.4 --target-spv=spv1.6 -g
+        COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT} --target-env=vulkan1.4 --target-spv=spv1.6 -g -MD -MF ${SHADER_DEPFILE}
         DEPENDS ${SHADER_SOURCE}
+        DEPFILE ${SHADER_DEPFILE}
         COMMENT "Compiling shader: ${SHADER_SOURCE}"
         VERBATIM
     )
