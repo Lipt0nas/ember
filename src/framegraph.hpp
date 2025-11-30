@@ -348,13 +348,6 @@ struct Framegraph {
     void build() {
         spdlog::info("Building framegraph");
 
-        // TODO: Technically it should be able to contain a single pass, but it makes the logic
-        // a little easier to implement for now
-        if (passes.size() <= 1) {
-            spdlog::error("Framegraph should contain 2 or more passes");
-            return;
-        }
-
         next_query_index = 0;
 
         image_barriers.resize(passes.size());

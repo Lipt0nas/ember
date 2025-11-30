@@ -105,14 +105,25 @@ Image load_image(
     VmaAllocator                 allocator,
     VkDevice                     device
 ) {
-    int32_t        width;
-    int32_t        height;
-    int32_t        channels;
-    unsigned char* texture_data = stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
-
     void* staging_buffer_ptr = nullptr;
     VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
-    memcpy(staging_buffer_ptr, texture_data, sizeof(unsigned char) * width * height * 4);
+
+    int32_t width;
+    int32_t height;
+    int32_t channels;
+
+    if (path.extension() != ".hdr") {
+        unsigned char* texture_data = stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+
+        memcpy(staging_buffer_ptr, texture_data, sizeof(unsigned char) * width * height * 4);
+        stbi_image_free(texture_data);
+    } else {
+        spdlog::warn("FLOATING POINT TEXTURE {}", path.string());
+        float* texture_data = stbi_loadf(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+
+        memcpy(staging_buffer_ptr, texture_data, sizeof(float) * width * height * 4);
+        stbi_image_free(texture_data);
+    }
 
     Image image = create_image(
         format,
@@ -196,6 +207,82 @@ Image create_image(
         .width      = width,
         .height     = height,
         .levels     = mip_levels,
+        .layers     = 1,
+        .format     = format,
+        .aspect     = aspect,
+        .handle     = handle,
+        .view       = view,
+        .allocation = allocation,
+    };
+}
+
+Image create_cubemap_image(
+    VkFormat              format,
+    uint32_t              width,
+    uint32_t              height,
+    VkImageUsageFlags     usage,
+    VkImageAspectFlagBits aspect,
+    bool                  generate_mipmaps,
+    VmaAllocator          allocator,
+    VkDevice              device
+) {
+    uint32_t mip_levels =
+        generate_mipmaps ? static_cast<uint32_t>(glm::floor(glm::log2((float)glm::max(width, height))) + 1) : 1;
+
+    VkImageCreateInfo image_info = {
+        .sType                 = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext                 = nullptr,
+        .flags                 = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
+        .imageType             = VK_IMAGE_TYPE_2D,
+        .format                = format,
+        .extent                = {.width = width, .height = height, .depth = 1},
+        .mipLevels             = mip_levels,
+        .arrayLayers           = 6,
+        .samples               = VK_SAMPLE_COUNT_1_BIT,
+        .tiling                = VK_IMAGE_TILING_OPTIMAL,
+        .usage                 = usage,
+        .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices   = nullptr,
+        .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED
+    };
+
+    VmaAllocationCreateInfo allocation_info = {};
+    allocation_info.usage                   = VMA_MEMORY_USAGE_AUTO;
+
+    VkImage       handle = VK_NULL_HANDLE;
+    VmaAllocation allocation;
+    VK_CHECK(vmaCreateImage(allocator, &image_info, &allocation_info, &handle, &allocation, nullptr));
+
+    VkImageViewCreateInfo view_info = {
+        .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .pNext    = nullptr,
+        .flags    = 0,
+        .image    = handle,
+        .viewType = VK_IMAGE_VIEW_TYPE_CUBE,
+        .format   = format,
+        .components =
+            {.r = VK_COMPONENT_SWIZZLE_IDENTITY,
+             .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+             .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+             .a = VK_COMPONENT_SWIZZLE_IDENTITY},
+        .subresourceRange = {
+            .aspectMask     = aspect,
+            .baseMipLevel   = 0,
+            .levelCount     = mip_levels,
+            .baseArrayLayer = 0,
+            .layerCount     = 6,
+        }
+    };
+
+    VkImageView view = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateImageView(device, &view_info, nullptr, &view));
+
+    return {
+        .width      = width,
+        .height     = height,
+        .levels     = mip_levels,
+        .layers     = 6,
         .format     = format,
         .aspect     = aspect,
         .handle     = handle,
@@ -275,7 +362,7 @@ void image_pipeline_barrier(
             .baseMipLevel   = 0,
             .levelCount     = image.levels,
             .baseArrayLayer = 0,
-            .layerCount     = 1,
+            .layerCount     = image.layers,
         }
     );
 }
@@ -471,6 +558,37 @@ void buffer_pipeline_barrier(
     };
     vkCmdPipelineBarrier2(command_buffer, &dependency);
 }
+
+void memory_pipeline_barrier(
+    VkCommandBuffer       command_buffer,
+    VkPipelineStageFlags2 src_stage_mask,
+    VkAccessFlags2        src_access_mask,
+    VkPipelineStageFlags2 dst_stage_mask,
+    VkAccessFlags2        dst_access_mask
+) {
+    VkMemoryBarrier2 barrier = {
+        .sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .pNext         = nullptr,
+        .srcStageMask  = src_stage_mask,
+        .srcAccessMask = src_access_mask,
+        .dstStageMask  = dst_stage_mask,
+        .dstAccessMask = dst_access_mask,
+    };
+
+    VkDependencyInfo dependency = {
+        .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .pNext                    = nullptr,
+        .dependencyFlags          = 0,
+        .memoryBarrierCount       = 1,
+        .pMemoryBarriers          = &barrier,
+        .bufferMemoryBarrierCount = 0,
+        .pBufferMemoryBarriers    = nullptr,
+        .imageMemoryBarrierCount  = 0,
+        .pImageMemoryBarriers     = nullptr,
+    };
+    vkCmdPipelineBarrier2(command_buffer, &dependency);
+}
+
 uint64_t get_buffer_device_address(const Buffer& buffer, VkDevice device) {
     VkBufferDeviceAddressInfo address_info = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = buffer.handle
@@ -478,6 +596,7 @@ uint64_t get_buffer_device_address(const Buffer& buffer, VkDevice device) {
 
     return vkGetBufferDeviceAddress(device, &address_info);
 }
+
 void copy_to_buffer(const Buffer& dst_buffer, VmaAllocator allocator, void* src_ptr, size_t size) {
     void* buffer_ptr = nullptr;
     VK_CHECK(vmaMapMemory(allocator, dst_buffer.allocation, &buffer_ptr));

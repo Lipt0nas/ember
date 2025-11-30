@@ -1,0 +1,164 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba8) uniform image2D outputImage;
+
+layout(set = 0, binding = 1) uniform sampler2D colorTex;
+layout(set = 0, binding = 2) uniform sampler2D blendTex;
+
+layout(push_constant, std430) uniform pc {
+    vec4 bufferSize;
+};
+
+#define SMAA_RT_METRICS bufferSize
+
+#define mad(a, b, c) (a * b + c)
+#define API_V_DIR(v) (v)
+
+#define SMAA_PRESET_ULTRA
+
+#if defined(SMAA_PRESET_LOW)
+
+#define SMAA_THRESHOLD 0.15
+#define SMAA_MAX_SEARCH_STEPS 4
+#define SMAA_DISABLE_DIAG_DETECTION
+#define SMAA_DISABLE_CORNER_DETECTION
+
+#elif defined(SMAA_PRESET_MEDIUM)
+
+#define SMAA_THRESHOLD 0.1
+#define SMAA_MAX_SEARCH_STEPS 8
+#define SMAA_DISABLE_DIAG_DETECTION
+#define SMAA_DISABLE_CORNER_DETECTION
+
+#elif defined(SMAA_PRESET_HIGH)
+
+#define SMAA_THRESHOLD 0.1
+#define SMAA_MAX_SEARCH_STEPS 16
+#define SMAA_MAX_SEARCH_STEPS_DIAG 8
+#define SMAA_CORNER_ROUNDING 25
+
+#elif defined(SMAA_PRESET_ULTRA)
+
+#define SMAA_THRESHOLD 0.05
+#define SMAA_MAX_SEARCH_STEPS 32
+#define SMAA_MAX_SEARCH_STEPS_DIAG 16
+#define SMAA_CORNER_ROUNDING 25
+
+#endif  // SMAA_PRESET_*
+
+#define SMAATexture2D(tex) sampler2D tex
+#define SMAAWriteImage2D(tex) writeonly image2D tex
+#define SMAATexturePass2D(tex) tex
+#define SMAASampleLevelZero(tex, coord) textureLod(tex, coord, 0.0)
+#define SMAASampleLevelZeroPoint(tex, coord) textureLod(tex, coord, 0.0)
+#define SMAASampleLevelZeroOffset(tex, coord, offset) textureLodOffset(tex, coord, 0.0, offset)
+#define SMAASample(tex, coord) texture(tex, coord)
+#define SMAASamplePoint(tex, coord) texture(tex, coord)
+#define SMAASampleOffset(tex, coord, offset) texture(tex, coord, offset)
+
+#define SMAA_LOCAL_CONTRAST_ADAPTATION_FACTOR 2.0
+#define SMAATexture2DMS2(tex) sampler2DMS tex
+#define SMAALoadMS(tex, pos, sample) texelFetch(tex, pos, sample)
+#define SMAALoad(tex, pos) texelFetch(sampler2D(tex, PointSampler), pos, 0)
+#define SMAAImageStore(tex, pos, value) imageStore(tex, pos, value)
+#define float2 vec2
+#define float3 vec3
+#define float4 vec4
+#define int2 ivec2
+#define int3 ivec3
+#define int4 ivec4
+#define bool2 bvec2
+#define bool3 bvec3
+#define bool4 bvec4
+
+void SMAAMovc(bool2 cond, inout float2 variable, float2 value) {
+    if (cond.x) {
+        variable.x = value.x;
+    }
+    if (cond.y) {
+        variable.y = value.y;
+    }
+}
+
+void SMAAMovc(bool4 cond, inout float4 variable, float4 value) {
+    SMAAMovc(cond.xy, variable.xy, value.xy);
+    SMAAMovc(cond.zw, variable.zw, value.zw);
+}
+
+float4 SMAANeighborhoodBlendingCS(int2 coord) {
+    float2 texcoord = coord.xy;
+    // account for pixel center
+    texcoord += float2(0.5, 0.5);
+    texcoord *= SMAA_RT_METRICS.xy;
+
+    // Fetch the blending weights for current pixel:
+    float4 a;
+    a.x = SMAALoadMS(blendTex, coord + int2(1, 0), 0).a; // Right
+    a.y = SMAALoadMS(blendTex, coord + int2(0, API_V_DIR(1)), 0).g; // Top
+    a.wz = SMAALoadMS(blendTex, coord, 0).xz; // Bottom / Left
+
+    // Is there any blending weight with a value greater than 0.0?
+    if (dot(a, float4(1.0, 1.0, 1.0, 1.0)) < 1e-5) {
+        float4 color = SMAASampleLevelZero(colorTex, texcoord);
+
+        #if SMAA_REPROJECTION
+        float2 velocity = SMAA_DECODE_VELOCITY(SMAASampleLevelZero(velocityTex, texcoord));
+
+        // Pack velocity into the alpha channel:
+        color.a = sqrt(5.0 * length(velocity));
+        #endif  // SMAA_REPROJECTION
+
+        return color;
+    } else {
+        bool h = max(a.x, a.z) > max(a.y, a.w); // max(horizontal) > max(vertical)
+
+        // Calculate the blending offsets:
+        float4 blendingOffset = float4(0.0, API_V_DIR(a.y), 0.0, API_V_DIR(a.w));
+        float2 blendingWeight = a.yw;
+        SMAAMovc(bool4(h, h, h, h), blendingOffset, float4(a.x, 0.0, a.z, 0.0));
+        SMAAMovc(bool2(h, h), blendingWeight, a.xz);
+        blendingWeight /= dot(blendingWeight, float2(1.0, 1.0));
+
+        // Calculate the texture coordinates:
+        float4 blendingCoord = mad(blendingOffset, float4(SMAA_RT_METRICS.xy, -SMAA_RT_METRICS.xy), texcoord.xyxy);
+
+        // We exploit bilinear filtering to mix current pixel with the chosen
+        // neighbor:
+        float4 color = blendingWeight.x * SMAASampleLevelZero(colorTex, blendingCoord.xy);
+        color += blendingWeight.y * SMAASampleLevelZero(colorTex, blendingCoord.zw);
+
+        #if SMAA_REPROJECTION
+        // Antialias velocity for proper reprojection in a later stage:
+        float2 velocity = blendingWeight.x * SMAA_DECODE_VELOCITY(SMAASampleLevelZero(velocityTex, blendingCoord.xy));
+        velocity += blendingWeight.y * SMAA_DECODE_VELOCITY(SMAASampleLevelZero(velocityTex, blendingCoord.zw));
+
+        // Pack velocity into the alpha channel:
+        color.a = sqrt(5.0 * length(velocity));
+        #endif  // SMAA_REPROJECTION
+
+        return color;
+    }
+}
+
+void main() {
+    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 image_size = imageSize(outputImage);
+
+    if (pixel_coord.x >= image_size.x || pixel_coord.y >= image_size.y) {
+        return;
+    }
+
+    vec4 outColor = SMAANeighborhoodBlendingCS(pixel_coord);
+
+    imageStore(outputImage, pixel_coord, outColor);
+}

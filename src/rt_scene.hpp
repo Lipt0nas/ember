@@ -9,6 +9,10 @@ struct Material {
     uint32_t albedo_index;
     uint32_t normals_index;
     uint32_t material_index;
+    uint32_t occlusion_index;
+
+    glm::vec3 emissive_color;
+    uint32_t  emissive_index;
 };
 
 // TODO: move this out
@@ -67,6 +71,10 @@ struct RTScene {
 
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR  rt_properties;
     VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features;
+
+    // TODO: Dunno about this one
+    Buffer instance_buffer;
+    Buffer scratch_buffer;
 };
 
 bool is_mesh_same(const Mesh& m1, const Mesh& m2);
@@ -83,6 +91,16 @@ RTScene create_rt_scene(
     const std::vector<MeshInstance>& mesh_instances,
     VkDeviceAddress                  global_vertex_buffer_address,
     VkDeviceAddress                  global_index_buffer_address
+);
+
+// NOTE: does not handle updates to BLAS, and is probably horribly inneficient
+void rebuild_tlas(
+    const RTScene&                   scene,
+    VkDevice                         device,
+    VmaAllocator                     allocator,
+    VkCommandBuffer                  command_buffer,
+    const std::vector<Mesh>&         meshes,
+    const std::vector<MeshInstance>& mesh_instances
 );
 
 void destroy_rt_scene(const RTScene& scene, VkDevice device, VmaAllocator allocator);

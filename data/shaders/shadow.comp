@@ -1,0 +1,104 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_ray_query: require
+
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant, std430) uniform pc {
+    vec3 light_direction;
+    int enable_ao;
+
+    vec3 light_color;
+    float light_intensity;
+
+    vec3 grid_origin;
+    float probe_spacing;
+
+    ivec3 probe_counts;
+    int texels_per_probe;
+
+    int probes_per_row;
+    int probes_per_col;
+    int ao_only;
+
+    int frame_index;
+
+    vec3 camera_pos;
+    int full_gi_shading;
+} push;
+
+layout(set = 0, binding = 0, r8) uniform image2D out_shadow;
+
+layout(set = 0, binding = 1) uniform sampler2D normal_texture;
+layout(set = 0, binding = 2) uniform sampler2D depth_texture;
+layout(set = 0, binding = 3) uniform accelerationStructureEXT top_level_as;
+
+layout(set = 1, binding = 0) uniform UBO {
+    SceneUBO scene;
+};
+
+layout(scalar, set = 2, binding = 0) readonly buffer DrawDataBuffer {
+    DrawData draw_data[];
+} uniforms;
+
+layout(scalar, set = 3, binding = 0) readonly buffer IndexBuffer {
+    uint indices[];
+} global_indices;
+
+layout(scalar, set = 3, binding = 1) readonly buffer VertexBuffer {
+    Vertex vertices[];
+} global_vertices;
+
+layout(set = 4, binding = 0) uniform sampler2D textures[];
+
+bool trace_shadow_ray(vec3 wpos, vec3 dir, uint ray_flags) {
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, top_level_as, ray_flags, 0xff, wpos, 0.001, dir, 100000);
+    rayQueryProceedEXT(query);
+
+    return rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+void main() {
+    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
+    pixel_coord.x *= 2;
+    pixel_coord.x += (pixel_coord.y ^ 1) & 1;
+
+    ivec2 image_size = imageSize(out_shadow);
+
+    if (pixel_coord.x >= image_size.x || pixel_coord.y >= image_size.y) {
+        return;
+    }
+
+    vec2 uv = (vec2(pixel_coord) + 0.5) / vec2(image_size);
+
+    float depth = texture(depth_texture, uv).r;
+
+    if (depth == 0.0) {
+        imageStore(out_shadow, pixel_coord, vec4(0.0, 0, 0, 0));
+        return;
+    }
+
+    vec3 normal = texture(normal_texture, uv).rgb;
+    vec3 dir = normalize(-push.light_direction);
+
+    float NdotL = max(dot(normal, dir), 0.0);
+
+    if (NdotL <= 0.0) {
+        imageStore(out_shadow, pixel_coord, vec4(0, 0, 0, 0));
+        return;
+    }
+
+    vec3 world_pos = reconstruct_world_position(uv, depth, scene.inverse_view_proj);
+
+    float shadow = trace_shadow_ray(world_pos, dir, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT) ? 0.0 : 1.0;
+
+    imageStore(out_shadow, pixel_coord, vec4(shadow, 0, 0, 0));
+}

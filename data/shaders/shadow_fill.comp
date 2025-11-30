@@ -1,0 +1,52 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, r8) uniform image2D out_shadow;
+
+layout(set = 0, binding = 1) uniform sampler2D depth_texture;
+
+void main() {
+    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
+    pixel_coord.x *= 2;
+    pixel_coord.x += ~(pixel_coord.y ^ 1) & 1;
+
+    ivec2 image_size = imageSize(out_shadow);
+
+    if (pixel_coord.x >= image_size.x || pixel_coord.y >= image_size.y) {
+        return;
+    }
+
+    float depth = texelFetch(depth_texture, pixel_coord, 0).r;
+
+    if (depth <= 0.0) {
+        return;
+    }
+
+    vec4 depths = vec4(
+            texelFetch(depth_texture, pixel_coord + ivec2(-1, 0), 0).r,
+            texelFetch(depth_texture, pixel_coord + ivec2(1, 0), 0).r,
+            texelFetch(depth_texture, pixel_coord + ivec2(0, -1), 0).r,
+            texelFetch(depth_texture, pixel_coord + ivec2(0, 1), 0).r
+        );
+
+    vec4 shadows = vec4(
+            imageLoad(out_shadow, pixel_coord + ivec2(-1, 0)).r,
+            imageLoad(out_shadow, pixel_coord + ivec2(1, 0)).r,
+            imageLoad(out_shadow, pixel_coord + ivec2(0, -1)).r,
+            imageLoad(out_shadow, pixel_coord + ivec2(0, 1)).r
+        );
+
+    vec4 weights = exp2(-abs(depths / depth - 1) * 20);
+
+    float shadow = dot(weights, shadows) / (dot(weights, vec4(1)) + 1e-2);
+
+    imageStore(out_shadow, pixel_coord, vec4(shadow, 0, 0, 0));
+}

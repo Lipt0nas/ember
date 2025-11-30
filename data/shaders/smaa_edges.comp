@@ -1,0 +1,167 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rg8) uniform image2D edgesTex;
+
+layout(set = 0, binding = 1) uniform sampler2D colorTex;
+
+layout(push_constant, std430) uniform pc {
+    vec4 bufferSize;
+};
+
+#define SMAA_RT_METRICS bufferSize
+
+#define mad(a, b, c) (a * b + c)
+#define API_V_DIR(v) (v)
+
+#define SMAA_PRESET_ULTRA
+
+#if defined(SMAA_PRESET_LOW)
+
+#define SMAA_THRESHOLD 0.15
+#define SMAA_MAX_SEARCH_STEPS 4
+#define SMAA_DISABLE_DIAG_DETECTION
+#define SMAA_DISABLE_CORNER_DETECTION
+
+#elif defined(SMAA_PRESET_MEDIUM)
+
+#define SMAA_THRESHOLD 0.1
+#define SMAA_MAX_SEARCH_STEPS 8
+#define SMAA_DISABLE_DIAG_DETECTION
+#define SMAA_DISABLE_CORNER_DETECTION
+
+#elif defined(SMAA_PRESET_HIGH)
+
+#define SMAA_THRESHOLD 0.1
+#define SMAA_MAX_SEARCH_STEPS 16
+#define SMAA_MAX_SEARCH_STEPS_DIAG 8
+#define SMAA_CORNER_ROUNDING 25
+
+#elif defined(SMAA_PRESET_ULTRA)
+
+#define SMAA_THRESHOLD 0.05
+#define SMAA_MAX_SEARCH_STEPS 32
+#define SMAA_MAX_SEARCH_STEPS_DIAG 16
+#define SMAA_CORNER_ROUNDING 25
+
+#endif  // SMAA_PRESET_*
+
+#define SMAATexture2D(tex) sampler2D tex
+#define SMAAWriteImage2D(tex) writeonly image2D tex
+#define SMAATexturePass2D(tex) tex
+#define SMAASampleLevelZero(tex, coord) textureLod(tex, coord, 0.0)
+#define SMAASampleLevelZeroPoint(tex, coord) textureLod(tex, coord, 0.0)
+#define SMAASampleLevelZeroOffset(tex, coord, offset) textureLodOffset(tex, coord, 0.0, offset)
+#define SMAASample(tex, coord) texture(tex, coord)
+#define SMAASamplePoint(tex, coord) texture(tex, coord)
+#define SMAASampleOffset(tex, coord, offset) texture(tex, coord, offset)
+
+#define SMAA_LOCAL_CONTRAST_ADAPTATION_FACTOR 2.0
+#define SMAATexture2DMS2(tex) sampler2DMS tex
+#define SMAALoadMS(tex, pos, sample) texelFetch(tex, pos, sample)
+#define SMAALoad(tex, pos) texelFetch(sampler2D(tex, PointSampler), pos, 0)
+#define SMAAImageStore(tex, pos, value) imageStore(tex, pos, value)
+#define float2 vec2
+#define float3 vec3
+#define float4 vec4
+#define int2 ivec2
+#define int3 ivec3
+#define int4 ivec4
+#define bool2 bvec2
+#define bool3 bvec3
+#define bool4 bvec4
+
+/**
+ * Color Edge Detection
+ *
+ * IMPORTANT NOTICE: color edge detection requires gamma-corrected colors, and
+ * thus 'colorTex' should be a non-sRGB texture.
+ */
+void SMAAColorEdgeDetectionCS(int2 coord) {
+    float2 texcoord = coord.xy;
+    // account for pixel center
+    texcoord += float2(0.5, 0.5);
+    texcoord *= SMAA_RT_METRICS.xy;
+
+    float4 offset[3];
+    offset[0] = mad(SMAA_RT_METRICS.xyxy, float4(-1.0, 0.0, 0.0, API_V_DIR(-1.0)), texcoord.xyxy);
+    offset[1] = mad(SMAA_RT_METRICS.xyxy, float4(1.0, 0.0, 0.0, API_V_DIR(1.0)), texcoord.xyxy);
+    offset[2] = mad(SMAA_RT_METRICS.xyxy, float4(-2.0, 0.0, 0.0, API_V_DIR(-2.0)), texcoord.xyxy);
+
+    // Calculate the threshold:
+    #if SMAA_PREDICATION
+    float2 threshold = SMAACalculatePredicatedThreshold(texcoord, offset[0], predicationTex);
+    #else  // SMAA_PREDICATION
+    float2 threshold = float2(SMAA_THRESHOLD, SMAA_THRESHOLD);
+    #endif  // SMAA_PREDICATION
+
+    // Calculate color deltas:
+    float4 delta;
+    float3 C = SMAASamplePoint(colorTex, texcoord).rgb;
+
+    float3 Cleft = SMAASamplePoint(colorTex, offset[0].xy).rgb;
+    float3 t = abs(C - Cleft);
+    delta.x = max(max(t.r, t.g), t.b);
+
+    float3 Ctop = SMAASamplePoint(colorTex, offset[0].zw).rgb;
+    t = abs(C - Ctop);
+    delta.y = max(max(t.r, t.g), t.b);
+
+    // We do the usual threshold:
+    float2 edges = step(threshold, delta.xy);
+
+    // Then discard if there is no edge:
+    if (dot(edges, float2(1.0, 1.0)) == 0.0) {
+        SMAAImageStore(edgesTex, coord, float4(0.0, 0.0, 0.0, 0.0));
+    }
+
+    // Calculate right and bottom deltas:
+    float3 Cright = SMAASamplePoint(colorTex, offset[1].xy).rgb;
+    t = abs(C - Cright);
+    delta.z = max(max(t.r, t.g), t.b);
+
+    float3 Cbottom = SMAASamplePoint(colorTex, offset[1].zw).rgb;
+    t = abs(C - Cbottom);
+    delta.w = max(max(t.r, t.g), t.b);
+
+    // Calculate the maximum delta in the direct neighborhood:
+    float2 maxDelta = max(delta.xy, delta.zw);
+
+    // Calculate left-left and top-top deltas:
+    float3 Cleftleft = SMAASamplePoint(colorTex, offset[2].xy).rgb;
+    t = abs(C - Cleftleft);
+    delta.z = max(max(t.r, t.g), t.b);
+
+    float3 Ctoptop = SMAASamplePoint(colorTex, offset[2].zw).rgb;
+    t = abs(C - Ctoptop);
+    delta.w = max(max(t.r, t.g), t.b);
+
+    // Calculate the final maximum delta:
+    maxDelta = max(maxDelta.xy, delta.zw);
+    float finalDelta = max(maxDelta.x, maxDelta.y);
+
+    // Local contrast adaptation:
+    edges.xy *= step(finalDelta, SMAA_LOCAL_CONTRAST_ADAPTATION_FACTOR * delta.xy);
+
+    SMAAImageStore(edgesTex, coord, float4(edges.xy, 0.0, 0.0));
+}
+
+void main() {
+    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 image_size = imageSize(edgesTex);
+
+    if (pixel_coord.x >= image_size.x || pixel_coord.y >= image_size.y) {
+        return;
+    }
+
+    SMAAColorEdgeDetectionCS(pixel_coord);
+}

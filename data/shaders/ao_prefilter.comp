@@ -1,0 +1,134 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, r32f) uniform writeonly image2D out_ao0;
+layout(set = 0, binding = 1, r32f) uniform writeonly image2D out_ao1;
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D out_ao2;
+layout(set = 0, binding = 3, r32f) uniform writeonly image2D out_ao3;
+layout(set = 0, binding = 4, r32f) uniform writeonly image2D out_ao4;
+
+layout(set = 0, binding = 5) uniform sampler2D depth_texture;
+
+layout(set = 1, binding = 0) uniform UBO {
+    SceneUBO scene;
+};
+
+layout(push_constant, std430) uniform pc {
+    vec2 camera_tan_half_fov;
+    vec2 ndc_to_view_mul;
+    vec2 ndc_to_view_add;
+    vec2 ndc_to_view_mul_x_pixel_size;
+    vec2 camera_near_far;
+
+    uint final_pass;
+} push;
+
+float XeGTAO_clamp_depth(float depth) {
+    return clamp(depth, push.camera_near_far.x, push.camera_near_far.y);
+}
+
+float XeGTAO_screen_space_to_view_space_depth(float screen_depth) {
+    return push.camera_near_far.x / screen_depth;
+}
+
+float XeGTAO_depth_mip_filter(float depth0, float depth1, float depth2, float depth3) {
+    float max_depth = max(max(depth0, depth1), max(depth2, depth3));
+
+    const float depth_range_scale_factor = 0.75;
+
+    const float effect_radius = depth_range_scale_factor * float(EFFECT_RADIUS) * float(XE_GTAO_DEFAULT_RADIUS_MULTIPLIER);
+    const float falloff_range = float(XE_GTAO_DEFAULT_FALLOFF_RANGE) * effect_radius;
+    const float falloff_from = effect_radius * (float(1) - float(EFFECT_FALLOFF_RANGE));
+
+    const float falloff_mul = float(-1.0) / (falloff_range);
+    const float falloff_add = falloff_from / (falloff_range) + float(1.0);
+
+    float weight0 = clamp((max_depth - depth0) * falloff_mul + falloff_add, 0.0, 1.0);
+    float weight1 = clamp((max_depth - depth1) * falloff_mul + falloff_add, 0.0, 1.0);
+    float weight2 = clamp((max_depth - depth2) * falloff_mul + falloff_add, 0.0, 1.0);
+    float weight3 = clamp((max_depth - depth3) * falloff_mul + falloff_add, 0.0, 1.0);
+
+    float weight_sum = weight0 + weight1 + weight2 + weight3;
+
+    return (weight0 * depth0 + weight1 * depth1 + weight2 * depth2 + weight3 * depth3) / weight_sum;
+}
+
+shared float scratch_depths[8][8];
+
+void main() {
+    uvec2 dispatch_thread_id = uvec2(gl_GlobalInvocationID.xy);
+    uvec2 group_thread_id = uvec2(gl_LocalInvocationID.xy);
+
+    ivec2 image_size = imageSize(out_ao0);
+    vec2 viewport_pixel_size = 1.0 / vec2(image_size);
+
+    if (dispatch_thread_id.x >= image_size.x || dispatch_thread_id.y >= image_size.y) {
+        return;
+    }
+
+    uvec2 base_coord = uvec2(dispatch_thread_id);
+    uvec2 pix_coord = base_coord * 2u;
+
+    vec4 depths4 = textureGatherOffset(depth_texture, vec2(pix_coord) * viewport_pixel_size, ivec2(1, 1), 0);
+
+    float depth0 = XeGTAO_clamp_depth(XeGTAO_screen_space_to_view_space_depth(depths4.w));
+    float depth1 = XeGTAO_clamp_depth(XeGTAO_screen_space_to_view_space_depth(depths4.z));
+    float depth2 = XeGTAO_clamp_depth(XeGTAO_screen_space_to_view_space_depth(depths4.x));
+    float depth3 = XeGTAO_clamp_depth(XeGTAO_screen_space_to_view_space_depth(depths4.y));
+
+    imageStore(out_ao0, ivec2(pix_coord + uvec2(0, 0)), vec4(depth0));
+    imageStore(out_ao0, ivec2(pix_coord + uvec2(1, 0)), vec4(depth1));
+    imageStore(out_ao0, ivec2(pix_coord + uvec2(0, 1)), vec4(depth2));
+    imageStore(out_ao0, ivec2(pix_coord + uvec2(1, 1)), vec4(depth3));
+
+    float dm1 = XeGTAO_depth_mip_filter(depth0, depth1, depth2, depth3);
+    imageStore(out_ao1, ivec2(base_coord), vec4(dm1));
+    scratch_depths[group_thread_id.x][group_thread_id.y] = dm1;
+
+    barrier();
+
+    if (all(equal(group_thread_id.xy % uvec2(2), uvec2(0)))) {
+        float inTL = scratch_depths[group_thread_id.x + 0][group_thread_id.y + 0];
+        float inTR = scratch_depths[group_thread_id.x + 1][group_thread_id.y + 0];
+        float inBL = scratch_depths[group_thread_id.x + 0][group_thread_id.y + 1];
+        float inBR = scratch_depths[group_thread_id.x + 1][group_thread_id.y + 1];
+
+        float dm2 = XeGTAO_depth_mip_filter(inTL, inTR, inBL, inBR);
+        imageStore(out_ao2, ivec2(base_coord / 2), vec4(dm2));
+        scratch_depths[group_thread_id.x][group_thread_id.y] = dm2;
+    }
+
+    barrier();
+
+    if (all(equal(group_thread_id.xy % uvec2(4), uvec2(0)))) {
+        float inTL = scratch_depths[group_thread_id.x + 0][group_thread_id.y + 0];
+        float inTR = scratch_depths[group_thread_id.x + 2][group_thread_id.y + 0];
+        float inBL = scratch_depths[group_thread_id.x + 0][group_thread_id.y + 2];
+        float inBR = scratch_depths[group_thread_id.x + 2][group_thread_id.y + 2];
+
+        float dm3 = XeGTAO_depth_mip_filter(inTL, inTR, inBL, inBR);
+        imageStore(out_ao3, ivec2(base_coord / 4), vec4(dm3));
+        scratch_depths[group_thread_id.x][group_thread_id.y] = dm3;
+    }
+
+    barrier();
+
+    if (all(equal(group_thread_id.xy % uvec2(8), uvec2(0)))) {
+        float inTL = scratch_depths[group_thread_id.x + 0][group_thread_id.y + 0];
+        float inTR = scratch_depths[group_thread_id.x + 4][group_thread_id.y + 0];
+        float inBL = scratch_depths[group_thread_id.x + 0][group_thread_id.y + 4];
+        float inBR = scratch_depths[group_thread_id.x + 4][group_thread_id.y + 4];
+
+        float dm4 = XeGTAO_depth_mip_filter(inTL, inTR, inBL, inBR);
+        imageStore(out_ao4, ivec2(base_coord / 8), vec4(dm4));
+    }
+}

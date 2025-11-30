@@ -13,6 +13,7 @@ struct Image {
     uint32_t height;
 
     uint32_t levels;
+    uint32_t layers;
 
     VkFormat           format;
     VkImageAspectFlags aspect;
@@ -56,6 +57,14 @@ void buffer_pipeline_barrier(
     VkDeviceSize          size
 );
 
+void memory_pipeline_barrier(
+    VkCommandBuffer       command_buffer,
+    VkPipelineStageFlags2 src_stage_mask,
+    VkAccessFlags2        src_access_mask,
+    VkPipelineStageFlags2 dst_stage_mask,
+    VkAccessFlags2        dst_access_mask
+);
+
 Image load_image(
     const std::filesystem::path& path,
     VkFormat                     format,
@@ -68,6 +77,17 @@ Image load_image(
 );
 
 Image create_image(
+    VkFormat              format,
+    uint32_t              width,
+    uint32_t              height,
+    VkImageUsageFlags     usage,
+    VkImageAspectFlagBits aspect,
+    bool                  generate_mipmaps,
+    VmaAllocator          allocator,
+    VkDevice              device
+);
+
+Image create_cubemap_image(
     VkFormat              format,
     uint32_t              width,
     uint32_t              height,

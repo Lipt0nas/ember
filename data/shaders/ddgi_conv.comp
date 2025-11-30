@@ -1,0 +1,135 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_ray_query: require
+
+#include "common.glsl"
+
+#define PI 3.1415926538
+
+layout(push_constant, std430) uniform pc {
+    vec3 light_direction;
+    int enable_ao;
+
+    vec3 light_color;
+    float light_intensity;
+
+    vec3 grid_origin;
+    float probe_spacing;
+
+    ivec3 probe_counts;
+    int texels_per_probe;
+
+    int probes_per_row;
+    int probes_per_col;
+    int ao_only;
+
+    int frame_index;
+} push;
+
+struct DDGIRay {
+    vec3 direction;
+    float distance;
+
+    vec3 radiance;
+    float distance_squared;
+};
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 1, rgba16f) uniform image2D out_irradiance;
+layout(set = 0, binding = 2, rgba16f) uniform image2D irradiance_history;
+
+layout(set = 0, binding = 3, rg16f) uniform image2D out_depth;
+layout(set = 0, binding = 4, rg16f) uniform image2D depth_history;
+
+layout(set = 0, binding = 0, std430) readonly buffer RayBuffer {
+    DDGIRay rays[];
+} ray_buffer;
+
+void main() {
+    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 atlas_size = imageSize(out_irradiance);
+
+    if (pixel_coord.x >= atlas_size.x || pixel_coord.y >= atlas_size.y) {
+        return;
+    }
+
+    const int tile_size = push.texels_per_probe + 2; // e.g., 34 for 32x32 interior
+
+    // Determine which probe this texel belongs to
+    ivec2 probe_coord = pixel_coord / tile_size;
+    int linear_probe_index = probe_coord.y * push.probes_per_row + probe_coord.x;
+
+    // Check if this is a valid probe
+    int total_probes = push.probe_counts.x * push.probe_counts.y * push.probe_counts.z;
+    if (linear_probe_index >= total_probes) {
+        return;
+    }
+
+    // Get texel position within the tile (including borders)
+    ivec2 texel_in_tile = pixel_coord % tile_size;
+
+    // Skip border texels - borders are handled by separate border update pass
+    if (texel_in_tile.x == 0 || texel_in_tile.x == tile_size - 1 ||
+            texel_in_tile.y == 0 || texel_in_tile.y == tile_size - 1) {
+        return; // Don't write to borders in convolution
+    }
+
+    // Texel position within the interior (0 to texels_per_probe-1)
+    ivec2 texel_in_probe = texel_in_tile - ivec2(1, 1);
+
+    // Get the direction for this irradiance texel
+    vec2 oct_coord = (vec2(texel_in_probe) + 0.5) / float(push.texels_per_probe);
+    vec3 texel_normal = oct_decode(oct_coord);
+
+    // Accumulate irradiance from all rays
+    vec3 irradiance = vec3(0.0);
+    float total_weight = 0.0;
+
+    int rays_per_probe = 256;
+    uint ray_offset = linear_probe_index * rays_per_probe;
+
+    float mean_distance = 0.0;
+    float mean_distance_squared = 0.0;
+
+    for (uint i = 0; i < rays_per_probe; i++) {
+        DDGIRay ray = ray_buffer.rays[ray_offset + i];
+
+        if (ray.distance < 0.0f) {
+            continue;
+        }
+
+        // Cosine weighting
+        float weight = max(0.0, dot(ray.direction, texel_normal));
+
+        irradiance += ray.radiance * weight;
+        mean_distance += ray.distance * weight;
+        mean_distance_squared += ray.distance_squared * weight;
+        total_weight += weight;
+    }
+
+    if (total_weight > 0.0001) {
+        irradiance /= total_weight;
+        mean_distance /= total_weight;
+        mean_distance_squared /= total_weight;
+    }
+
+    // Store with perception encoding
+    irradiance = pow(irradiance, vec3(1.0 / 2.2));
+
+    // Temporal filtering
+    vec3 old_irradiance = imageLoad(irradiance_history, pixel_coord).rgb;
+    irradiance = mix(irradiance, old_irradiance, 0.95);
+
+    vec2 old_depth = imageLoad(depth_history, pixel_coord).rg;
+    mean_distance = mix(mean_distance, old_depth.r, 0.97);
+    mean_distance_squared = mix(mean_distance_squared, old_depth.g, 0.97);
+
+    imageStore(out_depth, pixel_coord, vec4(mean_distance, mean_distance_squared, 0, 0));
+    imageStore(out_irradiance, pixel_coord, vec4(irradiance, 1.0));
+}

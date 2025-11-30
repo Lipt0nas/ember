@@ -7,13 +7,16 @@ layout(location = 2) in vec3 in_meshlet_color;
 layout(location = 3) flat in uint in_albedo_index;
 layout(location = 4) flat in uint in_normals_index;
 layout(location = 5) flat in uint in_material_index;
-layout(location = 6) in vec3 in_world_pos;
+layout(location = 6) flat in uint in_occlusion_index;
+layout(location = 7) in vec3 in_world_pos;
+layout(location = 8) in vec3 in_emission;
 
 layout(set = 4, binding = 0) uniform sampler2D textures[];
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_material;
+layout(location = 3) out vec4 out_emission;
 
 vec3 world_normal(vec3 normal_map, vec3 vertex_normal, vec3 world_pos, vec2 uv) {
     vec3 dp1 = dFdx(world_pos);
@@ -35,11 +38,17 @@ vec3 world_normal(vec3 normal_map, vec3 vertex_normal, vec3 world_pos, vec2 uv) 
 }
 
 void main() {
-    vec3 albedo = texture(textures[nonuniformEXT(in_albedo_index)], in_uv).rgb;
+    vec4 albedo = texture(textures[nonuniformEXT(in_albedo_index)], in_uv).rgba;
+    if (albedo.a < 0.2) {
+        discard;
+    }
+
     vec3 normal = texture(textures[nonuniformEXT(in_normals_index)], in_uv).rgb * 2.0 - 1.0;
     vec3 material = texture(textures[nonuniformEXT(in_material_index)], in_uv).rgb;
+    float occlusion = texture(textures[nonuniformEXT(in_occlusion_index)], in_uv).r;
 
-    out_color = vec4(albedo, 1.0);
+    out_color = vec4(albedo.rgb, occlusion);
     out_normal = vec4(world_normal(normal, in_normal, in_world_pos, in_uv), 1.0);
     out_material = vec4(material, 1.0);
+    out_emission = vec4(in_emission, 1.0);
 }

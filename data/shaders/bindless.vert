@@ -9,7 +9,8 @@ layout(location = 2) out vec3 out_meshlet_color;
 layout(location = 3) flat out uint out_albedo_index;
 layout(location = 4) flat out uint out_normals_index;
 layout(location = 5) flat out uint out_material_index;
-layout(location = 6) out vec3 out_world_pos;
+layout(location = 6) flat out uint out_occlusion_index;
+layout(location = 7) out vec3 out_world_pos;
 
 #include "common.glsl"
 
@@ -68,5 +69,6 @@ void main() {
     out_albedo_index = draw.albedo_index;
     out_normals_index = draw.normals_index;
     out_material_index = draw.material_index;
+    out_occlusion_index = draw.occlusion_index;
     out_world_pos = world_pos.xyz;
 }

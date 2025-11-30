@@ -98,6 +98,14 @@ Pipeline create_graphics_pipeline(
     VkDescriptorSetLayout                additional_set      = VK_NULL_HANDLE
 );
 
+Pipeline create_debug_render_pipeline(
+    VkDevice                     device,
+    const std::vector<Shader>&   shaders,
+    const std::vector<VkFormat>& color_attachment_formats,
+    VkFormat                     depth_format,
+    uint32_t                     push_constants_size
+);
+
 Pipeline create_compute_pipeline(
     VkDevice                             device,
     const Shader&                        shader,
