@@ -8,48 +8,23 @@
 #extension GL_EXT_ray_query: require
 
 #include "common.glsl"
-
-#define PI 3.1415926538
-
-layout(push_constant, std430) uniform pc {
-    vec3 light_direction;
-    int enable_ao;
-
-    vec3 light_color;
-    float light_intensity;
-
-    vec3 grid_origin;
-    float probe_spacing;
-
-    ivec3 probe_counts;
-    int texels_per_probe;
-
-    int probes_per_row;
-    int probes_per_col;
-    int ao_only;
-
-    int frame_index;
-} push;
-
-struct DDGIRay {
-    vec3 direction;
-    float distance;
-
-    vec3 radiance;
-    float distance_squared;
-};
+#include "ddgi_common.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
-
-layout(set = 0, binding = 1, rgba16f) uniform image2D out_irradiance;
-layout(set = 0, binding = 2, rgba16f) uniform image2D irradiance_history;
-
-layout(set = 0, binding = 3, rg16f) uniform image2D out_depth;
-layout(set = 0, binding = 4, rg16f) uniform image2D depth_history;
 
 layout(set = 0, binding = 0, std430) readonly buffer RayBuffer {
     DDGIRay rays[];
 } ray_buffer;
+
+layout(set = 0, binding = 1, std430) readonly uniform LightingData {
+    LightingUBO lighting;
+};
+
+layout(set = 0, binding = 2, rgba16f) uniform image2D out_irradiance;
+layout(set = 0, binding = 3, rgba16f) uniform image2D irradiance_history;
+
+layout(set = 0, binding = 4, rg16f) uniform image2D out_depth;
+layout(set = 0, binding = 5, rg16f) uniform image2D depth_history;
 
 void main() {
     ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
@@ -59,14 +34,14 @@ void main() {
         return;
     }
 
-    const int tile_size = push.texels_per_probe + 2; // e.g., 34 for 32x32 interior
+    const int tile_size = lighting.texels_per_probe + 2; // e.g., 34 for 32x32 interior
 
     // Determine which probe this texel belongs to
     ivec2 probe_coord = pixel_coord / tile_size;
-    int linear_probe_index = probe_coord.y * push.probes_per_row + probe_coord.x;
+    int linear_probe_index = probe_coord.y * lighting.probes_per_row + probe_coord.x;
 
     // Check if this is a valid probe
-    int total_probes = push.probe_counts.x * push.probe_counts.y * push.probe_counts.z;
+    int total_probes = lighting.probe_counts.x * lighting.probe_counts.y * lighting.probe_counts.z;
     if (linear_probe_index >= total_probes) {
         return;
     }
@@ -84,23 +59,33 @@ void main() {
     ivec2 texel_in_probe = texel_in_tile - ivec2(1, 1);
 
     // Get the direction for this irradiance texel
-    vec2 oct_coord = (vec2(texel_in_probe) + 0.5) / float(push.texels_per_probe);
+    vec2 oct_coord = (vec2(texel_in_probe) + 0.5) / float(lighting.texels_per_probe);
     vec3 texel_normal = oct_decode(oct_coord);
 
     // Accumulate irradiance from all rays
     vec3 irradiance = vec3(0.0);
     float total_weight = 0.0;
 
-    int rays_per_probe = 256;
-    uint ray_offset = linear_probe_index * rays_per_probe;
+    uint ray_offset = linear_probe_index * lighting.rays_per_probe;
 
     float mean_distance = 0.0;
     float mean_distance_squared = 0.0;
 
-    for (uint i = 0; i < rays_per_probe; i++) {
+    int backface_hits = 0;
+    float backface_threshold = 0.1;
+
+    for (uint i = 0; i < lighting.rays_per_probe; i++) {
         DDGIRay ray = ray_buffer.rays[ray_offset + i];
 
         if (ray.distance < 0.0f) {
+            backface_hits++;
+
+            if (backface_hits >= lighting.rays_per_probe * backface_threshold) {
+                // imageStore(out_depth, pixel_coord, vec4(0, 0, 0, 0));
+                // imageStore(out_irradiance, pixel_coord, vec4(0, 0, 0, 1.0));
+                return;
+            }
+
             continue;
         }
 

@@ -12,7 +12,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0, r32f) uniform writeonly image2D out_ao;
 layout(set = 0, binding = 1, r8) uniform writeonly image2D out_edges;
-layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D out_bent_normals;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D out_bent_normals;
 
 layout(set = 0, binding = 3) uniform sampler2D depth_texture;
 layout(set = 0, binding = 4) uniform sampler2D g_normals_texture;
@@ -109,11 +109,8 @@ float XeGTAO_fast_sqrt(float x) {
 
 // input [-1, 1] and output [0, PI], from https://seblagarde.wordpress.com/2014/12/01/inverse-trigonometric-functions-gpu-optimization-for-amd-gcn-architecture/
 float XeGTAO_fast_acos(float inX) {
-    const float PI = 3.141593;
-    const float HALF_PI = 1.570796;
-
     float x = abs(inX);
-    float res = -0.156583 * x + HALF_PI;
+    float res = -0.156583 * x + PI_HALF;
 
     res *= XeGTAO_fast_sqrt(1.0 - x);
 
@@ -253,7 +250,7 @@ void main() {
     for (float slice = 0; slice < XE_GTAO_DEFAULT_SLICE_COUNT; slice++) {
         float slice_k = (slice + noise_slice) / XE_GTAO_DEFAULT_SLICE_COUNT;
 
-        float phi = slice_k * XE_GTAO_PI;
+        float phi = slice_k * PI;
         float cos_phi = cos(phi);
         float sin_phi = sin(phi);
         vec2 omega = vec2(cos_phi, -sin_phi);
@@ -273,8 +270,8 @@ void main() {
 
         float n = sign_norm * XeGTAO_fast_acos(cos_norm);
 
-        const float low_horizon_cos_0 = cos(n + XE_GTAO_PI_HALF);
-        const float low_horizon_cos_1 = cos(n - XE_GTAO_PI_HALF);
+        const float low_horizon_cos_0 = cos(n + PI_HALF);
+        const float low_horizon_cos_1 = cos(n - PI_HALF);
 
         float horizon_cos_0 = low_horizon_cos_0;
         float horizon_cos_1 = low_horizon_cos_1;

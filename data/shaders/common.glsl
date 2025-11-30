@@ -9,7 +9,7 @@
 #define XE_GTAO_DEFAULT_SAMPLE_DISTRIBUTION_POWER   2.0         // Distribution of samples around the hemisphere (higher = more focused around normal)
 #define XE_GTAO_DEFAULT_THIN_OCCLUDER_COMPENSATION  0.0         // Reduces artifacts from thin occluders (0 = off, higher = more compensation)
 #define XE_GTAO_DEFAULT_FALLOFF_RANGE               0.615       // Distance falloff range as percentage of effectRadius (0.615 is optimal)
-#define XE_GTAO_DEFAULT_FINAL_VALUE_POWER           2.2         // Power curve for final AO value (for aesthetics)
+#define XE_GTAO_DEFAULT_FINAL_VALUE_POWER           1.2         // Power curve for final AO value (for aesthetics)
 #define XE_GTAO_DEFAULT_DEPTH_MIP_SAMPLING_OFFSET   3.30        // Controls which MIP level to use based on sample distance
 
 #define XE_GTAO_DEFAULT_SLICE_COUNT                 6           // Number of slices around the hemisphere (2-9 typical, 3 is good balance)
@@ -18,8 +18,8 @@
 #define XE_GTAO_DEPTH_MIP_LEVELS 5
 #define XE_GTAO_MIP_SAMPLING_OFFSET 3.3
 
-#define XE_GTAO_PI               	(3.1415926535897932384626433832795)
-#define XE_GTAO_PI_HALF             (1.5707963267948966192313216916398)
+#define PI               	(3.1415926535897932384626433832795)
+#define PI_HALF             (1.5707963267948966192313216916398)
 
 #define XE_GTAO_OCCLUSION_TERM_SCALE                    1.0
 
@@ -66,6 +66,26 @@ struct DrawData {
 
     vec3 emission_color;
     uint emissive_index;
+};
+
+struct LightingUBO {
+    vec4 light_direction;
+    vec4 light_color;
+
+    vec3 grid_origin;
+    float probe_spacing;
+
+    ivec3 probe_counts;
+    int texels_per_probe;
+
+    int probes_per_row;
+    int probes_per_col;
+
+    int depth_texels_per_probe;
+    int rays_per_probe;
+
+    vec3 camera_pos;
+    int frame_index;
 };
 
 struct Meshlet {
@@ -179,18 +199,6 @@ vec3 oct_decode(vec2 oct) {
     }
 
     return normalize(n);
-}
-
-ivec2 probe_index_to_atlas_coord(ivec3 probe_coords, ivec3 probe_counts, int probes_per_row) {
-    int linear_index = probe_coords.x +
-            probe_coords.z * probe_counts.x +
-            probe_coords.y * probe_counts.x * probe_counts.z;
-
-    return ivec2(linear_index % probes_per_row, linear_index / probes_per_row);
-}
-
-vec3 get_probe_world_position(ivec3 probe_coords, vec3 grid_origin, float probe_spacing) {
-    return grid_origin + vec3(probe_coords) * probe_spacing;
 }
 
 float gradient_noise(vec2 uv) {

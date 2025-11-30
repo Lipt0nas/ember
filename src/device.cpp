@@ -260,9 +260,10 @@ VkDevice create_device(
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
         .pNext = &vulkan_features_12,
     };
-    vulkan_features_13.dynamicRendering = VK_TRUE;
-    vulkan_features_13.synchronization2 = VK_TRUE;
-    vulkan_features_13.maintenance4     = VK_TRUE;
+    vulkan_features_13.dynamicRendering               = VK_TRUE;
+    vulkan_features_13.synchronization2               = VK_TRUE;
+    vulkan_features_13.maintenance4                   = VK_TRUE;
+    vulkan_features_13.shaderDemoteToHelperInvocation = VK_TRUE;
 
     VkPhysicalDeviceVulkan14Features enabled_features_14 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,

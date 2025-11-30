@@ -159,6 +159,27 @@ struct alignas(16) SceneUBO {
     float far_plane;
 };
 
+#define MAX_RAYS_PER_PROBE 256
+struct alignas(16) LightingUBO {
+    glm::vec4 light_direction;
+    glm::vec4 light_color;
+
+    glm::vec3 grid_origin;
+    float     probe_spacing;
+
+    glm::ivec3 probe_counts;
+    int        texels_per_probe;
+
+    int probes_per_row;
+    int probes_per_col;
+
+    int depth_texels_per_probe;
+    int rays_per_probe;
+
+    glm::vec3 camera_pos;
+    int       frame_index;
+};
+
 struct ShadowBlurConstants {
     glm::vec2 image_size;
     float     direction;
@@ -194,29 +215,6 @@ struct XeGTAOConstants {
     glm::vec2 camera_near_far;
 
     uint32_t final_pass;
-};
-
-struct LightpassPushConstants {
-    glm::vec3 light_direction;
-    uint32_t  enable_ao;
-
-    glm::vec3 light_color;
-    float     light_intensity;
-
-    glm::vec3 grid_origin;
-    float     probe_spacing;
-
-    glm::ivec3 probe_counts;
-    int        texels_per_probe;
-
-    int probes_per_row;
-    int probes_per_col;
-    int ao_only;
-
-    int frame_index;
-
-    glm::vec3 camera_pos;
-    int       full_gi_shading;
 };
 
 struct CompositePushConstants {
@@ -1395,36 +1393,35 @@ int main() {
         device
     );
 
-    bool                   visualize_probes = false;
-    LightpassPushConstants light_constants  = {
-         .light_direction  = glm::vec3(-0.2, -0.7, -1),
-         .enable_ao        = 1,
-         .light_color      = glm::vec3(1.0, 1.0, 1.0),
-         .light_intensity  = 10.0f,
-         .grid_origin      = {-15, -15, -15},
-         .probe_spacing    = 4.3f,
-         .probe_counts     = {32, 8, 32},
-         .texels_per_probe = 16,
-         .ao_only          = false,
-         .frame_index      = {},
-         .camera_pos       = {},
-         .full_gi_shading  = true,
+    bool        visualize_probes = false;
+    LightingUBO lighting_data    = {
+           .light_direction  = glm::vec4(-0.2f, -0.7f, -1.0f, 0.0f),
+           .light_color      = glm::vec4(1.0, 1.0, 1.0, 10.0f),
+           .grid_origin      = {-15, -15, -15},
+           .probe_spacing    = 5.0f,
+           .probe_counts     = {24, 8, 24},
+           .texels_per_probe = 16,
+           .camera_pos       = {},
+           .frame_index      = {},
     };
 
-    light_constants.grid_origin = {
-        (-light_constants.probe_spacing * 0.5f) *
-        glm::vec3(light_constants.probe_counts.x, 1.0, light_constants.probe_counts.z)
+    lighting_data.depth_texels_per_probe = 16;
+    lighting_data.rays_per_probe         = 196;
+
+    lighting_data.grid_origin = {
+        (-lighting_data.probe_spacing * 0.5f) *
+        glm::vec3(lighting_data.probe_counts.x, 1.0, lighting_data.probe_counts.z)
     };
 
-    int total_probes = light_constants.probe_counts.x * light_constants.probe_counts.y * light_constants.probe_counts.z;
+    int total_probes   = lighting_data.probe_counts.x * lighting_data.probe_counts.y * lighting_data.probe_counts.z;
     int probes_per_row = glm::ceil(std::sqrt(total_probes));
     int probes_per_col = glm::ceil((float)total_probes / probes_per_row);
 
-    int atlas_width  = probes_per_row * (light_constants.texels_per_probe + 2);
-    int atlas_height = probes_per_col * (light_constants.texels_per_probe + 2);
+    int atlas_width  = probes_per_row * (lighting_data.texels_per_probe + 2);
+    int atlas_height = probes_per_col * (lighting_data.texels_per_probe + 2);
 
-    light_constants.probes_per_row = probes_per_row;
-    light_constants.probes_per_col = probes_per_col;
+    lighting_data.probes_per_row = probes_per_row;
+    lighting_data.probes_per_col = probes_per_col;
 
     Image ddgi_depth_atlas = create_image(
         VK_FORMAT_R16G16_SFLOAT,
@@ -2464,12 +2461,14 @@ int main() {
         vma_allocator
     );
 
-    Buffer ddgi_ray_buffer = create_buffer(
-        1024 * 1024 * 64 * FRAMES_IN_FLIGHT,
+    uint32_t probe_count = lighting_data.probe_counts.x * lighting_data.probe_counts.y * lighting_data.probe_counts.z;
+    Buffer   ddgi_ray_buffer = create_buffer(
+        sizeof(DDGIRay) * probe_count * MAX_RAYS_PER_PROBE * FRAMES_IN_FLIGHT,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
+    spdlog::info("DDGI Ray buffer size: {}MB", ddgi_ray_buffer.size / 1024 / 1024);
 
     Buffer indirect_command_buffer = create_buffer(
         1024 * 1024 * 12 * FRAMES_IN_FLIGHT,
@@ -2503,6 +2502,14 @@ int main() {
 
     Buffer scene_ubo_buffer = create_buffer(
         aligned_size(sizeof(SceneUBO), physical_device_properties.limits.minUniformBufferOffsetAlignment) *
+            FRAMES_IN_FLIGHT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+
+    Buffer lighting_ubo_buffer = create_buffer(
+        aligned_size(sizeof(LightingUBO), physical_device_properties.limits.minUniformBufferOffsetAlignment) *
             FRAMES_IN_FLIGHT,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         vma_allocator,
@@ -2600,7 +2607,7 @@ int main() {
     std::vector<MeshInstance> mesh_instances;
 
     load_scene(
-        "data/models/probe_test.glb",
+        "data/models/street.glb",
         meshes,
         materials,
         mesh_instances,
@@ -3051,11 +3058,16 @@ int main() {
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                            .write_info = DescriptorInfo(
+                                lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                        },
                     }
             },
             scene_data_layout,
-        },
-        sizeof(LightpassPushConstants)
+        }
     );
     std::vector<VkDescriptorSet> light_descriptor_sets =
         allocate_descriptor_sets(device, descriptor_pool, light_pipeline);
@@ -3157,7 +3169,7 @@ int main() {
     std::vector<VkDescriptorSet> fxaa_descriptor_sets =
         allocate_descriptor_sets(device, descriptor_pool, fxaa_pipeline);
 
-    std::vector<uint32_t> dynamic_offsets = {0, 0, 0, 0};
+    std::vector<uint32_t> dynamic_offsets = {0, 0, 0, 0, 0};
 
     Framegraph framegraph(device, graphics_queue, command_buffers[0], FRAMES_IN_FLIGHT, supports_timestamp_queries);
 
@@ -3169,7 +3181,7 @@ int main() {
     framegraph.import_image(gbuffer_emissive, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
-    // framegraph.import_image(fxaa_output, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(fxaa_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(bloom_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     framegraph.import_image(ao_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(ao_output_normals, VK_IMAGE_LAYOUT_GENERAL);
@@ -3570,6 +3582,7 @@ int main() {
                        .samples_image(ao_prefiltered_depth, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                        .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                        .writes_storage_image(ao_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                       .writes_storage_image(ao_output_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                        .writes_storage_image(ao_output_edges, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                        .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                            TracyVkZone(tracy_vk_context, command_buffer, "AO Pass");
@@ -3729,6 +3742,12 @@ int main() {
                             .write_info = DescriptorInfo(rt_scene.tlas.handle)
                         },
                         DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                            .write_info = DescriptorInfo(
+                                lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                        },
+                        DescriptorBinding{
                             .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
                             .write_info =
                                 DescriptorInfo(ddgi_ray_buffer.handle, 0, ddgi_ray_buffer.size / FRAMES_IN_FLIGHT)
@@ -3744,7 +3763,7 @@ int main() {
             draw_data_layout,
             geometry_data_layout,
         },
-        sizeof(LightpassPushConstants),
+        0,
         global_texture_descriptor_layout
     );
     std::vector<VkDescriptorSet> ddgi_ray_descriptor_sets =
@@ -3757,6 +3776,12 @@ int main() {
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_UNIFORM_READ_BIT,
                 draw_data_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                lighting_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
             )
             .writes_buffer_dynamic(
                 ddgi_ray_buffer,
@@ -3781,28 +3806,20 @@ int main() {
                 };
 
                 uint32_t offsets[] = {
+                    dynamic_offsets[4],
                     dynamic_offsets[3],
                     dynamic_offsets[1],
                     dynamic_offsets[2],
                 };
 
                 vkCmdBindDescriptorSets(
-                    command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline_layout, 0, 4, sets, 3, &offsets[0]
-                );
-
-                vkCmdPushConstants(
-                    command_buffer,
-                    pipeline.pipeline_layout,
-                    VK_SHADER_STAGE_COMPUTE_BIT,
-                    0,
-                    sizeof(LightpassPushConstants),
-                    &light_constants
+                    command_buffer, pipeline.bind_point, pipeline.pipeline_layout, 0, 4, sets, 4, &offsets[0]
                 );
 
                 uint32_t probe_count =
-                    light_constants.probe_counts.x * light_constants.probe_counts.y * light_constants.probe_counts.z;
+                    lighting_data.probe_counts.x * lighting_data.probe_counts.y * lighting_data.probe_counts.z;
 
-                vkCmdDispatch(command_buffer, probe_count, 256, 1);
+                vkCmdDispatch(command_buffer, probe_count, lighting_data.rays_per_probe, 1);
             });
 
     Pipeline ddgi_ray_conv_pipeline = create_compute_pipeline(
@@ -3810,33 +3827,35 @@ int main() {
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ddgi_conv.comp.spv"),
         {
             DescriptorLayout{
-                .bindings =
-                    {
-                        DescriptorBinding{
-                            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-                            .write_info =
-                                DescriptorInfo(ddgi_ray_buffer.handle, 0, ddgi_ray_buffer.size / FRAMES_IN_FLIGHT)
-                        },
-                        DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                            .write_info = DescriptorInfo(ddgi_irradiance.view, VK_IMAGE_LAYOUT_GENERAL)
-                        },
-                        DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                            .write_info = DescriptorInfo(ddgi_irradiance_history.view, VK_IMAGE_LAYOUT_GENERAL)
-                        },
-                        DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                            .write_info = DescriptorInfo(ddgi_depth_atlas.view, VK_IMAGE_LAYOUT_GENERAL)
-                        },
-                        DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                            .write_info = DescriptorInfo(ddgi_depth_atlas_history.view, VK_IMAGE_LAYOUT_GENERAL)
-                        },
+                .bindings = {
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                        .write_info = DescriptorInfo(ddgi_ray_buffer.handle, 0, ddgi_ray_buffer.size / FRAMES_IN_FLIGHT)
                     },
+                    DescriptorBinding{
+                        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                        .write_info =
+                            DescriptorInfo(lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT)
+                    },
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        .write_info = DescriptorInfo(ddgi_irradiance.view, VK_IMAGE_LAYOUT_GENERAL)
+                    },
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        .write_info = DescriptorInfo(ddgi_irradiance_history.view, VK_IMAGE_LAYOUT_GENERAL)
+                    },
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        .write_info = DescriptorInfo(ddgi_depth_atlas.view, VK_IMAGE_LAYOUT_GENERAL)
+                    },
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        .write_info = DescriptorInfo(ddgi_depth_atlas_history.view, VK_IMAGE_LAYOUT_GENERAL)
+                    },
+                },
             },
-        },
-        sizeof(LightpassPushConstants)
+        }
     );
     std::vector<VkDescriptorSet> ddgi_ray_conv_descriptor_sets =
         allocate_descriptor_sets(device, descriptor_pool, ddgi_ray_conv_pipeline);
@@ -3848,6 +3867,12 @@ int main() {
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
                 ddgi_ray_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                lighting_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
             )
             .writes_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
@@ -3866,17 +3891,8 @@ int main() {
                     0,
                     ddgi_ray_conv_descriptor_sets.size(),
                     ddgi_ray_conv_descriptor_sets.data(),
-                    1,
+                    2,
                     &dynamic_offsets[3]
-                );
-
-                vkCmdPushConstants(
-                    command_buffer,
-                    pipeline.pipeline_layout,
-                    VK_SHADER_STAGE_COMPUTE_BIT,
-                    0,
-                    sizeof(LightpassPushConstants),
-                    &light_constants
                 );
 
                 vkCmdDispatch(command_buffer, (ddgi_irradiance.width + 7) / 8, (ddgi_irradiance.height + 7) / 8, 1);
@@ -4037,63 +4053,62 @@ int main() {
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ddgi_border.comp.spv"),
         {
             DescriptorLayout{
-                .bindings =
-                    {
-                        DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                            .write_info = DescriptorInfo(ddgi_irradiance.view, VK_IMAGE_LAYOUT_GENERAL)
-                        },
-                        DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                            .write_info = DescriptorInfo(ddgi_depth_atlas.view, VK_IMAGE_LAYOUT_GENERAL)
-                        },
-                    }
+                .bindings = {
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        .write_info = DescriptorInfo(ddgi_irradiance.view, VK_IMAGE_LAYOUT_GENERAL)
+                    },
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        .write_info = DescriptorInfo(ddgi_depth_atlas.view, VK_IMAGE_LAYOUT_GENERAL)
+                    },
+                    DescriptorBinding{
+                        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                        .write_info =
+                            DescriptorInfo(lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT)
+                    },
+                }
             },
-        },
-        sizeof(LightpassPushConstants)
+        }
     );
     std::vector<VkDescriptorSet> ddgi_border_descriptor_sets =
         allocate_descriptor_sets(device, descriptor_pool, ddgi_border_pipeline);
 
-    auto& ddgi_border_pass =
-        framegraph.add_pass("ddgi border")
-            .reads_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .writes_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .reads_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .writes_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
-                ZoneScopedN("DDGI Pass");
+    auto& ddgi_border_pass = framegraph.add_pass("ddgi border")
+                                 .reads_buffer_dynamic(
+                                     lighting_ubo_buffer,
+                                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                     VK_ACCESS_2_UNIFORM_READ_BIT,
+                                     lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+                                 )
+                                 .reads_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                                 .writes_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                                 .reads_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                                 .writes_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                                 .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                                     TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
+                                     ZoneScopedN("DDGI Pass");
 
-                const Pipeline& pipeline = ddgi_border_pipeline;
+                                     const Pipeline& pipeline = ddgi_border_pipeline;
 
-                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                                     vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
 
-                vkCmdBindDescriptorSets(
-                    command_buffer,
-                    VK_PIPELINE_BIND_POINT_COMPUTE,
-                    pipeline.pipeline_layout,
-                    0,
-                    ddgi_border_descriptor_sets.size(),
-                    ddgi_border_descriptor_sets.data(),
-                    0,
-                    nullptr
-                );
+                                     vkCmdBindDescriptorSets(
+                                         command_buffer,
+                                         VK_PIPELINE_BIND_POINT_COMPUTE,
+                                         pipeline.pipeline_layout,
+                                         0,
+                                         ddgi_border_descriptor_sets.size(),
+                                         ddgi_border_descriptor_sets.data(),
+                                         1,
+                                         &dynamic_offsets[4]
+                                     );
 
-                vkCmdPushConstants(
-                    command_buffer,
-                    pipeline.pipeline_layout,
-                    VK_SHADER_STAGE_COMPUTE_BIT,
-                    0,
-                    sizeof(LightpassPushConstants),
-                    &light_constants
-                );
+                                     uint32_t probe_count = lighting_data.probe_counts.x *
+                                                            lighting_data.probe_counts.y * lighting_data.probe_counts.z;
 
-                uint32_t probe_count =
-                    light_constants.probe_counts.x * light_constants.probe_counts.y * light_constants.probe_counts.z;
-
-                vkCmdDispatch(command_buffer, probe_count, 1, 1);
-            });
+                                     vkCmdDispatch(command_buffer, probe_count, 1, 1);
+                                 });
 
     Pipeline shadow_pipeline = create_compute_pipeline(
         device,
@@ -4122,77 +4137,76 @@ int main() {
                             .type       = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
                             .write_info = DescriptorInfo(rt_scene.tlas.handle)
                         },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                            .write_info = DescriptorInfo(
+                                lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                        },
                     }
             },
             scene_data_layout,
             draw_data_layout,
             geometry_data_layout,
         },
-        sizeof(LightpassPushConstants),
+        0,
         global_texture_descriptor_layout
     );
     std::vector<VkDescriptorSet> shadow_pass_descriptor_sets =
         allocate_descriptor_sets(device, descriptor_pool, shadow_pipeline);
 
-    auto& shadow_pass = framegraph.add_pass("RT Shadows")
-                            .reads_buffer_dynamic(
-                                scene_ubo_buffer,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                VK_ACCESS_2_UNIFORM_READ_BIT,
-                                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
-                            )
-                            .reads_buffer_dynamic(
-                                draw_data_buffer,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                VK_ACCESS_2_UNIFORM_READ_BIT,
-                                draw_data_buffer.size / FRAMES_IN_FLIGHT
-                            )
-                            .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                            .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                            .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadows");
-                                ZoneScopedN("RT Shadows");
+    auto& shadow_pass =
+        framegraph.add_pass("RT Shadows")
+            .reads_buffer_dynamic(
+                scene_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                draw_data_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                draw_data_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                lighting_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadows");
+                ZoneScopedN("RT Shadows");
 
-                                const Pipeline& pipeline = shadow_pipeline;
+                const Pipeline& pipeline = shadow_pipeline;
 
-                                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
 
-                                VkDescriptorSet sets[] = {
-                                    shadow_pass_descriptor_sets[0],
-                                    shadow_pass_descriptor_sets[1],
-                                    shadow_pass_descriptor_sets[2],
-                                    shadow_pass_descriptor_sets[3],
-                                    global_texture_descriptor_set,
-                                };
+                VkDescriptorSet sets[] = {
+                    shadow_pass_descriptor_sets[0],
+                    shadow_pass_descriptor_sets[1],
+                    shadow_pass_descriptor_sets[2],
+                    shadow_pass_descriptor_sets[3],
+                    global_texture_descriptor_set,
+                };
 
-                                vkCmdBindDescriptorSets(
-                                    command_buffer,
-                                    VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    pipeline.pipeline_layout,
-                                    0,
-                                    5,
-                                    sets,
-                                    2,
-                                    &dynamic_offsets[0]
-                                );
+                uint32_t offsets[] = {dynamic_offsets[4], dynamic_offsets[0], dynamic_offsets[1], dynamic_offsets[2]};
 
-                                vkCmdPushConstants(
-                                    command_buffer,
-                                    pipeline.pipeline_layout,
-                                    VK_SHADER_STAGE_COMPUTE_BIT,
-                                    0,
-                                    sizeof(LightpassPushConstants),
-                                    &light_constants
-                                );
+                vkCmdBindDescriptorSets(
+                    command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline_layout, 0, 5, sets, 4, &offsets[0]
+                );
 
-                                vkCmdDispatch(
-                                    command_buffer,
-                                    (((directional_shadow_buffer.width + 1) / 2) + 7) / 8,
-                                    (directional_shadow_buffer.height + 7) / 8,
-                                    1
-                                );
-                            });
+                vkCmdDispatch(
+                    command_buffer,
+                    (((directional_shadow_buffer.width + 1) / 2) + 7) / 8,
+                    (directional_shadow_buffer.height + 7) / 8,
+                    1
+                );
+            });
 
     Pipeline shadow_fill_pipeline = create_compute_pipeline(
         device,
@@ -4259,8 +4273,9 @@ int main() {
                             .write_info = DescriptorInfo(directional_shadow_buffer_pong.view, VK_IMAGE_LAYOUT_GENERAL)
                         },
                         DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                            .write_info = DescriptorInfo(directional_shadow_buffer.view, VK_IMAGE_LAYOUT_GENERAL)
+                            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info =
+                                DescriptorInfo(linear_sampler, directional_shadow_buffer.view, VK_IMAGE_LAYOUT_GENERAL)
                         },
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -4304,7 +4319,7 @@ int main() {
                     VkDescriptorImageInfo depth_info = {
                         .sampler     = linear_sampler_clamped,
                         .imageView   = depth_buffer.view,
-                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     };
 
                     std::vector<VkWriteDescriptorSet> write_sets = {
@@ -4395,6 +4410,12 @@ int main() {
                 VK_ACCESS_2_UNIFORM_READ_BIT,
                 scene_ubo_buffer.size / FRAMES_IN_FLIGHT
             )
+            .reads_buffer_dynamic(
+                lighting_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
             .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
@@ -4410,6 +4431,8 @@ int main() {
                 TracyVkZone(tracy_vk_context, command_buffer, "Light Pass");
                 ZoneScopedN("Light Pass");
 
+                uint32_t offsets[] = {dynamic_offsets[4], dynamic_offsets[0]};
+
                 vkCmdBindPipeline(command_buffer, light_pipeline.bind_point, light_pipeline.pipeline_handle);
                 vkCmdBindDescriptorSets(
                     command_buffer,
@@ -4418,17 +4441,8 @@ int main() {
                     0,
                     light_descriptor_sets.size(),
                     light_descriptor_sets.data(),
-                    1,
-                    &dynamic_offsets[0]
-                );
-
-                vkCmdPushConstants(
-                    command_buffer,
-                    light_pipeline.pipeline_layout,
-                    VK_SHADER_STAGE_COMPUTE_BIT,
-                    0,
-                    sizeof(LightpassPushConstants),
-                    &light_constants
+                    2,
+                    &offsets[0]
                 );
 
                 vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
@@ -4847,10 +4861,10 @@ int main() {
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
             )
-            .reads_image(
+            .writes_image(
                 depth_buffer,
                 VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
                 VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
@@ -5187,18 +5201,13 @@ int main() {
             );
 
             ImGui::SeparatorText("Light");
-            ImGui::DragFloat3("Light direction", &light_constants.light_direction.x, 0.01, -1.0, 1.0);
-            ImGui::SliderFloat3("Light color", &light_constants.light_color.x, 0.0, 1.0);
-            ImGui::SliderFloat("Light intensity", &light_constants.light_intensity, 0.0, 100.0);
-            ImGui::Checkbox("AO", (bool*)&light_constants.enable_ao);
-            ImGui::SameLine();
-            ImGui::Checkbox("AO Only", (bool*)&light_constants.ao_only);
-            ImGui::SameLine();
-            ImGui::Checkbox("Full GI Shading", (bool*)&light_constants.full_gi_shading);
+            ImGui::DragFloat3("Light direction", &lighting_data.light_direction.x, 0.01, -1.0, 1.0);
+            ImGui::SliderFloat3("Light color", &lighting_data.light_color.x, 0.0, 1.0);
+            ImGui::SliderFloat("Light intensity", &lighting_data.light_color.w, 0.0, 100.0);
 
             ImGui::SeparatorText("DDGI");
-            ImGui::DragFloat("Probe Spacing", &light_constants.probe_spacing, 0.01, 0.1, 10.0);
-            ImGui::DragFloat3("Grid Origin", &light_constants.grid_origin.x, 0.03, -100.0, 100.0);
+            ImGui::DragFloat("Probe Spacing", &lighting_data.probe_spacing, 0.01, 0.1, 10.0);
+            ImGui::DragFloat3("Grid Origin", &lighting_data.grid_origin.x, 0.03, -100.0, 100.0);
             ImGui::Checkbox("Visualize Probes", (bool*)&visualize_probes);
 
             ImGui::SeparatorText("Bloom");
@@ -5240,8 +5249,8 @@ int main() {
         };
         xegtao_constants.camera_near_far = {camera.near_plane, 10000.0f};
 
-        light_constants.frame_index += 1;
-        light_constants.camera_pos = camera.position;
+        lighting_data.frame_index += 1;
+        lighting_data.camera_pos = camera.position;
 
         SceneUBO scene_ubo        = {};
         scene_ubo.proj            = camera.projection_matrix;
@@ -5271,24 +5280,40 @@ int main() {
         scene_ubo.near_plane = camera.near_plane;
         scene_ubo.far_plane  = 1000.0f;
 
-        void*  scene_ubo_ptr  = nullptr;
-        size_t ubo_ptr_offset = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-        VK_CHECK(vmaMapMemory(vma_allocator, scene_ubo_buffer.allocation, &scene_ubo_ptr));
-        memcpy(reinterpret_cast<char*>(scene_ubo_ptr) + ubo_ptr_offset, &scene_ubo, sizeof(SceneUBO));
-        VK_CHECK(vmaFlushAllocation(vma_allocator, scene_ubo_buffer.allocation, ubo_ptr_offset, scene_ubo_buffer.size));
+        {
+            void*  scene_ubo_ptr  = nullptr;
+            size_t ubo_ptr_offset = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+            VK_CHECK(vmaMapMemory(vma_allocator, scene_ubo_buffer.allocation, &scene_ubo_ptr));
+            memcpy(reinterpret_cast<char*>(scene_ubo_ptr) + ubo_ptr_offset, &scene_ubo, sizeof(SceneUBO));
+            VK_CHECK(
+                vmaFlushAllocation(vma_allocator, scene_ubo_buffer.allocation, ubo_ptr_offset, scene_ubo_buffer.size)
+            );
+        }
+
+        {
+            void*  lighting_ubo_ptr    = nullptr;
+            size_t lighting_ptr_offset = (lighting_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+            VK_CHECK(vmaMapMemory(vma_allocator, lighting_ubo_buffer.allocation, &lighting_ubo_ptr));
+            memcpy(
+                reinterpret_cast<char*>(lighting_ubo_ptr) + lighting_ptr_offset, &lighting_data, sizeof(LightingUBO)
+            );
+            VK_CHECK(vmaFlushAllocation(
+                vma_allocator, lighting_ubo_buffer.allocation, lighting_ptr_offset, lighting_ubo_buffer.size
+            ));
+        }
 
         debug_renderer_constants.combined_matrix = camera.combined_matrix;
         debug_renderer_start_frame(debug_renderer, frame_index);
 
         if (visualize_probes) {
-            for (int x = 0; x < light_constants.probe_counts.x; x++) {
-                for (int y = 0; y < light_constants.probe_counts.y; y++) {
-                    for (int z = 0; z < light_constants.probe_counts.z; z++) {
-                        glm::vec3 probe_pos = light_constants.grid_origin + glm::vec3(
-                                                                                x * light_constants.probe_spacing,
-                                                                                y * light_constants.probe_spacing,
-                                                                                z * light_constants.probe_spacing
-                                                                            );
+            for (int x = 0; x < lighting_data.probe_counts.x; x++) {
+                for (int y = 0; y < lighting_data.probe_counts.y; y++) {
+                    for (int z = 0; z < lighting_data.probe_counts.z; z++) {
+                        glm::vec3 probe_pos = lighting_data.grid_origin + glm::vec3(
+                                                                              x * lighting_data.probe_spacing,
+                                                                              y * lighting_data.probe_spacing,
+                                                                              z * lighting_data.probe_spacing
+                                                                          );
 
                         debug_renderer_draw_box(debug_renderer, probe_pos, glm::vec3(0.2), {1, 1, 0, 1});
                     }
@@ -5384,6 +5409,7 @@ int main() {
         dynamic_offsets[1] = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         dynamic_offsets[2] = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         dynamic_offsets[3] = (ddgi_ray_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[4] = (lighting_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
 
         framegraph.execute(command_buffer, frame_index);
 

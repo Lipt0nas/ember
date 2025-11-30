@@ -8,47 +8,30 @@
 #extension GL_EXT_ray_query: require
 
 #include "common.glsl"
-
-#define PI 3.1415926538
-
-layout(push_constant, std430) uniform pc {
-    vec3 light_direction;
-    int enable_ao;
-
-    vec3 light_color;
-    float light_intensity;
-
-    vec3 grid_origin;
-    float probe_spacing;
-
-    ivec3 probe_counts;
-    int texels_per_probe;
-
-    int probes_per_row;
-    int probes_per_col;
-    int ao_only;
-
-    float padding;
-} push;
+#include "ddgi_common.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0, rgba16f) uniform image2D irradiance_atlas;
 layout(set = 0, binding = 1, rg16f) uniform image2D depth_atlas;
 
+layout(set = 0, binding = 2, std430) readonly uniform LightingData {
+    LightingUBO lighting;
+};
+
 void main() {
     // One thread per probe
     uint probe_index = gl_GlobalInvocationID.x;
-    int total_probes = push.probe_counts.x * push.probe_counts.y * push.probe_counts.z;
+    int total_probes = lighting.probe_counts.x * lighting.probe_counts.y * lighting.probe_counts.z;
 
     if (probe_index >= total_probes) return;
 
-    const int tile_size = push.texels_per_probe + 2; // e.g., 34 for 32x32 interior
+    const int tile_size = lighting.texels_per_probe + 2; // e.g., 34 for 32x32 interior
 
     // Get probe's position in atlas
     ivec2 probe_atlas_coord;
-    probe_atlas_coord.y = int(probe_index) / push.probes_per_row;
-    probe_atlas_coord.x = int(probe_index) % push.probes_per_row;
+    probe_atlas_coord.y = int(probe_index) / lighting.probes_per_row;
+    probe_atlas_coord.x = int(probe_index) % lighting.probes_per_row;
 
     // Base position of this probe's tile (including borders)
     ivec2 probe_pixel_base = probe_atlas_coord * tile_size;
