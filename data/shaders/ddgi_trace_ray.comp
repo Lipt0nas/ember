@@ -8,8 +8,7 @@
 #extension GL_EXT_ray_query: require
 
 #include "common.glsl"
-
-const float PI = 3.14159265359;
+#include "ddgi_common.glsl"
 
 // Trowbridge-Reitz GGX normal distribution
 float DistributionGGX(vec3 N, vec3 H, float roughness) {
@@ -51,46 +50,19 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-struct DDGIRay {
-    vec3 direction;
-    float distance;
-
-    vec3 radiance;
-    float distance_squared;
-};
-
-layout(push_constant, std430) uniform pc {
-    vec3 light_direction;
-    int enable_ao;
-
-    vec3 light_color;
-    float light_intensity;
-
-    vec3 grid_origin;
-    float probe_spacing;
-
-    ivec3 probe_counts;
-    int texels_per_probe;
-
-    int probes_per_row;
-    int probes_per_col;
-    int ao_only;
-
-    int frame_index;
-
-    vec3 camera_pos;
-    int full_gi_shading;
-} push;
-
 layout(local_size_x = 1, local_size_y = 1) in;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT top_level_as;
 
-layout(set = 0, binding = 1, std430) writeonly buffer RayBuffer {
+layout(set = 0, binding = 1, std430) readonly uniform LightingData {
+    LightingUBO lighting;
+};
+
+layout(set = 0, binding = 2, std430) writeonly buffer RayBuffer {
     DDGIRay rays[];
 } ray_buffer;
 
-layout(set = 0, binding = 2) uniform sampler2D irradiance_history;
+layout(set = 0, binding = 3) uniform sampler2D irradiance_history;
 
 layout(scalar, set = 1, binding = 0) readonly buffer DrawDataBuffer {
     DrawData draw_data[];
@@ -148,16 +120,16 @@ vec3 generate_ray_direction(uint ray_index, uint total_rays, uint probe_index, u
 vec3 sample_probe_irradiance(int probe_index, vec3 direction) {
     // Get probe's atlas coordinates
     ivec2 probe_atlas_coord;
-    probe_atlas_coord.y = probe_index / push.probes_per_row;
-    probe_atlas_coord.x = probe_index % push.probes_per_row;
+    probe_atlas_coord.y = probe_index / lighting.probes_per_row;
+    probe_atlas_coord.x = probe_index % lighting.probes_per_row;
 
-    const int tile_size = push.texels_per_probe + 2;
+    const int tile_size = lighting.texels_per_probe + 2;
 
     // Encode direction to octahedral [0, 1]
     vec2 oct_coord = oct_encode(direction);
 
     // Map to interior texel space (skip the 1-pixel border)
-    vec2 texel_in_tile = oct_coord * float(push.texels_per_probe) + 1.0;
+    vec2 texel_in_tile = oct_coord * float(lighting.texels_per_probe) + 1.0;
 
     // Compute atlas pixel coordinates
     vec2 probe_base_pixel = vec2(probe_atlas_coord) * float(tile_size);
@@ -176,15 +148,15 @@ vec3 sample_probe_irradiance(int probe_index, vec3 direction) {
 
 vec3 sample_ddgi_indirect(vec3 world_pos, vec3 normal, vec3 view_dir) {
     // Find grid cell
-    vec3 grid_pos = (world_pos - push.grid_origin) / push.probe_spacing;
+    vec3 grid_pos = (world_pos - lighting.grid_origin) / lighting.probe_spacing;
     ivec3 base_probe = ivec3(floor(grid_pos));
     vec3 alpha = fract(grid_pos);
 
     // Clamp to grid bounds
-    base_probe = clamp(base_probe, ivec3(0), push.probe_counts - 2);
+    base_probe = clamp(base_probe, ivec3(0), lighting.probe_counts - 2);
 
     // Small bias along normal to avoid self-shadowing
-    vec3 biased_pos = world_pos + normal * push.probe_spacing * 0.1;
+    vec3 biased_pos = world_pos + normal * lighting.probe_spacing * 0.1;
 
     vec3 irradiance_sum = vec3(0.0);
     float weight_sum = 0.0;
@@ -195,14 +167,14 @@ vec3 sample_ddgi_indirect(vec3 world_pos, vec3 normal, vec3 view_dir) {
         ivec3 probe_coord = base_probe + offset;
 
         // Get probe world position
-        vec3 probe_pos = push.grid_origin + vec3(probe_coord) * push.probe_spacing;
+        vec3 probe_pos = lighting.grid_origin + vec3(probe_coord) * lighting.probe_spacing;
         vec3 probe_to_point = biased_pos - probe_pos;
         vec3 dir_to_point = normalize(probe_to_point);
 
         // Convert to linear index
         int probe_index = probe_coord.x +
-                probe_coord.y * push.probe_counts.x * push.probe_counts.z +
-                probe_coord.z * push.probe_counts.x;
+                probe_coord.y * lighting.probe_counts.x * lighting.probe_counts.z +
+                probe_coord.z * lighting.probe_counts.x;
 
         // Trilinear weight
         vec3 trilinear = mix(1.0 - alpha, alpha, vec3(offset));
@@ -224,31 +196,29 @@ vec3 sample_ddgi_indirect(vec3 world_pos, vec3 normal, vec3 view_dir) {
     return irradiance_sum / max(weight_sum, 0.001);
 }
 
-const int rays_per_probe = 256;
-
 void main() {
     uint probe_index = gl_GlobalInvocationID.x;
     uint ray_index = gl_GlobalInvocationID.y;
 
-    uint probe_count = push.probe_counts.x * push.probe_counts.y * push.probe_counts.z;
+    uint probe_count = lighting.probe_counts.x * lighting.probe_counts.y * lighting.probe_counts.z;
 
-    if (probe_index >= probe_count || ray_index >= rays_per_probe) {
+    if (probe_index >= probe_count || ray_index >= lighting.rays_per_probe) {
         return;
     }
 
     int linear_probe_index = int(probe_index);
 
-    int probes_per_slice = push.probe_counts.x * push.probe_counts.z;
+    int probes_per_slice = lighting.probe_counts.x * lighting.probe_counts.z;
     ivec3 probe_coords;
     probe_coords.y = linear_probe_index / probes_per_slice;
     int remainder = linear_probe_index % probes_per_slice;
-    probe_coords.z = remainder / push.probe_counts.x;
-    probe_coords.x = remainder % push.probe_counts.x;
+    probe_coords.z = remainder / lighting.probe_counts.x;
+    probe_coords.x = remainder % lighting.probe_counts.x;
 
-    vec3 probe_pos = get_probe_world_position(probe_coords, push.grid_origin, push.probe_spacing);
+    vec3 probe_pos = get_probe_world_position(probe_coords, lighting.grid_origin, lighting.probe_spacing);
 
-    vec3 ray_dir = generate_ray_direction(ray_index, rays_per_probe, probe_index, push.frame_index);
-    uint buffer_index = probe_index * rays_per_probe + ray_index;
+    vec3 ray_dir = generate_ray_direction(ray_index, lighting.rays_per_probe, probe_index, lighting.frame_index);
+    uint buffer_index = probe_index * lighting.rays_per_probe + ray_index;
 
     rayQueryEXT ray_query;
     rayQueryInitializeEXT(
@@ -315,7 +285,7 @@ void main() {
         float roughness = material.y;
         float metallic = MAP_METALLIC(material.x);
 
-        vec3 sun_dir = (-push.light_direction);
+        vec3 sun_dir = (-lighting.light_direction.yxz);
         float shadow = 1.0;
         float NdotL = max(0.0, dot(world_normal, sun_dir));
 
@@ -323,7 +293,7 @@ void main() {
             rayQueryEXT shadow_query;
             rayQueryInitializeEXT(shadow_query, top_level_as,
                 gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-                0xFF, world_pos + world_normal * 0.001, 0.001, -push.light_direction, 1000.0);
+                0xFF, world_pos + world_normal * 0.001, 0.001, -lighting.light_direction.xyz, 1000.0);
             while (rayQueryProceedEXT(shadow_query)) {}
 
             if (rayQueryGetIntersectionTypeEXT(shadow_query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -349,18 +319,14 @@ void main() {
         indirect = sample_ddgi_indirect(hit_pos, world_normal, -ray_dir);
         indirect *= albedo * kD * 0.95;
 
-        if (push.full_gi_shading == 0) {
-            indirect *= 0.0;
-        }
-
-        vec3 direct_radiance = push.light_color * push.light_intensity;
+        vec3 direct_radiance = lighting.light_color.xyz * lighting.light_color.a;
 
         Lo = (kD * albedo) * direct_radiance * NdotL * shadow;
 
         radiance = Lo + indirect + emission;
 
         if (!is_front_face) {
-            hit_distance = -1.0;
+            hit_distance = -hit_distance * 0.2;
             radiance = vec3(0, 0, 0);
         }
     } else {

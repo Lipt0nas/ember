@@ -11,34 +11,15 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-layout(push_constant, std430) uniform pc {
-    vec3 light_direction;
-    int enable_ao;
-
-    vec3 light_color;
-    float light_intensity;
-
-    vec3 grid_origin;
-    float probe_spacing;
-
-    ivec3 probe_counts;
-    int texels_per_probe;
-
-    int probes_per_row;
-    int probes_per_col;
-    int ao_only;
-
-    int frame_index;
-
-    vec3 camera_pos;
-    int full_gi_shading;
-} push;
-
 layout(set = 0, binding = 0, r8) uniform image2D out_shadow;
 
 layout(set = 0, binding = 1) uniform sampler2D normal_texture;
 layout(set = 0, binding = 2) uniform sampler2D depth_texture;
 layout(set = 0, binding = 3) uniform accelerationStructureEXT top_level_as;
+
+layout(set = 0, binding = 4, std430) readonly uniform LightingData {
+    LightingUBO lighting;
+};
 
 layout(set = 1, binding = 0) uniform UBO {
     SceneUBO scene;
@@ -87,7 +68,7 @@ void main() {
     }
 
     vec3 normal = texture(normal_texture, uv).rgb;
-    vec3 dir = normalize(-push.light_direction);
+    vec3 dir = normalize(-lighting.light_direction.xyz);
 
     float NdotL = max(dot(normal, dir), 0.0);
 
