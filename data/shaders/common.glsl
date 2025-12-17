@@ -1,3 +1,6 @@
+#ifndef COMMON_GLSL
+#define COMMON_GLSL
+
 #define MESHLETS_PER_TASK 32
 
 #define MAP_METALLIC(input) (1.0 - input)
@@ -78,14 +81,21 @@ struct LightingUBO {
     ivec3 probe_counts;
     int texels_per_probe;
 
-    int probes_per_row;
-    int probes_per_col;
+    int multibounce;
+    int remove_visiblity_checks;
 
     int depth_texels_per_probe;
     int rays_per_probe;
 
     vec3 camera_pos;
     int frame_index;
+
+    int ignore_backface_hits;
+    int use_bent_normals;
+    int indirect_only;
+    int ao_only;
+
+    int invert_multibounce_view_dir;
 };
 
 struct Meshlet {
@@ -204,3 +214,59 @@ vec3 oct_decode(vec2 oct) {
 float gradient_noise(vec2 uv) {
     return fract(52.9829189 * fract(dot(uv, vec2(0.06711056, 0.00583715))));
 }
+
+// Trowbridge-Reitz GGX normal distribution
+float DistributionGGX(vec3 N, vec3 H, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+
+    float nom = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+
+    return nom / denom;
+}
+
+// Schlick-GGX geometry function
+float GeometrySchlickGGX(float NdotV, float roughness) {
+    float r = (roughness + 1.0);
+    float k = (r * r) / 8.0;
+
+    float nom = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+
+    return nom / denom;
+}
+
+// Smith's method for geometry obstruction
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+
+    return ggx1 * ggx2;
+}
+
+// Fresnel-Schlick approximation
+vec3 fresnelSchlick(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+vec3 getSkyColor(vec3 ray_dir, vec3 sun_dir) {
+    float sky = ray_dir.y * 0.5 + 0.5;
+    return mix(vec3(0.6, 0.7, 0.9), vec3(0.3, 0.5, 0.8), sky);
+}
+
+// Assuming normals are stored in the xy and channel
+vec3 unpack_normals(vec4 data) {
+    return oct_decode(data.xy);
+}
+
+#endif

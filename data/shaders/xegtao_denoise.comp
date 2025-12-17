@@ -10,7 +10,7 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-layout(set = 0, binding = 0, r32f) uniform writeonly image2D out_ao;
+layout(set = 0, binding = 0, r8) uniform writeonly image2D out_ao;
 
 layout(set = 0, binding = 1) uniform sampler2D raw_ao;
 layout(set = 0, binding = 2) uniform sampler2D ao_edges;
@@ -23,6 +23,7 @@ layout(push_constant, std430) uniform pc {
     vec2 camera_near_far;
 
     uint final_pass;
+    uint construct_normals;
 } push;
 
 void XeGTAO_decode_gather_partial(const vec4 packed_value, out float result[4]) {
