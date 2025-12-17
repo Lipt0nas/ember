@@ -170,14 +170,21 @@ struct alignas(16) LightingUBO {
     glm::ivec3 probe_counts;
     int        texels_per_probe;
 
-    int probes_per_row;
-    int probes_per_col;
+    int multibounce;
+    int remove_visibility_checks;
 
     int depth_texels_per_probe;
     int rays_per_probe;
 
     glm::vec3 camera_pos;
     int       frame_index;
+
+    int ignore_backface_hits;
+    int use_bent_normals;
+    int indirect_only;
+    int ao_only;
+
+    int invert_multibounce_view_dir;
 };
 
 struct ShadowBlurConstants {
@@ -200,11 +207,7 @@ struct DepthReduceConstants {
 };
 
 struct DDGIRay {
-    glm::vec3 direction;
-    float     distance;
-
-    glm::vec3 raddiance;
-    float     padding;
+    glm::vec4 direction;
 };
 
 struct XeGTAOConstants {
@@ -215,6 +218,7 @@ struct XeGTAOConstants {
     glm::vec2 camera_near_far;
 
     uint32_t final_pass;
+    uint32_t construct_normals;
 };
 
 struct CompositePushConstants {
@@ -948,6 +952,29 @@ void load_scene(
     spdlog::info("Constructing scene");
     const tinygltf::Scene& scene = model.scenes[scene_id];
 
+    if (scene.nodes.size() == 1) {
+        for (int m = 0; m < model.meshes.size(); m++) {
+            auto& mesh = model.meshes[m];
+            for (int i = 0; i < mesh.primitives.size(); i++) {
+                int mesh_id = mesh_primitive_offsets[m] + i;
+
+                auto rot = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0));
+                rot *= glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
+
+                MeshInstance instance = {
+                    .mesh_id     = mesh_id,
+                    .material_id = mesh.primitives[i].material,
+                    .position    = {0, 0, 0},
+                    .scale       = 0.01,
+                    .rotation    = rot,
+                };
+                instances.push_back(instance);
+            }
+        }
+
+        return;
+    }
+
     for (int node_id : scene.nodes) {
         const auto& node = model.nodes[node_id];
         if (node.mesh <= -1)
@@ -1350,7 +1377,7 @@ int main() {
     }
 
     Image gbuffer_albedo = create_image(
-        VK_FORMAT_R8G8B8A8_UNORM,
+        VK_FORMAT_R8G8B8A8_SRGB,
         swapchain.width,
         swapchain.height,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1361,7 +1388,7 @@ int main() {
     );
 
     Image gbuffer_normals = create_image(
-        VK_FORMAT_R16G16B16A16_SFLOAT,
+        VK_FORMAT_A2B10G10R10_UNORM_PACK32,
         swapchain.width,
         swapchain.height,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1372,18 +1399,7 @@ int main() {
     );
 
     Image gbuffer_emissive = create_image(
-        VK_FORMAT_R32G32B32A32_SFLOAT,
-        swapchain.width,
-        swapchain.height,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT,
-        false,
-        vma_allocator,
-        device
-    );
-
-    Image gbuffer_material = create_image(
-        VK_FORMAT_R8G8B8A8_UNORM,
+        VK_FORMAT_B10G11R11_UFLOAT_PACK32,
         swapchain.width,
         swapchain.height,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1399,13 +1415,17 @@ int main() {
            .light_color      = glm::vec4(1.0, 1.0, 1.0, 10.0f),
            .grid_origin      = {-15, -15, -15},
            .probe_spacing    = 5.0f,
-           .probe_counts     = {24, 8, 24},
-           .texels_per_probe = 16,
+           .probe_counts     = {16, 8, 16},
+           .texels_per_probe = 6,
            .camera_pos       = {},
            .frame_index      = {},
     };
 
-    lighting_data.depth_texels_per_probe = 16;
+    lighting_data.use_bent_normals         = 1;
+    lighting_data.multibounce              = 1;
+    lighting_data.remove_visibility_checks = 0;
+
+    lighting_data.depth_texels_per_probe = 14;
     lighting_data.rays_per_probe         = 196;
 
     lighting_data.grid_origin = {
@@ -1413,20 +1433,19 @@ int main() {
         glm::vec3(lighting_data.probe_counts.x, 1.0, lighting_data.probe_counts.z)
     };
 
-    int total_probes   = lighting_data.probe_counts.x * lighting_data.probe_counts.y * lighting_data.probe_counts.z;
-    int probes_per_row = glm::ceil(std::sqrt(total_probes));
-    int probes_per_col = glm::ceil((float)total_probes / probes_per_row);
+    int probes_x = lighting_data.probe_counts.x * lighting_data.probe_counts.y;
+    int probes_y = lighting_data.probe_counts.z;
 
-    int atlas_width  = probes_per_row * (lighting_data.texels_per_probe + 2);
-    int atlas_height = probes_per_col * (lighting_data.texels_per_probe + 2);
+    int irradiance_atlas_width  = probes_x * (lighting_data.texels_per_probe + 2);
+    int irradiance_atlas_height = probes_y * (lighting_data.texels_per_probe + 2);
 
-    lighting_data.probes_per_row = probes_per_row;
-    lighting_data.probes_per_col = probes_per_col;
+    int depth_atlas_width  = probes_x * (lighting_data.depth_texels_per_probe + 2);
+    int depth_atlas_height = probes_y * (lighting_data.depth_texels_per_probe + 2);
 
     Image ddgi_depth_atlas = create_image(
         VK_FORMAT_R16G16_SFLOAT,
-        atlas_width,
-        atlas_height,
+        depth_atlas_width,
+        depth_atlas_height,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
             VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1437,8 +1456,8 @@ int main() {
 
     Image ddgi_depth_atlas_history = create_image(
         VK_FORMAT_R16G16_SFLOAT,
-        atlas_width,
-        atlas_height,
+        depth_atlas_width,
+        depth_atlas_height,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
         false,
@@ -1448,8 +1467,8 @@ int main() {
 
     Image ddgi_irradiance = create_image(
         VK_FORMAT_R16G16B16A16_SFLOAT,
-        atlas_width,
-        atlas_height,
+        irradiance_atlas_width,
+        irradiance_atlas_height,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
             VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1460,8 +1479,8 @@ int main() {
 
     Image ddgi_irradiance_history = create_image(
         VK_FORMAT_R16G16B16A16_SFLOAT,
-        atlas_width,
-        atlas_height,
+        irradiance_atlas_width,
+        irradiance_atlas_height,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
         false,
@@ -1540,7 +1559,7 @@ int main() {
     );
 
     Image ao_output = create_image(
-        VK_FORMAT_R32_SFLOAT,
+        VK_FORMAT_R8_UNORM,
         swapchain.width,
         swapchain.height,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1707,7 +1726,6 @@ int main() {
     std::vector<std::reference_wrapper<Image>> gbuffer_images = {
         gbuffer_albedo,
         gbuffer_normals,
-        gbuffer_material,
         gbuffer_emissive,
     };
 
@@ -2607,7 +2625,7 @@ int main() {
     std::vector<MeshInstance> mesh_instances;
 
     load_scene(
-        "data/models/street.glb",
+        "data/models/sun.glb",
         meshes,
         materials,
         mesh_instances,
@@ -2671,6 +2689,9 @@ int main() {
     };
     camera.position = glm::vec3(0, 0, 0);
 
+    camera.position = {16.1, 6.3, -0.57};
+    camera.orientation *= glm::angleAxis(glm::radians(-90.0f), glm::vec3(0, 1, 0));
+
     float base_camera_speed        = 10.0f;
     float camera_mouse_sensitivity = 0.003f;
     float camera_speed_mod         = 2.5f;
@@ -2689,9 +2710,7 @@ int main() {
 
     float time_passed = 0.0f;
 
-    float total_time      = 0.0;
-    float animation_speed = 10.0f;
-    bool  animate         = false;
+    float total_time = 0.0;
 
     uint32_t accumulated_fps = 0;
     uint32_t fps             = 0;
@@ -2828,12 +2847,11 @@ int main() {
 
         },
         {
-            VK_FORMAT_R8G8B8A8_UNORM,
-            VK_FORMAT_R16G16B16A16_SFLOAT,
-            VK_FORMAT_R8G8B8A8_UNORM,
-            VK_FORMAT_R32G32B32A32_SFLOAT,
+            gbuffer_albedo.format,
+            gbuffer_normals.format,
+            gbuffer_emissive.format,
         },
-        VK_FORMAT_D32_SFLOAT,
+        depth_buffer.format,
         sizeof(GeometryPushConstants),
         global_texture_descriptor_layout
     );
@@ -3011,12 +3029,6 @@ int main() {
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
-                                linear_sampler, gbuffer_material.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                            )
-                        },
-                        DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            .write_info = DescriptorInfo(
                                 linear_sampler, depth_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
@@ -3177,7 +3189,6 @@ int main() {
     framegraph.import_image(depth_buffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_albedo, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_normals, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    framegraph.import_image(gbuffer_material, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_emissive, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
@@ -3250,7 +3261,6 @@ int main() {
             .writes_depth_attachment(depth_buffer)
             .writes_color_attachment(gbuffer_albedo)
             .writes_color_attachment(gbuffer_normals)
-            .writes_color_attachment(gbuffer_material)
             .writes_color_attachment(gbuffer_emissive)
             .reads_buffer_dynamic(
                 indirect_command_buffer,
@@ -3297,18 +3307,6 @@ int main() {
                         .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                         .pNext              = nullptr,
                         .imageView          = gbuffer_normals.view,
-                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        .resolveMode        = VK_RESOLVE_MODE_NONE,
-                        .resolveImageView   = VK_NULL_HANDLE,
-                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                        .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
-                    },
-                    {
-                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                        .pNext              = nullptr,
-                        .imageView          = gbuffer_material.view,
                         .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                         .resolveMode        = VK_RESOLVE_MODE_NONE,
                         .resolveImageView   = VK_NULL_HANDLE,
@@ -3758,6 +3756,12 @@ int main() {
                                 linear_sampler_clamped, ddgi_irradiance_history.view, VK_IMAGE_LAYOUT_GENERAL
                             )
                         },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, ddgi_depth_atlas_history.view, VK_IMAGE_LAYOUT_GENERAL
+                            )
+                        },
                     }
             },
             draw_data_layout,
@@ -3819,7 +3823,7 @@ int main() {
                 uint32_t probe_count =
                     lighting_data.probe_counts.x * lighting_data.probe_counts.y * lighting_data.probe_counts.z;
 
-                vkCmdDispatch(command_buffer, probe_count, lighting_data.rays_per_probe, 1);
+                vkCmdDispatch(command_buffer, glm::ceil((probe_count * lighting_data.rays_per_probe) / 32.0f), 1, 1);
             });
 
     Pipeline ddgi_ray_conv_pipeline = create_compute_pipeline(
@@ -3895,7 +3899,12 @@ int main() {
                     &dynamic_offsets[3]
                 );
 
-                vkCmdDispatch(command_buffer, (ddgi_irradiance.width + 7) / 8, (ddgi_irradiance.height + 7) / 8, 1);
+                vkCmdDispatch(
+                    command_buffer,
+                    lighting_data.probe_counts.x * lighting_data.probe_counts.y,
+                    lighting_data.probe_counts.z,
+                    1
+                );
 
                 image_pipeline_barrier(
                     ddgi_irradiance,
@@ -4104,10 +4113,12 @@ int main() {
                                          &dynamic_offsets[4]
                                      );
 
-                                     uint32_t probe_count = lighting_data.probe_counts.x *
-                                                            lighting_data.probe_counts.y * lighting_data.probe_counts.z;
-
-                                     vkCmdDispatch(command_buffer, probe_count, 1, 1);
+                                     vkCmdDispatch(
+                                         command_buffer,
+                                         lighting_data.probe_counts.x * lighting_data.probe_counts.y,
+                                         lighting_data.probe_counts.z,
+                                         1
+                                     );
                                  });
 
     Pipeline shadow_pipeline = create_compute_pipeline(
@@ -4419,7 +4430,6 @@ int main() {
             .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .samples_image(gbuffer_material, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(ao_output_denoised, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_emissive, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
@@ -5050,10 +5060,6 @@ int main() {
         accumulated_fps++;
         time_passed += delta_time;
 
-        if (animate) {
-            total_time += delta_time * animation_speed;
-        }
-
         if (time_passed >= 1.0f) {
             fps = accumulated_fps;
 
@@ -5161,14 +5167,11 @@ int main() {
         ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
         ImGui::Text("Objects: %lu", bindless_draw_data_cpu_buffer.size());
         ImGui::Text("FPS: %u", fps);
-        ImGui::Text("Triangles Rendered: %.3fM", (double(pipeline_stats[0]) / 1'000'000.0));
-        ImGui::Text("Fragment shader invocations: %.3fM", (double(pipeline_stats[1]) / 1'000'000.0));
+        ImGui::Text("Camera Position: %s", glm::to_string(camera.position).c_str());
+        ImGui::Text("Camera Orientation: %s", glm::to_string(camera.orientation).c_str());
+        // ImGui::Text("Triangles Rendered: %.3fM", (double(pipeline_stats[0]) / 1'000'000.0));
+        // ImGui::Text("Fragment shader invocations: %.3fM", (double(pipeline_stats[1]) / 1'000'000.0));
         ImGui::NewLine();
-        ImGui::Checkbox("Animate", &animate);
-        ImGui::SliderFloat("Animation Speed", &animation_speed, 0.1f, 50.0f);
-        if (ImGui::Button("Reset Animation")) {
-            total_time = 0.0f;
-        }
 
         if (ImGui::TreeNode("Performance")) {
             std::vector<std::pair<std::string, PassTiming>> pass_timings = {};
@@ -5209,6 +5212,14 @@ int main() {
             ImGui::DragFloat("Probe Spacing", &lighting_data.probe_spacing, 0.01, 0.1, 10.0);
             ImGui::DragFloat3("Grid Origin", &lighting_data.grid_origin.x, 0.03, -100.0, 100.0);
             ImGui::Checkbox("Visualize Probes", (bool*)&visualize_probes);
+            ImGui::Checkbox("Multibounce Diffuse", (bool*)&lighting_data.multibounce);
+            ImGui::Checkbox("Invert Multibounce Dir", (bool*)&lighting_data.invert_multibounce_view_dir);
+            ImGui::Checkbox("Ignore backface hits", (bool*)&lighting_data.ignore_backface_hits);
+            ImGui::Checkbox("Use Bent Normals", (bool*)&lighting_data.use_bent_normals);
+            ImGui::Checkbox("Remove Visibility Checks", (bool*)&lighting_data.remove_visibility_checks);
+            ImGui::Checkbox("Indirect Only", (bool*)&lighting_data.indirect_only);
+            ImGui::Checkbox("AO Only", (bool*)&lighting_data.ao_only);
+            ImGui::Checkbox("AO Construct normals", (bool*)&xegtao_constants.construct_normals);
 
             ImGui::SeparatorText("Bloom");
             ImGui::SliderFloat("Bloom strength", &composite_push_constants.bloom_strength, 0.0, 1.0);
@@ -5237,12 +5248,9 @@ int main() {
         float tan_half_fov_y = tanf(glm::radians(camera.fov) / 2.0f);
         float tan_half_fov_x = tan_half_fov_y * aspect;
 
-        xegtao_constants = {
-            .camera_tan_half_fov = {tan_half_fov_x, tan_half_fov_y},
-            .ndc_to_view_mul     = {tan_half_fov_x * 2.0f, tan_half_fov_y * -2.0f}, // ← Y negative
-            .ndc_to_view_add     = {-tan_half_fov_x, tan_half_fov_y},               // ← Y positive
-        };
-
+        xegtao_constants.camera_tan_half_fov          = {tan_half_fov_x, tan_half_fov_y};
+        xegtao_constants.ndc_to_view_mul              = {tan_half_fov_x * 2.0f, tan_half_fov_y * -2.0f}; // ← Y negative
+        xegtao_constants.ndc_to_view_add              = {-tan_half_fov_x, tan_half_fov_y};               // ← Y positive
         xegtao_constants.ndc_to_view_mul_x_pixel_size = {
             xegtao_constants.ndc_to_view_mul.x / (float)swapchain.width,
             xegtao_constants.ndc_to_view_mul.y / (float)swapchain.height
@@ -5629,7 +5637,6 @@ int main() {
     destroy_image(lightpass_output, device, vma_allocator);
     destroy_image(composite_output, device, vma_allocator);
     destroy_image(gbuffer_albedo, device, vma_allocator);
-    destroy_image(gbuffer_material, device, vma_allocator);
     destroy_image(gbuffer_normals, device, vma_allocator);
     destroy_image(depth_hiz, device, vma_allocator);
     destroy_image(bloom_buffer, device, vma_allocator);

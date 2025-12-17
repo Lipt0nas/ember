@@ -10,7 +10,7 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-layout(set = 0, binding = 0, r32f) uniform writeonly image2D out_ao;
+layout(set = 0, binding = 0, r8) uniform writeonly image2D out_ao;
 layout(set = 0, binding = 1, r8) uniform writeonly image2D out_edges;
 layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D out_bent_normals;
 
@@ -29,6 +29,7 @@ layout(push_constant, std430) uniform pc {
     vec2 camera_near_far;
 
     uint final_pass;
+    uint construct_normals;
 } push;
 
 vec4 XeGTAO_calculate_edges(const float center_z, const float left_z, const float right_z, const float top_z, const float bottom_z) {
@@ -200,16 +201,19 @@ void main() {
     vec4 edges_lrtb = XeGTAO_calculate_edges(float(viewspace_z), float(pix_lz), float(pix_rz), float(pix_tz), float(pix_bz));
     imageStore(out_edges, ivec2(pix_coord), vec4(XeGTAO_pack_edges(edges_lrtb)));
 
-    // vec3 center = XeGTAO_compute_viewspace_position(normalized_screen_pos, viewspace_z);
-    // vec3 left = XeGTAO_compute_viewspace_position(normalized_screen_pos + vec2(-1, 0) * viewport_pixel_size, pix_lz);
-    // vec3 right = XeGTAO_compute_viewspace_position(normalized_screen_pos + vec2(1, 0) * viewport_pixel_size, pix_rz);
-    // vec3 top = XeGTAO_compute_viewspace_position(normalized_screen_pos + vec2(0, -1) * viewport_pixel_size, pix_tz);
-    // vec3 bottom = XeGTAO_compute_viewspace_position(normalized_screen_pos + vec2(0, 1) * viewport_pixel_size, pix_bz);
-    //
-    // vec3 viewspace_normal = XeGTAO_calculate_normal(edges_lrtb, center, left, right, top, bottom);
+    vec3 viewspace_normal = vec3(0.0);
+    if (push.construct_normals == 1) {
+        vec3 center = XeGTAO_compute_viewspace_position(normalized_screen_pos, viewspace_z);
+        vec3 left = XeGTAO_compute_viewspace_position(normalized_screen_pos + vec2(-1, 0) * viewport_pixel_size, pix_lz);
+        vec3 right = XeGTAO_compute_viewspace_position(normalized_screen_pos + vec2(1, 0) * viewport_pixel_size, pix_rz);
+        vec3 top = XeGTAO_compute_viewspace_position(normalized_screen_pos + vec2(0, -1) * viewport_pixel_size, pix_tz);
+        vec3 bottom = XeGTAO_compute_viewspace_position(normalized_screen_pos + vec2(0, 1) * viewport_pixel_size, pix_bz);
 
-    vec3 worldspace_normal = texture(g_normals_texture, normalized_screen_pos).rgb;
-    vec3 viewspace_normal = normalize(mat3(scene.view) * worldspace_normal);
+        viewspace_normal = XeGTAO_calculate_normal(edges_lrtb, center, left, right, top, bottom);
+    } else {
+        vec3 worldspace_normal = unpack_normals(texture(g_normals_texture, normalized_screen_pos));
+        viewspace_normal = normalize(mat3(scene.view) * worldspace_normal);
+    }
 
     viewspace_z *= 0.99999;
 

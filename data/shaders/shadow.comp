@@ -67,7 +67,7 @@ void main() {
         return;
     }
 
-    vec3 normal = texture(normal_texture, uv).rgb;
+    vec3 normal = unpack_normals(texture(normal_texture, uv));
     vec3 dir = normalize(-lighting.light_direction.xyz);
 
     float NdotL = max(dot(normal, dir), 0.0);

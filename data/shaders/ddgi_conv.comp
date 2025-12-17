@@ -10,7 +10,7 @@
 #include "common.glsl"
 #include "ddgi_common.glsl"
 
-layout(local_size_x = 8, local_size_y = 8) in;
+layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(set = 0, binding = 0, std430) readonly buffer RayBuffer {
     DDGIRay rays[];
@@ -26,95 +26,87 @@ layout(set = 0, binding = 3, rgba16f) uniform image2D irradiance_history;
 layout(set = 0, binding = 4, rg16f) uniform image2D out_depth;
 layout(set = 0, binding = 5, rg16f) uniform image2D depth_history;
 
+shared vec4 shared_ray_hit_data[256];
+shared vec3 shared_ray_dir[256];
+
 void main() {
-    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 atlas_size = imageSize(out_irradiance);
+    uint probe_idx = gl_WorkGroupID.y * (gl_NumWorkGroups.x) + gl_WorkGroupID.x;
 
-    if (pixel_coord.x >= atlas_size.x || pixel_coord.y >= atlas_size.y) {
-        return;
+    uint tid = gl_LocalInvocationIndex;
+
+    if (tid < lighting.rays_per_probe) {
+        uint global_ray_idx = probe_idx * lighting.rays_per_probe + tid;
+
+        shared_ray_hit_data[tid] = ray_buffer.rays[global_ray_idx].ray_data;
+        shared_ray_dir[tid] = ddgi_generate_ray_direction(tid, lighting.rays_per_probe, probe_idx, lighting.frame_index);
     }
 
-    const int tile_size = lighting.texels_per_probe + 2; // e.g., 34 for 32x32 interior
+    barrier();
 
-    // Determine which probe this texel belongs to
-    ivec2 probe_coord = pixel_coord / tile_size;
-    int linear_probe_index = probe_coord.y * lighting.probes_per_row + probe_coord.x;
+    int probe_x = int(probe_idx % (lighting.probe_counts.x * lighting.probe_counts.y));
+    int probe_y = int(probe_idx / (lighting.probe_counts.x * lighting.probe_counts.y));
 
-    // Check if this is a valid probe
-    int total_probes = lighting.probe_counts.x * lighting.probe_counts.y * lighting.probe_counts.z;
-    if (linear_probe_index >= total_probes) {
-        return;
-    }
+    if (gl_LocalInvocationID.x < lighting.texels_per_probe && gl_LocalInvocationID.y < lighting.texels_per_probe) {
+        ivec2 texel_loc = ivec2(gl_LocalInvocationID.xy);
 
-    // Get texel position within the tile (including borders)
-    ivec2 texel_in_tile = pixel_coord % tile_size;
+        vec2 uv = (vec2(texel_loc + 0.5) / vec2(lighting.texels_per_probe));
+        vec3 probe_dir = oct_decode(uv);
 
-    // Skip border texels - borders are handled by separate border update pass
-    if (texel_in_tile.x == 0 || texel_in_tile.x == tile_size - 1 ||
-            texel_in_tile.y == 0 || texel_in_tile.y == tile_size - 1) {
-        return; // Don't write to borders in convolution
-    }
+        vec3 result_color = vec3(0.0);
+        float total_weight = 0.0;
 
-    // Texel position within the interior (0 to texels_per_probe-1)
-    ivec2 texel_in_probe = texel_in_tile - ivec2(1, 1);
+        for (int r = 0; r < lighting.rays_per_probe; r++) {
+            vec3 ray_dir = shared_ray_dir[r];
+            vec3 ray_rad = shared_ray_hit_data[r].rgb;
 
-    // Get the direction for this irradiance texel
-    vec2 oct_coord = (vec2(texel_in_probe) + 0.5) / float(lighting.texels_per_probe);
-    vec3 texel_normal = oct_decode(oct_coord);
+            float weight = max(0.0, dot(probe_dir, ray_dir));
 
-    // Accumulate irradiance from all rays
-    vec3 irradiance = vec3(0.0);
-    float total_weight = 0.0;
-
-    uint ray_offset = linear_probe_index * lighting.rays_per_probe;
-
-    float mean_distance = 0.0;
-    float mean_distance_squared = 0.0;
-
-    int backface_hits = 0;
-    float backface_threshold = 0.1;
-
-    for (uint i = 0; i < lighting.rays_per_probe; i++) {
-        DDGIRay ray = ray_buffer.rays[ray_offset + i];
-
-        if (ray.distance < 0.0f) {
-            backface_hits++;
-
-            if (backface_hits >= lighting.rays_per_probe * backface_threshold) {
-                // imageStore(out_depth, pixel_coord, vec4(0, 0, 0, 0));
-                // imageStore(out_irradiance, pixel_coord, vec4(0, 0, 0, 1.0));
-                return;
-            }
-
-            continue;
+            result_color += vec3(ray_rad * weight);
+            total_weight += weight;
         }
 
-        // Cosine weighting
-        float weight = max(0.0, dot(ray.direction, texel_normal));
+        if (total_weight > 0.00001)
+            result_color /= total_weight;
 
-        irradiance += ray.radiance * weight;
-        mean_distance += ray.distance * weight;
-        mean_distance_squared += ray.distance_squared * weight;
-        total_weight += weight;
+        ivec2 global_pos = ivec2(probe_x * (lighting.texels_per_probe + 2) + 1, probe_y * (lighting.texels_per_probe + 2) + 1) + texel_loc;
+
+        vec3 prev_color = imageLoad(irradiance_history, global_pos).rgb;
+        vec3 new_color = mix(result_color, prev_color, 0.97);
+
+        imageStore(out_irradiance, global_pos, vec4(new_color, 1.0));
     }
 
-    if (total_weight > 0.0001) {
-        irradiance /= total_weight;
-        mean_distance /= total_weight;
-        mean_distance_squared /= total_weight;
+    if (gl_LocalInvocationID.x < lighting.depth_texels_per_probe && gl_LocalInvocationID.y < lighting.depth_texels_per_probe) {
+        ivec2 texel_loc = ivec2(gl_LocalInvocationID.xy);
+
+        vec2 uv = (vec2(texel_loc + 0.5) / vec2(lighting.depth_texels_per_probe));
+        vec3 probe_dir = oct_decode(uv);
+
+        float result_dist = 0.0;
+        float result_dist_sq = 0.0;
+        float total_weight = 0.0;
+
+        for (int r = 0; r < lighting.rays_per_probe; r++) {
+            vec3 ray_dir = shared_ray_dir[r];
+            float ray_dist = shared_ray_hit_data[r].w;
+
+            float weight = pow(max(0.0, dot(probe_dir, ray_dir)), 64.0);
+
+            result_dist += ray_dist * weight;
+            result_dist_sq += (ray_dist * ray_dist) * weight;
+            total_weight += weight;
+        }
+
+        if (total_weight > 0.00001) {
+            result_dist /= total_weight;
+            result_dist_sq /= total_weight;
+        }
+
+        ivec2 global_pos = ivec2(probe_x * (lighting.depth_texels_per_probe + 2) + 1, probe_y * (lighting.depth_texels_per_probe + 2) + 1) + texel_loc;
+
+        vec2 prev_dist = imageLoad(depth_history, global_pos).rg;
+        vec2 new_dist = mix(vec2(result_dist, result_dist_sq), prev_dist, 0.97);
+
+        imageStore(out_depth, global_pos, vec4(new_dist, 0.0, 0.0));
     }
-
-    // Store with perception encoding
-    irradiance = pow(irradiance, vec3(1.0 / 2.2));
-
-    // Temporal filtering
-    vec3 old_irradiance = imageLoad(irradiance_history, pixel_coord).rgb;
-    irradiance = mix(irradiance, old_irradiance, 0.95);
-
-    vec2 old_depth = imageLoad(depth_history, pixel_coord).rg;
-    mean_distance = mix(mean_distance, old_depth.r, 0.97);
-    mean_distance_squared = mix(mean_distance_squared, old_depth.g, 0.97);
-
-    imageStore(out_depth, pixel_coord, vec4(mean_distance, mean_distance_squared, 0, 0));
-    imageStore(out_irradiance, pixel_coord, vec4(irradiance, 1.0));
 }
