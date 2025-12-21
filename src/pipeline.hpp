@@ -99,11 +99,12 @@ Pipeline create_graphics_pipeline(
 );
 
 Pipeline create_debug_render_pipeline(
-    VkDevice                     device,
-    const std::vector<Shader>&   shaders,
-    const std::vector<VkFormat>& color_attachment_formats,
-    VkFormat                     depth_format,
-    uint32_t                     push_constants_size
+    VkDevice                             device,
+    const std::vector<Shader>&           shaders,
+    const std::vector<DescriptorLayout>& descriptor_sets,
+    const std::vector<VkFormat>&         color_attachment_formats,
+    VkFormat                             depth_format,
+    uint32_t                             push_constants_size
 );
 
 Pipeline create_compute_pipeline(

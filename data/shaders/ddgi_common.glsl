@@ -141,8 +141,8 @@ vec3 sample_ddgi(LightingUBO lighting, vec3 surface_pos, vec3 surface_normal, ve
         // Sample irradiance at surface normal direction
         vec3 probe_irradiance = texture(ddgi_atlas, ddgi_probe_uv(lighting.probe_counts, probe_idx, surface_normal, lighting.texels_per_probe)).rgb;
 
-        // Optional: Perceptual blending (like RTXGI)
-        probe_irradiance = sqrt(probe_irradiance); // Gamma = 2 for blending
+        vec3 exponent = vec3(5.0 * 0.5);
+        probe_irradiance = pow(probe_irradiance, exponent);
 
         total_irradiance += weight * probe_irradiance;
         total_weight += weight;

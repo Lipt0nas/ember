@@ -12,6 +12,7 @@ layout(location = 5) flat in uint in_material_index;
 layout(location = 6) flat in uint in_occlusion_index;
 layout(location = 7) in vec3 in_world_pos;
 layout(location = 8) in vec3 in_emission;
+layout(location = 9) in vec2 in_multipliers;
 
 layout(set = 4, binding = 0) uniform sampler2D textures[];
 
@@ -47,7 +48,7 @@ void main() {
     vec3 normal = texture(textures[nonuniformEXT(in_normals_index)], in_uv).rgb * 2.0 - 1.0;
     vec3 material = texture(textures[nonuniformEXT(in_material_index)], in_uv).rgb;
 
-    out_color = vec4(albedo.rgb, material.x);
-    out_normal = vec4(oct_encode(world_normal(normal, in_normal, in_world_pos, in_uv)), MAP_METALLIC(material.y), 1.0);
+    out_color = vec4(albedo.rgb, material.y * in_multipliers.x);
+    out_normal = vec4(world_normal(normal, in_normal, in_world_pos, in_uv), MAP_METALLIC(material.z) * in_multipliers.y);
     out_emission = vec4(in_emission, 1.0);
 }

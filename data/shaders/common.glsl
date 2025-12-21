@@ -3,7 +3,7 @@
 
 #define MESHLETS_PER_TASK 32
 
-#define MAP_METALLIC(input) (1.0 - input)
+#define MAP_METALLIC(input) (input)
 
 #define EFFECT_RADIUS 0.75
 #define EFFECT_FALLOFF_RANGE 0.615
@@ -24,7 +24,7 @@
 #define PI               	(3.1415926535897932384626433832795)
 #define PI_HALF             (1.5707963267948966192313216916398)
 
-#define XE_GTAO_OCCLUSION_TERM_SCALE                    1.0
+#define XE_GTAO_OCCLUSION_TERM_SCALE                    1.5
 
 struct MeshletTaskPayload {
     uint draw_id;
@@ -69,6 +69,9 @@ struct DrawData {
 
     vec3 emission_color;
     uint emissive_index;
+
+    float roughness_multiplier;
+    float metallic_multiplier;
 };
 
 struct LightingUBO {
@@ -266,7 +269,76 @@ vec3 getSkyColor(vec3 ray_dir, vec3 sun_dir) {
 
 // Assuming normals are stored in the xy and channel
 vec3 unpack_normals(vec4 data) {
-    return oct_decode(data.xy);
+    // return oct_decode(data.xy);
+    return data.xyz;
+}
+
+uint XEGTAO_pack(vec4 unpacked) {
+    return ((uint(clamp(unpacked.x, 0.0, 1.0) * 255.0 + 0.5)) |
+        (uint(clamp(unpacked.y, 0.0, 1.0) * 255.0 + 0.5) << 8) |
+        (uint(clamp(unpacked.z, 0.0, 1.0) * 255.0 + 0.5) << 16) |
+        (uint(clamp(unpacked.w, 0.0, 1.0) * 255.0 + 0.5) << 24));
+}
+
+vec4 XEGTAO_unpack(uint packed) {
+    vec4 unpacked;
+    unpacked.x = float(packed & 0x000000ff) / 255.0;
+    unpacked.y = float(((packed >> 8) & 0x000000ff)) / 255.0;
+    unpacked.z = float(((packed >> 16) & 0x000000ff)) / 255.0;
+    unpacked.w = float(packed >> 24) / 255.0;
+
+    return unpacked;
+}
+
+const float e = 2.71828;
+
+float W_f(float x, float e0, float e1) {
+    if (x <= e0)
+        return 0;
+    if (x >= e1)
+        return 1;
+    float a = (x - e0) / (e1 - e0);
+    return a * a * (3 - 2 * a);
+}
+
+float H_f(float x, float e0, float e1) {
+    if (x <= e0)
+        return 0;
+    if (x >= e1)
+        return 1;
+    return (x - e0) / (e1 - e0);
+}
+
+float GranTurismoTonemapper(float x) {
+    float P = 1;
+    float a = 1;
+    float m = 0.22;
+    float l = 0.4;
+    float c = 1.33;
+    float b = 0;
+    float l0 = (P - m) * l / a;
+    float L0 = m - m / a;
+    float L1 = m + (1 - m) / a;
+    float L_x = m + a * (x - m);
+    float T_x = m * pow(x / m, c) + b;
+    float S0 = m + l0;
+    float S1 = m + a * l0;
+    float C2 = a * P / (P - S1);
+    float S_x = P - (P - S1) * pow(e, -(C2 * (x - S0) / P));
+    float w0_x = 1 - W_f(x, 0, m);
+    float w2_x = H_f(x, m + l0, m + l0);
+    float w1_x = 1 - w0_x - w2_x;
+    float f_x = T_x * w0_x + L_x * w1_x + S_x * w2_x;
+    return f_x;
+}
+
+vec3 aces_film(vec3 x) {
+    float a = 2.51;
+    float b = 0.03;
+    float c = 2.43;
+    float d = 0.59;
+    float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
 #endif

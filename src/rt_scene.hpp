@@ -13,6 +13,9 @@ struct Material {
 
     glm::vec3 emissive_color;
     uint32_t  emissive_index;
+
+    float roughness_multiplier;
+    float metallic_multiplier;
 };
 
 // TODO: move this out

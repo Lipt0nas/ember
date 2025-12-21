@@ -68,10 +68,12 @@ void main() {
         if (total_weight > 0.00001)
             result_color /= total_weight;
 
+        result_color = pow(result_color, vec3(1.0 / 5.0));
+
         ivec2 global_pos = ivec2(probe_x * (lighting.texels_per_probe + 2) + 1, probe_y * (lighting.texels_per_probe + 2) + 1) + texel_loc;
 
         vec3 prev_color = imageLoad(irradiance_history, global_pos).rgb;
-        vec3 new_color = mix(result_color, prev_color, 0.97);
+        vec3 new_color = mix(result_color, prev_color, 0.985);
 
         imageStore(out_irradiance, global_pos, vec4(new_color, 1.0));
     }
@@ -105,7 +107,7 @@ void main() {
         ivec2 global_pos = ivec2(probe_x * (lighting.depth_texels_per_probe + 2) + 1, probe_y * (lighting.depth_texels_per_probe + 2) + 1) + texel_loc;
 
         vec2 prev_dist = imageLoad(depth_history, global_pos).rg;
-        vec2 new_dist = mix(vec2(result_dist, result_dist_sq), prev_dist, 0.97);
+        vec2 new_dist = mix(vec2(result_dist, result_dist_sq), prev_dist, 0.985);
 
         imageStore(out_depth, global_pos, vec4(new_dist, 0.0, 0.0));
     }

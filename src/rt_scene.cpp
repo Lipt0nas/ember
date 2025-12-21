@@ -281,9 +281,10 @@ RTScene create_rt_scene(
     VkDeviceAddress scratch_buffer_address = get_buffer_device_address(scratch_buffer, device);
 
     VkAccelerationStructureBuildGeometryInfoKHR acceleration_build_geometry_info = {
-        .sType                    = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-        .type                     = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-        .flags                    = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+        .type  = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                 VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
         .mode                     = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
         .dstAccelerationStructure = top_level_acceleration_structure.handle,
         .geometryCount            = 1,
@@ -384,12 +385,13 @@ void rebuild_tlas(
             .accelerationStructureReference         = scene.blas_instances[inst.mesh_id].address
         };
 
-        glm::mat3x4 transform = glm::mat3x4(
-            glm::translate(glm::mat4(1.0f), inst.position) * glm::mat4_cast(inst.rotation) *
-            glm::scale(glm::mat4(1.0f), glm::vec3(inst.scale))
-        );
-
-        memcpy(&instance.transform, &transform, sizeof(VkTransformMatrixKHR));
+        glm::mat3 transform = transpose(glm::mat3_cast(inst.rotation)) * inst.scale;
+        memcpy(instance.transform.matrix[0], &transform[0], sizeof(float) * 3);
+        memcpy(instance.transform.matrix[1], &transform[1], sizeof(float) * 3);
+        memcpy(instance.transform.matrix[2], &transform[2], sizeof(float) * 3);
+        instance.transform.matrix[0][3] = inst.position.x;
+        instance.transform.matrix[1][3] = inst.position.y;
+        instance.transform.matrix[2][3] = inst.position.z;
 
         tlas_instances.push_back(instance);
     }
@@ -501,4 +503,7 @@ void destroy_rt_scene(const RTScene& scene, VkDevice device, VmaAllocator alloca
     }
     vkDestroyAccelerationStructureKHR(device, scene.tlas.handle, nullptr);
     destroy_buffer(scene.tlas.buffer, device, allocator);
+
+    destroy_buffer(scene.instance_buffer, device, allocator);
+    destroy_buffer(scene.scratch_buffer, device, allocator);
 }
