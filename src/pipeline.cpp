@@ -283,15 +283,21 @@ Pipeline create_graphics_pipeline(
 }
 
 Pipeline create_debug_render_pipeline(
-    VkDevice                     device,
-    const std::vector<Shader>&   shaders,
-    const std::vector<VkFormat>& color_attachment_formats,
-    VkFormat                     depth_format,
-    uint32_t                     push_constants_size
+    VkDevice                             device,
+    const std::vector<Shader>&           shaders,
+    const std::vector<DescriptorLayout>& descriptor_sets,
+    const std::vector<VkFormat>&         color_attachment_formats,
+    VkFormat                             depth_format,
+    uint32_t                             push_constants_size
 ) {
     VkShaderStageFlags shader_stage_flags = 0;
     for (auto& shader : shaders) {
         shader_stage_flags |= (VkShaderStageFlags)shader.stage;
+    }
+
+    std::vector<VkDescriptorSetLayout> set_layouts;
+    for (auto& set : descriptor_sets) {
+        set_layouts.push_back(create_descriptor_set_layout(device, shader_stage_flags, set.bindings, set.is_push_set));
     }
 
     VkPushConstantRange push_constants_range = {
@@ -306,8 +312,8 @@ Pipeline create_debug_render_pipeline(
         .sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .pNext                  = nullptr,
         .flags                  = 0,
-        .setLayoutCount         = 0,
-        .pSetLayouts            = nullptr,
+        .setLayoutCount         = static_cast<uint32_t>(set_layouts.size()),
+        .pSetLayouts            = set_layouts.data(),
         .pushConstantRangeCount = static_cast<uint32_t>(push_constants_present ? 1 : 0),
         .pPushConstantRanges    = push_constants_present ? &push_constants_range : nullptr
     };
@@ -327,11 +333,11 @@ Pipeline create_debug_render_pipeline(
 
     VkVertexInputBindingDescription vertex_binding_description = {
         .binding   = 0,
-        .stride    = sizeof(float) * 7,
+        .stride    = sizeof(float) * 8,
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
 
-    std::array<VkVertexInputAttributeDescription, 2> attribute_desriptions = {
+    std::array<VkVertexInputAttributeDescription, 3> attribute_desriptions = {
         VkVertexInputAttributeDescription{
             .location = 0,
             .binding  = 0,
@@ -342,8 +348,14 @@ Pipeline create_debug_render_pipeline(
         VkVertexInputAttributeDescription{
             .location = 1,
             .binding  = 0,
-            .format   = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .format   = VK_FORMAT_R32G32B32_SFLOAT,
             .offset   = sizeof(float) * 3,
+        },
+        VkVertexInputAttributeDescription{
+            .location = 2,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32_SFLOAT,
+            .offset   = sizeof(float) * 6,
         },
     };
 
@@ -361,7 +373,7 @@ Pipeline create_debug_render_pipeline(
         .sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .pNext                  = nullptr,
         .flags                  = 0,
-        .topology               = VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+        .topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         .primitiveRestartEnable = VK_FALSE,
     };
 
@@ -436,7 +448,7 @@ Pipeline create_debug_render_pipeline(
         .pNext                 = nullptr,
         .flags                 = 0,
         .depthTestEnable       = VK_TRUE,
-        .depthWriteEnable      = VK_FALSE,
+        .depthWriteEnable      = VK_TRUE,
         .depthCompareOp        = VK_COMPARE_OP_GREATER,
         .depthBoundsTestEnable = VK_FALSE,
         .stencilTestEnable     = VK_FALSE,
@@ -502,8 +514,8 @@ Pipeline create_debug_render_pipeline(
     return Pipeline{
         .shaders         = shaders,
         .stage_flags     = shader_stage_flags,
-        .set_layouts     = {},
-        .layout_handles  = {},
+        .set_layouts     = descriptor_sets,
+        .layout_handles  = set_layouts,
         .pipeline_layout = pipeline_layout,
         .pipeline_handle = pipeline,
         .bind_point      = VK_PIPELINE_BIND_POINT_GRAPHICS,

@@ -122,8 +122,8 @@ void main() {
         vec3 albedo = texture(textures[nonuniformEXT(draw.albedo_index)], uv).rgb;
         vec3 material = texture(textures[nonuniformEXT(draw.material_index)], uv).rgb;
 
-        float roughness = material.y;
-        float metallic = MAP_METALLIC(material.x);
+        float roughness = material.y * draw.roughness_multiplier;
+        float metallic = MAP_METALLIC(material.z) * draw.metallic_multiplier;
 
         vec3 sun_dir = (-lighting.light_direction.xyz);
         float shadow = 1.0;

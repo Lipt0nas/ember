@@ -7,17 +7,25 @@
 #include "common.glsl"
 
 layout(location = 0) in vec3 in_position;
-layout(location = 1) in vec4 in_color;
+layout(location = 1) in vec3 in_normal;
+layout(location = 2) in vec2 in_uv;
 
-layout(location = 0) out vec4 out_color;
+layout(location = 0) out vec3 out_pos;
+layout(location = 1) out vec3 out_normal;
+
+layout(scalar, set = 0, binding = 2) readonly buffer DrawDataBuffer {
+    vec3 draw_data[];
+};
 
 layout(push_constant, std430) uniform pc {
     mat4 combined_matrix;
+    vec3 camera_pos;
 } push;
 
 void main() {
-    vec4 clip_pos = push.combined_matrix * vec4(in_position, 1.0);
-    gl_Position = clip_pos;
+    vec4 pos = vec4(in_position + draw_data[gl_InstanceIndex], 1.0);
+    gl_Position = push.combined_matrix * pos;
 
-    out_color = in_color;
+    out_pos = pos.xyz;
+    out_normal = in_normal;
 }

@@ -193,6 +193,11 @@ struct ShadowBlurConstants {
     float     znear;
 };
 
+struct GlossyRTConstants {
+    glm::mat4 last_frame_view_proj;
+    uint      frame_index;
+};
+
 struct CullPassPushConstants {
     glm::vec2 screen_size;
 
@@ -266,6 +271,9 @@ struct DrawData {
 
     glm::vec3 emissive_color;
     uint32_t  emissive_index;
+
+    float roughness_multiplier;
+    float metallic_multiplier;
 };
 
 struct MeshletBounds {
@@ -286,135 +294,287 @@ struct DebugVertex {
 
 struct DebugRendererConstants {
     glm::mat4 combined_matrix;
+    glm::vec3 camera_pos;
+};
+
+class IcosphereGenerator {
+private:
+    std::vector<Vertex>                               vertices;
+    std::vector<uint32_t>                             indices;
+    std::map<std::pair<uint32_t, uint32_t>, uint32_t> midpointCache;
+
+    // Get midpoint between two vertices and normalize it to sphere surface
+    uint32_t getMiddlePoint(uint32_t p1, uint32_t p2) {
+        // Make sure p1 < p2 for consistent cache key
+        bool                          firstIsSmaller = p1 < p2;
+        std::pair<uint32_t, uint32_t> key            = firstIsSmaller ? std::make_pair(p1, p2) : std::make_pair(p2, p1);
+
+        // Check if we already computed this midpoint
+        auto it = midpointCache.find(key);
+        if (it != midpointCache.end()) {
+            return it->second;
+        }
+
+        // Calculate midpoint
+        glm::vec3 point1 = vertices[p1].position;
+        glm::vec3 point2 = vertices[p2].position;
+        glm::vec3 middle = glm::normalize((point1 + point2) * 0.5f);
+
+        // Add vertex makes sure point is on unit sphere
+        uint32_t index = static_cast<uint32_t>(vertices.size());
+        vertices.push_back({middle, middle, calculateTexCoord(middle)});
+
+        midpointCache[key] = index;
+        return index;
+    }
+
+    glm::vec2 calculateTexCoord(const glm::vec3& pos) {
+        // Spherical UV mapping
+        float u = 0.5f + atan2f(pos.z, pos.x) / (2.0f * M_PI);
+        float v = 0.5f - asinf(pos.y) / M_PI;
+        return glm::vec2(u, v);
+    }
+
+public:
+    void generate(float radius, int subdivisions) {
+        vertices.clear();
+        indices.clear();
+        midpointCache.clear();
+
+        // Golden ratio
+        const float t = (1.0f + sqrtf(5.0f)) / 2.0f;
+
+        // Create 12 vertices of icosahedron
+        std::vector<glm::vec3> baseVertices = {
+            glm::normalize(glm::vec3(-1, t, 0)),
+            glm::normalize(glm::vec3(1, t, 0)),
+            glm::normalize(glm::vec3(-1, -t, 0)),
+            glm::normalize(glm::vec3(1, -t, 0)),
+
+            glm::normalize(glm::vec3(0, -1, t)),
+            glm::normalize(glm::vec3(0, 1, t)),
+            glm::normalize(glm::vec3(0, -1, -t)),
+            glm::normalize(glm::vec3(0, 1, -t)),
+
+            glm::normalize(glm::vec3(t, 0, -1)),
+            glm::normalize(glm::vec3(t, 0, 1)),
+            glm::normalize(glm::vec3(-t, 0, -1)),
+            glm::normalize(glm::vec3(-t, 0, 1))
+        };
+
+        // Add vertices
+        for (const auto& pos : baseVertices) {
+            vertices.push_back({pos, pos, calculateTexCoord(pos)});
+        }
+
+        // Create 20 triangles of the icosahedron
+        std::vector<uint32_t> baseIndices = {
+            // 5 faces around point 0
+            0,
+            11,
+            5,
+            0,
+            5,
+            1,
+            0,
+            1,
+            7,
+            0,
+            7,
+            10,
+            0,
+            10,
+            11,
+
+            // 5 adjacent faces
+            1,
+            5,
+            9,
+            5,
+            11,
+            4,
+            11,
+            10,
+            2,
+            10,
+            7,
+            6,
+            7,
+            1,
+            8,
+
+            // 5 faces around point 3
+            3,
+            9,
+            4,
+            3,
+            4,
+            2,
+            3,
+            2,
+            6,
+            3,
+            6,
+            8,
+            3,
+            8,
+            9,
+
+            // 5 adjacent faces
+            4,
+            9,
+            5,
+            2,
+            4,
+            11,
+            6,
+            2,
+            10,
+            8,
+            6,
+            7,
+            9,
+            8,
+            1
+        };
+
+        indices = baseIndices;
+
+        // Subdivide triangles
+        for (int i = 0; i < subdivisions; i++) {
+            std::vector<uint32_t> newIndices;
+
+            for (size_t j = 0; j < indices.size(); j += 3) {
+                uint32_t v1 = indices[j];
+                uint32_t v2 = indices[j + 1];
+                uint32_t v3 = indices[j + 2];
+
+                // Get midpoints
+                uint32_t a = getMiddlePoint(v1, v2);
+                uint32_t b = getMiddlePoint(v2, v3);
+                uint32_t c = getMiddlePoint(v3, v1);
+
+                // Create 4 new triangles
+                newIndices.push_back(v1);
+                newIndices.push_back(a);
+                newIndices.push_back(c);
+                newIndices.push_back(v2);
+                newIndices.push_back(b);
+                newIndices.push_back(a);
+                newIndices.push_back(v3);
+                newIndices.push_back(c);
+                newIndices.push_back(b);
+                newIndices.push_back(a);
+                newIndices.push_back(b);
+                newIndices.push_back(c);
+            }
+
+            indices = newIndices;
+        }
+
+        // Scale to desired radius
+        if (radius != 1.0f) {
+            for (auto& vertex : vertices) {
+                vertex.position *= radius;
+            }
+        }
+    }
+
+    const std::vector<Vertex>& getVertices() const {
+        return vertices;
+    }
+    const std::vector<uint32_t>& getIndices() const {
+        return indices;
+    }
 };
 
 struct DebugRenderer {
-    Buffer       vertex_buffer;
-    VkDeviceSize vertex_buffer_offset;
-    uint32_t     frames_in_flight;
+    Buffer vertex_buffer;
+    Buffer index_buffer;
+    Buffer instance_buffer;
+
+    uint32_t frames_in_flight;
 
     Pipeline pipeline;
 
-    std::vector<DebugVertex> vertices;
-    uint32_t                 vertex_count;
+    uint32_t                     index_count;
+    uint32_t                     instance_count;
+    std::vector<glm::vec3>       instances;
+    std::vector<VkDescriptorSet> descriptor_sets;
 };
 
 void debug_renderer_start_frame(DebugRenderer& renderer, uint32_t frame_index) {
-    renderer.vertex_buffer_offset = (renderer.vertex_buffer.size / renderer.frames_in_flight) * frame_index;
-    renderer.vertex_count         = 0;
+    renderer.instance_count = 0;
 }
 
 void debug_renderer_upload_data(DebugRenderer& renderer, VmaAllocator vma_allocator, uint32_t frame_index) {
     void*  ptr        = nullptr;
-    size_t ptr_offset = (renderer.vertex_buffer.size / renderer.frames_in_flight) * frame_index;
-    VK_CHECK(vmaMapMemory(vma_allocator, renderer.vertex_buffer.allocation, &ptr));
+    size_t ptr_offset = (renderer.instance_buffer.size / renderer.frames_in_flight) * frame_index;
+    VK_CHECK(vmaMapMemory(vma_allocator, renderer.instance_buffer.allocation, &ptr));
     memcpy(
-        reinterpret_cast<char*>(ptr) + ptr_offset, renderer.vertices.data(), sizeof(DebugVertex) * renderer.vertex_count
+        reinterpret_cast<char*>(ptr) + ptr_offset, renderer.instances.data(), sizeof(Vertex) * renderer.instance_count
     );
-    VK_CHECK(
-        vmaFlushAllocation(vma_allocator, renderer.vertex_buffer.allocation, ptr_offset, renderer.vertex_buffer.size)
-    );
-}
-
-void debug_renderer_draw_line(
-    DebugRenderer& renderer, const glm::vec3& line_start, const glm::vec3& line_end, const glm::vec4& color
-) {
-    renderer.vertices[renderer.vertex_count++] = {.position = line_start, .color = color};
-    renderer.vertices[renderer.vertex_count++] = {.position = line_end, .color = color};
-}
-
-void debug_renderer_draw_triangle(
-    DebugRenderer& renderer, const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2, const glm::vec4& color
-) {
-    debug_renderer_draw_line(renderer, p0, p1, color);
-    debug_renderer_draw_line(renderer, p1, p2, color);
-    debug_renderer_draw_line(renderer, p2, p0, color);
-}
-
-void debug_renderer_draw_box(
-    DebugRenderer& renderer, const glm::vec3& center, const glm::vec3& half_extents, const glm::vec4& color
-) {
-    glm::vec3 corners[8] = {
-        center + glm::vec3(-half_extents.x, -half_extents.y, -half_extents.z),
-        center + glm::vec3(half_extents.x, -half_extents.y, -half_extents.z),
-        center + glm::vec3(half_extents.x, half_extents.y, -half_extents.z),
-        center + glm::vec3(-half_extents.x, half_extents.y, -half_extents.z),
-        center + glm::vec3(-half_extents.x, -half_extents.y, half_extents.z),
-        center + glm::vec3(half_extents.x, -half_extents.y, half_extents.z),
-        center + glm::vec3(half_extents.x, half_extents.y, half_extents.z),
-        center + glm::vec3(-half_extents.x, half_extents.y, half_extents.z)
-    };
-
-    debug_renderer_draw_line(renderer, corners[0], corners[1], color);
-    debug_renderer_draw_line(renderer, corners[1], corners[2], color);
-    debug_renderer_draw_line(renderer, corners[2], corners[3], color);
-    debug_renderer_draw_line(renderer, corners[3], corners[0], color);
-
-    debug_renderer_draw_line(renderer, corners[4], corners[5], color);
-    debug_renderer_draw_line(renderer, corners[5], corners[6], color);
-    debug_renderer_draw_line(renderer, corners[6], corners[7], color);
-    debug_renderer_draw_line(renderer, corners[7], corners[4], color);
-
-    debug_renderer_draw_line(renderer, corners[0], corners[4], color);
-    debug_renderer_draw_line(renderer, corners[1], corners[5], color);
-    debug_renderer_draw_line(renderer, corners[2], corners[6], color);
-    debug_renderer_draw_line(renderer, corners[3], corners[7], color);
+    VK_CHECK(vmaFlushAllocation(
+        vma_allocator, renderer.instance_buffer.allocation, ptr_offset, renderer.instance_buffer.size
+    ));
 }
 
 void debug_renderer_draw_sphere(
     DebugRenderer& renderer, const glm::vec3& center, float radius, const glm::vec4& color
 ) {
-    const int longitude_segments = 2;
-    const int latitude_segments  = 2;
-
-    const float lon_step = glm::two_pi<float>() / longitude_segments;
-    const float lat_step = glm::pi<float>() / latitude_segments;
-
-    for (int lon = 0; lon < longitude_segments; ++lon) {
-        float lon_angle = lon * lon_step;
-
-        for (int lat = 0; lat < latitude_segments; ++lat) {
-            float lat_angle1 = -glm::half_pi<float>() + lat * lat_step;
-            float lat_angle2 = -glm::half_pi<float>() + (lat + 1) * lat_step;
-
-            glm::vec3 p1 = center + glm::vec3(
-                                        radius * cos(lat_angle1) * cos(lon_angle),
-                                        radius * sin(lat_angle1),
-                                        radius * cos(lat_angle1) * sin(lon_angle)
-                                    );
-
-            glm::vec3 p2 = center + glm::vec3(
-                                        radius * cos(lat_angle2) * cos(lon_angle),
-                                        radius * sin(lat_angle2),
-                                        radius * cos(lat_angle2) * sin(lon_angle)
-                                    );
-
-            debug_renderer_draw_line(renderer, p1, p2, color);
-        }
-    }
-
-    for (int lat = 1; lat < latitude_segments; ++lat) {
-        float lat_angle     = -glm::half_pi<float>() + lat * lat_step;
-        float circle_radius = radius * cos(lat_angle);
-        float y             = radius * sin(lat_angle);
-
-        for (int lon = 0; lon < longitude_segments; ++lon) {
-            float lon_angle1 = lon * lon_step;
-            float lon_angle2 = (lon + 1) * lon_step;
-
-            glm::vec3 p1 = center + glm::vec3(circle_radius * cos(lon_angle1), y, circle_radius * sin(lon_angle1));
-            glm::vec3 p2 = center + glm::vec3(circle_radius * cos(lon_angle2), y, circle_radius * sin(lon_angle2));
-
-            debug_renderer_draw_line(renderer, p1, p2, color);
-        }
-    }
+    renderer.instances[renderer.instance_count++] = center;
 }
 
-DebugRenderer
-create_debug_renderer(VkDevice device, VmaAllocator vma_allocator, uint32_t frames_in_flight, VkFormat depth_format) {
+DebugRenderer create_debug_renderer(
+    const Buffer&    lighting_ubo,
+    const VkSampler& sampler,
+    const Image&     ddgi_irradiance,
+    const Image&     ddgi_depth,
+    VkDevice         device,
+    VmaAllocator     vma_allocator,
+    uint32_t         frames_in_flight,
+    VkFormat         depth_format,
+    VkDescriptorPool descriptor_pool
+) {
+    IcosphereGenerator generator;
+    generator.generate(0.45, 2);
+
+    auto max_instances = 2048 * 5;
+
+    auto vertices = generator.getVertices();
+    auto indices  = generator.getIndices();
+
     Buffer vertex_buffer = create_buffer(
-        1024 * 1024 * 32 * frames_in_flight,
+        sizeof(Vertex) * vertices.size(),
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+
+    {
+        void* ptr = nullptr;
+        VK_CHECK(vmaMapMemory(vma_allocator, vertex_buffer.allocation, &ptr));
+        memcpy(reinterpret_cast<char*>(ptr), vertices.data(), sizeof(Vertex) * vertices.size());
+        VK_CHECK(vmaFlushAllocation(vma_allocator, vertex_buffer.allocation, 0, vertex_buffer.size));
+    }
+
+    Buffer index_buffer = create_buffer(
+        sizeof(uint32_t) * indices.size(),
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+
+    {
+        void* ptr = nullptr;
+        VK_CHECK(vmaMapMemory(vma_allocator, index_buffer.allocation, &ptr));
+        memcpy(reinterpret_cast<char*>(ptr), indices.data(), sizeof(uint32_t) * indices.size());
+        VK_CHECK(vmaFlushAllocation(vma_allocator, index_buffer.allocation, 0, index_buffer.size));
+    }
+
+    Buffer instance_buffer = create_buffer(
+        sizeof(glm::vec3) * max_instances * frames_in_flight,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
@@ -425,21 +585,61 @@ create_debug_renderer(VkDevice device, VmaAllocator vma_allocator, uint32_t fram
             shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/debug.vert.spv"),
             shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/debug.frag.spv"),
         },
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info =
+                                DescriptorInfo(sampler, ddgi_irradiance.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                        },
+                        DescriptorBinding{
+                            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info =
+                                DescriptorInfo(sampler, ddgi_depth.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                        },
+                        DescriptorBinding{
+                            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                            .write_info =
+                                DescriptorInfo(instance_buffer.handle, 0, instance_buffer.size / frames_in_flight),
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                            .write_info = DescriptorInfo(lighting_ubo.handle, 0, lighting_ubo.size / frames_in_flight)
+                        },
+                    },
+            },
+        },
         {VK_FORMAT_R8G8B8A8_UNORM},
         depth_format,
         sizeof(DebugRendererConstants)
     );
 
+    std::vector<VkDescriptorSet> descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, pipeline);
+
+    std::vector<glm::vec3> instances;
+    instances.resize(max_instances);
+
     return DebugRenderer{
-        .vertex_buffer        = vertex_buffer,
-        .vertex_buffer_offset = 0,
-        .frames_in_flight     = frames_in_flight,
-        .pipeline             = pipeline,
-        .vertices             = std::vector<DebugVertex>(vertex_buffer.size / sizeof(DebugVertex) / frames_in_flight)
+        .vertex_buffer    = vertex_buffer,
+        .index_buffer     = index_buffer,
+        .instance_buffer  = instance_buffer,
+        .frames_in_flight = frames_in_flight,
+        .pipeline         = pipeline,
+        .index_count      = static_cast<uint32_t>(indices.size()),
+        .instance_count   = 0,
+        .instances        = instances,
+        .descriptor_sets  = descriptor_sets
     };
 }
 
-void destroy_debug_renderer(VkDevice device, VmaAllocator vma_allocator) {
+void destroy_debug_renderer(const DebugRenderer& renderer, VkDevice device, VmaAllocator vma_allocator) {
+    destroy_buffer(renderer.vertex_buffer, device, vma_allocator);
+    destroy_buffer(renderer.index_buffer, device, vma_allocator);
+    destroy_buffer(renderer.instance_buffer, device, vma_allocator);
+
+    destroy_pipeline(device, renderer.pipeline);
 }
 
 // TODO: is not nice
@@ -591,11 +791,13 @@ void load_scene(
             spdlog::warn("Material id {} \"{}\" does not have an emissive texture", i, mat.name);
         }
 
-        materials[i].albedo_index    = albedo_index;
-        materials[i].normals_index   = normals_index;
-        materials[i].material_index  = material_index;
-        materials[i].occlusion_index = material_index;
-        materials[i].emissive_index  = material_index;
+        materials[i].albedo_index         = albedo_index;
+        materials[i].normals_index        = normals_index;
+        materials[i].material_index       = material_index;
+        materials[i].occlusion_index      = material_index;
+        materials[i].emissive_index       = material_index;
+        materials[i].roughness_multiplier = mat.pbrMetallicRoughness.roughnessFactor;
+        materials[i].metallic_multiplier  = mat.pbrMetallicRoughness.metallicFactor;
 
         spdlog::info("({}, {}, {}) ", mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
         materials[i].emissive_color = glm::vec3(mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
@@ -952,28 +1154,28 @@ void load_scene(
     spdlog::info("Constructing scene");
     const tinygltf::Scene& scene = model.scenes[scene_id];
 
-    if (scene.nodes.size() == 1) {
-        for (int m = 0; m < model.meshes.size(); m++) {
-            auto& mesh = model.meshes[m];
-            for (int i = 0; i < mesh.primitives.size(); i++) {
-                int mesh_id = mesh_primitive_offsets[m] + i;
-
-                auto rot = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0));
-                rot *= glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
-
-                MeshInstance instance = {
-                    .mesh_id     = mesh_id,
-                    .material_id = mesh.primitives[i].material,
-                    .position    = {0, 0, 0},
-                    .scale       = 0.01,
-                    .rotation    = rot,
-                };
-                instances.push_back(instance);
-            }
-        }
-
-        return;
-    }
+    // if (scene.nodes.size() == 1) {
+    //     for (int m = 0; m < model.meshes.size(); m++) {
+    //         auto& mesh = model.meshes[m];
+    //         for (int i = 0; i < mesh.primitives.size(); i++) {
+    //             int mesh_id = mesh_primitive_offsets[m] + i;
+    //
+    //             auto rot = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0));
+    //             rot *= glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
+    //
+    //             MeshInstance instance = {
+    //                 .mesh_id     = mesh_id,
+    //                 .material_id = mesh.primitives[i].material,
+    //                 .position    = {0, 0, 0},
+    //                 .scale       = 0.01,
+    //                 .rotation    = rot,
+    //             };
+    //             instances.push_back(instance);
+    //         }
+    //     }
+    //
+    //     return;
+    // }
 
     for (int node_id : scene.nodes) {
         const auto& node = model.nodes[node_id];
@@ -1059,7 +1261,7 @@ int main() {
         return 1;
     }
 
-    auto* window = SDL_CreateWindow("Ember", 1920, 1080, SDL_WINDOW_VULKAN);
+    auto* window = SDL_CreateWindow("Ember", 2540, 1440, SDL_WINDOW_VULKAN);
     if (!window) {
         spdlog::error("Failed to create SDL window");
         return 1;
@@ -1210,23 +1412,23 @@ int main() {
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 30,
+            .descriptorCount = 40,
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-            .descriptorCount = 30,
+            .descriptorCount = 40,
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .descriptorCount = 60,
+            .descriptorCount = 70,
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 20,
+            .descriptorCount = 30,
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-            .descriptorCount = 20,
+            .descriptorCount = 30,
         },
 
     };
@@ -1261,7 +1463,7 @@ int main() {
         .addressModeV            = VK_SAMPLER_ADDRESS_MODE_REPEAT,
         .addressModeW            = VK_SAMPLER_ADDRESS_MODE_REPEAT,
         .mipLodBias              = 0.0f,
-        .anisotropyEnable        = VK_TRUE,
+        .anisotropyEnable        = VK_FALSE,
         .maxAnisotropy           = 16.0f,
         .compareEnable           = VK_FALSE,
         .compareOp               = VK_COMPARE_OP_ALWAYS,
@@ -1282,6 +1484,13 @@ int main() {
     VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &linear_sampler_clamped));
 
     sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+    sampler_info.addressModeU           = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_info.addressModeV           = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_info.addressModeW           = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_info.anisotropyEnable       = VK_TRUE;
+    VkSampler linear_sampler_anisotropy = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &linear_sampler_anisotropy));
 
     VkSamplerReductionModeCreateInfoEXT reduction_info = {
         .sType         = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO_EXT,
@@ -1388,7 +1597,7 @@ int main() {
     );
 
     Image gbuffer_normals = create_image(
-        VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+        VK_FORMAT_R16G16B16A16_SFLOAT,
         swapchain.width,
         swapchain.height,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1426,7 +1635,7 @@ int main() {
     lighting_data.remove_visibility_checks = 0;
 
     lighting_data.depth_texels_per_probe = 14;
-    lighting_data.rays_per_probe         = 196;
+    lighting_data.rays_per_probe         = 256;
 
     lighting_data.grid_origin = {
         (-lighting_data.probe_spacing * 0.5f) *
@@ -1559,18 +1768,7 @@ int main() {
     );
 
     Image ao_output = create_image(
-        VK_FORMAT_R8_UNORM,
-        swapchain.width,
-        swapchain.height,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT,
-        false,
-        vma_allocator,
-        device
-    );
-
-    Image ao_output_normals = create_image(
-        VK_FORMAT_R16G16B16A16_SFLOAT,
+        VK_FORMAT_R32_UINT,
         swapchain.width,
         swapchain.height,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1592,7 +1790,7 @@ int main() {
     );
 
     Image ao_output_denoised = create_image(
-        VK_FORMAT_R32_SFLOAT,
+        VK_FORMAT_R32_UINT,
         swapchain.width,
         swapchain.height,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1603,7 +1801,7 @@ int main() {
     );
 
     Image ao_output_denoised_pong = create_image(
-        VK_FORMAT_R32_SFLOAT,
+        VK_FORMAT_R32_UINT,
         swapchain.width,
         swapchain.height,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1667,6 +1865,49 @@ int main() {
         vma_allocator,
         device
     );
+
+    Image rt_reflection_chain = create_image(
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        true,
+        vma_allocator,
+        device
+    );
+
+    Image rt_reflection_history = create_image(
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    std::vector<VkImageView> rt_reflection_views(rt_reflection_chain.levels);
+    for (int i = 0; i < rt_reflection_views.size(); i++) {
+        VkImageViewCreateInfo mip_view_info = {
+            .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext            = nullptr,
+            .flags            = 0,
+            .image            = rt_reflection_chain.handle,
+            .viewType         = VK_IMAGE_VIEW_TYPE_2D,
+            .format           = rt_reflection_chain.format,
+            .subresourceRange = {
+                .aspectMask     = rt_reflection_chain.aspect,
+                .baseMipLevel   = static_cast<uint32_t>(i),
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1
+            },
+        };
+
+        VK_CHECK(vkCreateImageView(device, &mip_view_info, nullptr, &rt_reflection_views[i]));
+    }
 
     Image smaa_area_tex = load_image(
         "data/textures/smaa_area_tex.png",
@@ -1814,6 +2055,17 @@ int main() {
         );
 
         image_pipeline_barrier(
+            rt_reflection_history,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT
+        );
+
+        image_pipeline_barrier(
             ddgi_irradiance,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1915,6 +2167,9 @@ int main() {
         vkCmdClearColorImage(
             command_buffer, smaa_weights.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
         );
+        vkCmdClearColorImage(
+            command_buffer, rt_reflection_history.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
+        );
 
         vkCmdClearColorImage(
             command_buffer,
@@ -1958,6 +2213,17 @@ int main() {
             VK_ACCESS_2_SHADER_STORAGE_READ_BIT
         );
 
+        image_pipeline_barrier(
+            rt_reflection_chain,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+        );
+
         vkCmdClearColorImage(
             command_buffer,
             directional_shadow_buffer.handle,
@@ -1980,6 +2246,17 @@ int main() {
 
         image_pipeline_barrier(
             ddgi_irradiance_history,
+            command_buffer,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+        );
+
+        image_pipeline_barrier(
+            rt_reflection_history,
             command_buffer,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_GENERAL,
@@ -2078,17 +2355,6 @@ int main() {
         );
 
         image_pipeline_barrier(
-            ao_output_normals,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            0,
-            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-            0
-        );
-
-        image_pipeline_barrier(
             ao_output_edges,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
@@ -2176,26 +2442,26 @@ int main() {
             0
         );
 
-        std::vector<VkImageView> specular_image_views(specular_cubemap.levels);
-        for (int i = 0; i < specular_image_views.size(); i++) {
-            VkImageViewCreateInfo mip_view_info = {
-                .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                .pNext            = nullptr,
-                .flags            = 0,
-                .image            = specular_cubemap.handle,
-                .viewType         = VK_IMAGE_VIEW_TYPE_CUBE,
-                .format           = specular_cubemap.format,
-                .subresourceRange = {
-                    .aspectMask     = specular_cubemap.aspect,
-                    .baseMipLevel   = static_cast<uint32_t>(i),
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 6
-                },
-            };
-
-            VK_CHECK(vkCreateImageView(device, &mip_view_info, nullptr, &specular_image_views[i]));
-        }
+        // std::vector<VkImageView> specular_image_views(specular_cubemap.levels);
+        // for (int i = 0; i < specular_image_views.size(); i++) {
+        //     VkImageViewCreateInfo mip_view_info = {
+        //         .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        //         .pNext            = nullptr,
+        //         .flags            = 0,
+        //         .image            = specular_cubemap.handle,
+        //         .viewType         = VK_IMAGE_VIEW_TYPE_CUBE,
+        //         .format           = specular_cubemap.format,
+        //         .subresourceRange = {
+        //             .aspectMask     = specular_cubemap.aspect,
+        //             .baseMipLevel   = static_cast<uint32_t>(i),
+        //             .levelCount     = 1,
+        //             .baseArrayLayer = 0,
+        //             .layerCount     = 6
+        //         },
+        //     };
+        //
+        //     VK_CHECK(vkCreateImageView(device, &mip_view_info, nullptr, &specular_image_views[i]));
+        // }
 
         // Framegraph ibl_graph(device, graphics_queue, command_buffer, 1, false);
         // ibl_graph.import_image(irradiance_cubemap, VK_IMAGE_LAYOUT_GENERAL);
@@ -2452,9 +2718,9 @@ int main() {
         VK_CHECK(vkQueueSubmit(graphics_queue, 1, &submit_info, VK_NULL_HANDLE));
         VK_CHECK(vkDeviceWaitIdle(device));
 
-        for (auto view : specular_image_views) {
-            vkDestroyImageView(device, view, nullptr);
-        }
+        // for (auto view : specular_image_views) {
+        //     vkDestroyImageView(device, view, nullptr);
+        // }
 
         // destroy_pipeline(device, brdf_lut_pipeline);
         // destroy_pipeline(device, specular_pipeline);
@@ -2535,7 +2801,17 @@ int main() {
     );
 
     DebugRendererConstants debug_renderer_constants = {};
-    DebugRenderer debug_renderer = create_debug_renderer(device, vma_allocator, FRAMES_IN_FLIGHT, depth_buffer.format);
+    DebugRenderer          debug_renderer           = create_debug_renderer(
+        lighting_ubo_buffer,
+        linear_sampler_clamped,
+        ddgi_irradiance,
+        ddgi_depth_atlas,
+        device,
+        vma_allocator,
+        FRAMES_IN_FLIGHT,
+        depth_buffer.format,
+        descriptor_pool
+    );
 
     VkDeviceSize meshlet_buffer_offset                   = 0;
     VkDeviceSize meshlet_vertex_indices_offset           = 0;
@@ -2625,7 +2901,7 @@ int main() {
     std::vector<MeshInstance> mesh_instances;
 
     load_scene(
-        "data/models/sun.glb",
+        "data/models/blender.glb",
         meshes,
         materials,
         mesh_instances,
@@ -2650,7 +2926,7 @@ int main() {
         device
     );
 
-    populate_materials(texture_cache, global_texture_descriptor_set, linear_sampler, device);
+    populate_materials(texture_cache, global_texture_descriptor_set, linear_sampler_anisotropy, device);
 
     RTScene rt_scene = {};
 
@@ -2691,6 +2967,8 @@ int main() {
 
     camera.position = {16.1, 6.3, -0.57};
     camera.orientation *= glm::angleAxis(glm::radians(-90.0f), glm::vec3(0, 1, 0));
+
+    glm::mat4 last_frame_view_proj = glm::mat4(1.0);
 
     float base_camera_speed        = 10.0f;
     float camera_mouse_sensitivity = 0.003f;
@@ -2943,10 +3221,6 @@ int main() {
                             .write_info = DescriptorInfo(ao_output_edges.view, VK_IMAGE_LAYOUT_GENERAL)
                         },
                         DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                            .write_info = DescriptorInfo(ao_output_normals.view, VK_IMAGE_LAYOUT_GENERAL)
-                        },
-                        DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
                                 linear_sampler_clamped,
@@ -3059,14 +3333,16 @@ int main() {
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
-                                linear_sampler_clamped, ao_output_normals.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                linear_sampler_clamped,
+                                directional_shadow_buffer.view,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
                                 linear_sampler_clamped,
-                                directional_shadow_buffer.view,
+                                rt_reflection_chain.view,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
@@ -3195,7 +3471,6 @@ int main() {
     framegraph.import_image(fxaa_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(bloom_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     framegraph.import_image(ao_output, VK_IMAGE_LAYOUT_GENERAL);
-    framegraph.import_image(ao_output_normals, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(ao_output_edges, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(ao_output_denoised, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(ao_output_denoised_pong, VK_IMAGE_LAYOUT_GENERAL);
@@ -3205,6 +3480,7 @@ int main() {
     framegraph.import_image(smaa_edges, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(smaa_weights, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(smaa_output, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(rt_reflection_chain, VK_IMAGE_LAYOUT_GENERAL);
 
     auto cull_early_pass =
         framegraph.add_pass("cull early")
@@ -3580,7 +3856,6 @@ int main() {
                        .samples_image(ao_prefiltered_depth, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                        .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                        .writes_storage_image(ao_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                       .writes_storage_image(ao_output_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                        .writes_storage_image(ao_output_edges, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                        .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                            TracyVkZone(tracy_vk_context, command_buffer, "AO Pass");
@@ -4121,6 +4396,471 @@ int main() {
                                      );
                                  });
 
+    Pipeline rt_reflection_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/rt_reflection.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(rt_reflection_views[1], VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, gbuffer_albedo.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, gbuffer_normals.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, depth_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, ddgi_irradiance.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, ddgi_depth_atlas.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                            .write_info = DescriptorInfo(rt_scene.tlas.handle)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                            .write_info = DescriptorInfo(
+                                lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                        },
+                    }
+            },
+            scene_data_layout,
+            draw_data_layout,
+            geometry_data_layout,
+        },
+        0,
+        global_texture_descriptor_layout
+    );
+    std::vector<VkDescriptorSet> rt_reflection_pass_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, rt_reflection_pipeline);
+
+    auto& rt_reflection_pass =
+        framegraph.add_pass("RT Reflection")
+            .reads_buffer_dynamic(
+                scene_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                draw_data_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                draw_data_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                lighting_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
+                ZoneScopedN("RT Shadows");
+
+                const Pipeline& pipeline = rt_reflection_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                VkDescriptorSet sets[] = {
+                    rt_reflection_pass_descriptor_sets[0],
+                    rt_reflection_pass_descriptor_sets[1],
+                    rt_reflection_pass_descriptor_sets[2],
+                    rt_reflection_pass_descriptor_sets[3],
+                    global_texture_descriptor_set,
+                };
+
+                uint32_t offsets[] = {dynamic_offsets[4], dynamic_offsets[0], dynamic_offsets[1], dynamic_offsets[2]};
+
+                vkCmdBindDescriptorSets(
+                    command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline_layout, 0, 5, sets, 4, &offsets[0]
+                );
+
+                vkCmdDispatch(
+                    command_buffer,
+                    ((rt_reflection_chain.width / 2) + 7) / 8,
+                    ((rt_reflection_chain.height / 2) + 7) / 8,
+                    1
+                );
+            });
+
+    Pipeline rt_reflection_upsample = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/rt_upsample.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(rt_reflection_views[0], VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, rt_reflection_views[1], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, gbuffer_normals.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped,
+                                rt_reflection_history.view,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, depth_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                    }
+            },
+            scene_data_layout,
+        },
+        sizeof(GlossyRTConstants)
+    );
+    std::vector<VkDescriptorSet> rt_upsample_pass_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, rt_reflection_upsample);
+
+    auto& rt_upsample_pass =
+        framegraph.add_pass("RT Upsample")
+            .reads_buffer_dynamic(
+                scene_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(rt_reflection_chain, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(rt_reflection_chain, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
+                ZoneScopedN("RT Shadows");
+
+                const Pipeline& pipeline = rt_reflection_upsample;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    rt_upsample_pass_descriptor_sets.size(),
+                    rt_upsample_pass_descriptor_sets.data(),
+                    1,
+                    &dynamic_offsets[0]
+                );
+
+                GlossyRTConstants constants = {
+                    .last_frame_view_proj = last_frame_view_proj, .frame_index = frame_count
+                };
+
+                vkCmdPushConstants(
+                    command_buffer,
+                    pipeline.pipeline_layout,
+                    pipeline.stage_flags,
+                    0,
+                    sizeof(GlossyRTConstants),
+                    &constants
+                );
+
+                vkCmdDispatch(
+                    command_buffer, (rt_reflection_chain.width + 7) / 8, (rt_reflection_chain.height + 7) / 8, 1
+                );
+
+                image_pipeline_barrier(
+                    rt_reflection_chain,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT
+                );
+
+                image_pipeline_barrier(
+                    rt_reflection_history,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT
+                );
+
+                VkImageBlit blit_region = {
+                    .srcSubresource =
+                        {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
+                    .srcOffsets =
+                        {
+                            {0, 0, 0},
+                            {
+                                static_cast<int32_t>(rt_reflection_chain.width),
+                                static_cast<int32_t>(rt_reflection_chain.height),
+                                1,
+                            },
+                        },
+                    .dstSubresource =
+                        {
+                            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                            .mipLevel       = 0,
+                            .baseArrayLayer = 0,
+                            .layerCount     = 1,
+                        },
+                    .dstOffsets = {
+                        {0, 0, 0},
+                        {
+                            static_cast<int32_t>(rt_reflection_history.width),
+                            static_cast<int32_t>(rt_reflection_history.height),
+                            1,
+                        },
+                    },
+                };
+
+                vkCmdBlitImage(
+                    command_buffer,
+                    rt_reflection_chain.handle,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    rt_reflection_history.handle,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1,
+                    &blit_region,
+                    VK_FILTER_LINEAR
+                );
+
+                image_pipeline_barrier(
+                    rt_reflection_chain,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                );
+
+                image_pipeline_barrier(
+                    rt_reflection_history,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+                );
+            });
+
+    // Pipeline rt_reflection_downsample = create_compute_pipeline(
+    //     device,
+    //     shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/rt_downsample.comp.spv"),
+    //     {
+    //         DescriptorLayout{
+    //             .bindings =
+    //                 {
+    //                     DescriptorBinding{
+    //                         .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+    //                         .write_info = DescriptorInfo(
+    //                             linear_sampler_clamped, rt_reflection_views[0],
+    //                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+    //                         )
+    //                     },
+    //                     DescriptorBinding{
+    //                         .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+    //                         .write_info = DescriptorInfo(rt_reflection_views[1], VK_IMAGE_LAYOUT_GENERAL)
+    //                     },
+    //                     DescriptorBinding{
+    //                         .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+    //                         .write_info = DescriptorInfo(
+    //                             linear_sampler, gbuffer_normals.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+    //                         )
+    //                     },
+    //                 },
+    //             .is_push_set = true
+    //         },
+    //     },
+    //     sizeof(int) + sizeof(float)
+    // );
+    //
+    // auto& rt_downsample_pass = framegraph.add_pass("RT Downsample")
+    //                                .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+    //                                .writes_storage_image(rt_reflection_chain, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+    //                                .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+    //                                    TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
+    //                                    ZoneScopedN("RT Shadows");
+    //
+    //                                    const Pipeline& pipeline = rt_reflection_downsample;
+    //
+    //                                    vkCmdBindPipeline(command_buffer, pipeline.bind_point,
+    //                                    pipeline.pipeline_handle);
+    //
+    //                                    int   passes               = 3;
+    //                                    float rougnesses[]         = {0.25, 0.35, 0.5};
+    //                                    int   read_view_indices[]  = {1, 2, 3};
+    //                                    int   write_view_indices[] = {2, 3, 4};
+    //
+    //                                    for (int i = 0; i < passes; i++) {
+    //                                        int   read_index  = read_view_indices[i];
+    //                                        int   write_index = write_view_indices[i];
+    //                                        float roughness   = rougnesses[i];
+    //
+    //                                        VkDescriptorImageInfo image_read_info = {
+    //                                            .sampler     = linear_sampler_clamped,
+    //                                            .imageView   = rt_reflection_views[read_index],
+    //                                            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+    //                                        };
+    //
+    //                                        VkDescriptorImageInfo image_write_info = {
+    //                                            .sampler     = VK_NULL_HANDLE,
+    //                                            .imageView   = rt_reflection_views[write_index],
+    //                                            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+    //                                        };
+    //
+    //                                        VkDescriptorImageInfo normals_info = {
+    //                                            .sampler     = linear_sampler_clamped,
+    //                                            .imageView   = gbuffer_normals.view,
+    //                                            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    //                                        };
+    //
+    //                                        std::vector<VkWriteDescriptorSet> write_sets = {
+    //                                            {
+    //                                                .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+    //                                                .pNext            = nullptr,
+    //                                                .dstBinding       = 0,
+    //                                                .dstArrayElement  = 0,
+    //                                                .descriptorCount  = 1,
+    //                                                .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+    //                                                .pImageInfo       = &image_read_info,
+    //                                                .pBufferInfo      = nullptr,
+    //                                                .pTexelBufferView = nullptr,
+    //                                            },
+    //                                            {
+    //                                                .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+    //                                                .pNext            = nullptr,
+    //                                                .dstBinding       = 1,
+    //                                                .dstArrayElement  = 0,
+    //                                                .descriptorCount  = 1,
+    //                                                .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+    //                                                .pImageInfo       = &image_write_info,
+    //                                                .pBufferInfo      = nullptr,
+    //                                                .pTexelBufferView = nullptr,
+    //                                            },
+    //                                            {
+    //                                                .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+    //                                                .pNext            = nullptr,
+    //                                                .dstBinding       = 2,
+    //                                                .dstArrayElement  = 0,
+    //                                                .descriptorCount  = 1,
+    //                                                .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+    //                                                .pImageInfo       = &normals_info,
+    //                                                .pBufferInfo      = nullptr,
+    //                                                .pTexelBufferView = nullptr,
+    //                                            },
+    //                                        };
+    //
+    //                                        vkCmdPushDescriptorSet(
+    //                                            command_buffer,
+    //                                            VK_PIPELINE_BIND_POINT_COMPUTE,
+    //                                            pipeline.pipeline_layout,
+    //                                            0,
+    //                                            static_cast<uint32_t>(write_sets.size()),
+    //                                            write_sets.data()
+    //                                        );
+    //
+    //                                        struct {
+    //                                            int   mip_level;
+    //                                            float roughness;
+    //                                        } constants;
+    //
+    //                                        constants.mip_level = write_index;
+    //                                        constants.roughness = roughness;
+    //
+    //                                        vkCmdPushConstants(
+    //                                            command_buffer,
+    //                                            pipeline.pipeline_layout,
+    //                                            VK_SHADER_STAGE_COMPUTE_BIT,
+    //                                            0,
+    //                                            sizeof(int) + sizeof(float),
+    //                                            &constants
+    //                                        );
+    //
+    //                                        uint32_t mip_width = glm::max(1u, rt_reflection_chain.width >>
+    //                                        write_index); uint32_t mip_height =
+    //                                            glm::max(1u, rt_reflection_chain.height >> write_index);
+    //
+    //                                        vkCmdDispatch(command_buffer, (mip_width + 7) / 8, (mip_height + 7) / 8,
+    //                                        1);
+    //
+    //                                        if (i < passes - 1) {
+    //                                            VkImageMemoryBarrier2 barrier = {
+    //                                                .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+    //                                                .srcStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+    //                                                .srcAccessMask    = VK_ACCESS_2_SHADER_WRITE_BIT,
+    //                                                .dstStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+    //                                                .dstAccessMask    = VK_ACCESS_2_SHADER_READ_BIT,
+    //                                                .oldLayout        = VK_IMAGE_LAYOUT_GENERAL,
+    //                                                .newLayout        = VK_IMAGE_LAYOUT_GENERAL,
+    //                                                .image            = rt_reflection_chain.handle,
+    //                                                .subresourceRange = {
+    //                                                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+    //                                                    .baseMipLevel   = (uint32_t)write_index,
+    //                                                    .levelCount     = 1,
+    //                                                    .baseArrayLayer = 0,
+    //                                                    .layerCount     = 1
+    //                                                }
+    //                                            };
+    //
+    //                                            VkDependencyInfo dependency = {
+    //                                                .sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+    //                                                .imageMemoryBarrierCount = 1,
+    //                                                .pImageMemoryBarriers    = &barrier
+    //                                            };
+    //
+    //                                            vkCmdPipelineBarrier2(command_buffer, &dependency);
+    //                                        }
+    //                                    }
+    //                                });
+
     Pipeline shadow_pipeline = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/shadow.comp.spv"),
@@ -4434,8 +5174,8 @@ int main() {
             .samples_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_emissive, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .samples_image(ao_output_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(rt_reflection_chain, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Light Pass");
@@ -4877,6 +5617,18 @@ int main() {
                 VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
                 VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
             )
+            .reads_buffer_dynamic(
+                debug_renderer.instance_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                debug_renderer.instance_buffer.size / debug_renderer.frames_in_flight
+            )
+            .reads_buffer_dynamic(
+                lighting_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Debug Pass");
                 ZoneScopedN("Debug Pass");
@@ -4907,7 +5659,7 @@ int main() {
                     .resolveImageView   = VK_NULL_HANDLE,
                     .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
                     .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
-                    .storeOp            = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                    .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
                     .clearValue         = {.depthStencil = {.depth = 0.0f, .stencil = 0}}
                 };
 
@@ -4933,6 +5685,23 @@ int main() {
                 vkCmdBindPipeline(
                     command_buffer, debug_renderer.pipeline.bind_point, debug_renderer.pipeline.pipeline_handle
                 );
+
+                uint32_t instance_offset =
+                    (debug_renderer.instance_buffer.size / debug_renderer.frames_in_flight) * frame_index;
+                uint32_t offsets[] = {instance_offset, dynamic_offsets[4]};
+
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    debug_renderer.pipeline.pipeline_layout,
+                    0,
+                    1,
+                    debug_renderer.descriptor_sets.data(),
+                    2,
+                    offsets
+                );
+
+                debug_renderer_constants.camera_pos = camera.position;
                 vkCmdPushConstants(
                     command_buffer,
                     debug_renderer.pipeline.pipeline_layout,
@@ -4942,11 +5711,11 @@ int main() {
                     &debug_renderer_constants
                 );
 
-                VkDeviceSize offset =
-                    (debug_renderer.vertex_buffer.size / debug_renderer.frames_in_flight) * frame_index;
+                VkDeviceSize offset = 0;
                 vkCmdBindVertexBuffers(command_buffer, 0, 1, &debug_renderer.vertex_buffer.handle, &offset);
+                vkCmdBindIndexBuffer(command_buffer, debug_renderer.index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
 
-                vkCmdDraw(command_buffer, debug_renderer.vertex_count, 1, 0, 0);
+                vkCmdDrawIndexed(command_buffer, debug_renderer.index_count, debug_renderer.instance_count, 0, 0, 0);
 
                 vkCmdEndRendering(command_buffer);
             });
@@ -5323,7 +6092,7 @@ int main() {
                                                                               z * lighting_data.probe_spacing
                                                                           );
 
-                        debug_renderer_draw_box(debug_renderer, probe_pos, glm::vec3(0.2), {1, 1, 0, 1});
+                        debug_renderer_draw_sphere(debug_renderer, probe_pos, 1.0, {1, 1, 0, 1});
                     }
                 }
             }
@@ -5340,22 +6109,24 @@ int main() {
 
             bindless_draw_data_cpu_buffer.push_back(
                 DrawData{
-                    .center          = mesh.center,
-                    .radius          = mesh.radius,
-                    .position        = instance.position,
-                    .scale           = instance.scale,
-                    .rotation        = instance.rotation,
-                    .index_count     = mesh.index_count,
-                    .first_index     = first_index,
-                    .vertex_offset   = vertex_offset,
-                    .meshlet_offset  = mesh.meshlet_offset,
-                    .meshlet_count   = mesh.meshlet_count,
-                    .albedo_index    = material.albedo_index,
-                    .normals_index   = material.normals_index,
-                    .material_index  = material.material_index,
-                    .occlusion_index = material.occlusion_index,
-                    .emissive_color  = material.emissive_color,
-                    .emissive_index  = material.emissive_index
+                    .center               = mesh.center,
+                    .radius               = mesh.radius,
+                    .position             = instance.position,
+                    .scale                = instance.scale,
+                    .rotation             = instance.rotation,
+                    .index_count          = mesh.index_count,
+                    .first_index          = first_index,
+                    .vertex_offset        = vertex_offset,
+                    .meshlet_offset       = mesh.meshlet_offset,
+                    .meshlet_count        = mesh.meshlet_count,
+                    .albedo_index         = material.albedo_index,
+                    .normals_index        = material.normals_index,
+                    .material_index       = material.material_index,
+                    .occlusion_index      = material.occlusion_index,
+                    .emissive_color       = material.emissive_color,
+                    .emissive_index       = material.emissive_index,
+                    .roughness_multiplier = material.roughness_multiplier,
+                    .metallic_multiplier  = material.metallic_multiplier,
                 }
             );
         }
@@ -5609,6 +6380,8 @@ int main() {
                 VK_QUERY_RESULT_64_BIT
             );
         }
+
+        last_frame_view_proj = scene_ubo.view_proj;
     }
 
     VK_CHECK(vkDeviceWaitIdle(device));
@@ -5633,6 +6406,8 @@ int main() {
     destroy_buffer(meshlet_vertex_indices_buffer, device, vma_allocator);
     destroy_buffer(meshlet_buffer, device, vma_allocator);
     destroy_buffer(scene_ubo_buffer, device, vma_allocator);
+    destroy_buffer(lighting_ubo_buffer, device, vma_allocator);
+    destroy_buffer(ddgi_ray_buffer, device, vma_allocator);
     destroy_image(depth_buffer, device, vma_allocator);
     destroy_image(lightpass_output, device, vma_allocator);
     destroy_image(composite_output, device, vma_allocator);
@@ -5649,6 +6424,17 @@ int main() {
     destroy_image(brdf_lut, device, vma_allocator);
     destroy_image(specular_cubemap, device, vma_allocator);
     destroy_image(irradiance_cubemap, device, vma_allocator);
+    destroy_image(ddgi_irradiance, device, vma_allocator);
+    destroy_image(ddgi_irradiance_history, device, vma_allocator);
+    destroy_image(ddgi_depth_atlas, device, vma_allocator);
+    destroy_image(ddgi_depth_atlas_history, device, vma_allocator);
+    destroy_image(directional_shadow_buffer, device, vma_allocator);
+    destroy_image(directional_shadow_buffer_pong, device, vma_allocator);
+    destroy_image(smaa_area_tex, device, vma_allocator);
+    destroy_image(smaa_search_tex, device, vma_allocator);
+    destroy_image(smaa_edges, device, vma_allocator);
+    destroy_image(smaa_output, device, vma_allocator);
+    destroy_image(smaa_weights, device, vma_allocator);
 
     for (auto view : depth_mip_views) {
         vkDestroyImageView(device, view, nullptr);
@@ -5673,6 +6459,16 @@ int main() {
     destroy_pipeline(device, ao_prefilter_pipeline);
     destroy_pipeline(device, ao_pipeline);
     destroy_pipeline(device, ao_denoise_pipeline);
+    destroy_pipeline(device, ddgi_ray_pipeline);
+    destroy_pipeline(device, ddgi_ray_conv_pipeline);
+    destroy_pipeline(device, ddgi_border_pipeline);
+    destroy_pipeline(device, smaa_edge_pipeline);
+    destroy_pipeline(device, smaa_blend_pipeline);
+    destroy_pipeline(device, smaa_weights_pipeline);
+    destroy_pipeline(device, shadow_pipeline);
+    destroy_pipeline(device, shadow_fill_pipeline);
+    destroy_pipeline(device, shadow_blur_pipeline);
+    destroy_pipeline(device, rt_reflection_pipeline);
 
     for (auto image : loaded_images) {
         destroy_image(image, device, vma_allocator);
@@ -5681,6 +6477,8 @@ int main() {
     if (use_hardware_rt) {
         destroy_rt_scene(rt_scene, device, vma_allocator);
     }
+
+    destroy_debug_renderer(debug_renderer, device, vma_allocator);
 
     vmaDestroyAllocator(vma_allocator);
 
