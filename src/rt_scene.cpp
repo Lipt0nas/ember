@@ -423,7 +423,7 @@ void rebuild_tlas(
         .sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
         .type          = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
         .flags         = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
-        .mode          = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+        .mode          = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR,
         .geometryCount = 1,
         .pGeometries   = &tlas_geometry
     };
@@ -441,16 +441,9 @@ void rebuild_tlas(
         &acceleration_structure_build_sizes_info
     );
 
-    Buffer top_level_acceleration_structure_buffer = create_buffer(
-        acceleration_structure_build_sizes_info.accelerationStructureSize,
-        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        allocator,
-        VMA_MEMORY_USAGE_GPU_ONLY
-    );
-
     VkAccelerationStructureCreateInfoKHR acceleration_structure_create_info = {
         .sType  = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
-        .buffer = top_level_acceleration_structure_buffer.handle,
+        .buffer = scene.tlas.buffer.handle,
         .size   = acceleration_structure_build_sizes_info.accelerationStructureSize,
         .type   = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
     };
@@ -490,10 +483,9 @@ void rebuild_tlas(
         VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_SHADER_READ_BIT
+        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT |
+            VK_ACCESS_2_SHADER_READ_BIT
     );
-
-    VkDeviceAddress top_level_acceleration_structure_address;
 }
 
 void destroy_rt_scene(const RTScene& scene, VkDevice device, VmaAllocator allocator) {
