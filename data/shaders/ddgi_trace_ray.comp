@@ -165,7 +165,7 @@ void main() {
 
         vec3 direct_radiance = lighting.light_color.xyz * lighting.light_color.a;
 
-        Lo = (kD * albedo) * direct_radiance * NdotL * shadow;
+        Lo = (kD * albedo / PI) * direct_radiance * NdotL * shadow;
 
         radiance = Lo + indirect + emission;
     } else {

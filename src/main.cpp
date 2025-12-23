@@ -159,6 +159,7 @@ struct alignas(16) SceneUBO {
     float far_plane;
 };
 
+const int ray_per_probe_values[] = {16, 32, 64, 128, 256};
 #define MAX_RAYS_PER_PROBE 256
 struct alignas(16) LightingUBO {
     glm::vec4 light_direction;
@@ -223,7 +224,6 @@ struct XeGTAOConstants {
     glm::vec2 camera_near_far;
 
     uint32_t final_pass;
-    uint32_t construct_normals;
 };
 
 struct CompositePushConstants {
@@ -883,7 +883,10 @@ void load_scene(
             }
 
             center /= float(vertex_count);
-            float radius = 0.0f;
+
+            glm::vec3 bounds_min = glm::vec3(std::numeric_limits<float>::max());
+            glm::vec3 bounds_max = glm::vec3(std::numeric_limits<float>::min());
+            float     radius     = 0.0f;
 
             for (size_t i = 0; i < vertex_count; i++) {
                 glm::vec3 position = {
@@ -891,6 +894,9 @@ void load_scene(
                     positions[i * 3 + 1],
                     positions[i * 3 + 2],
                 };
+
+                bounds_min = glm::min(bounds_min, position);
+                bounds_max = glm::max(bounds_max, position);
 
                 radius = std::max(radius, distance(center, position));
             }
@@ -1137,7 +1143,9 @@ void load_scene(
                 vertices.size(),
                 indices.size(),
                 center,
-                radius
+                radius,
+                bounds_min,
+                bounds_max
             );
 
             current_entry++;
@@ -1483,14 +1491,14 @@ int main() {
     VkSampler linear_sampler_clamped = VK_NULL_HANDLE;
     VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &linear_sampler_clamped));
 
-    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-
     sampler_info.addressModeU           = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sampler_info.addressModeV           = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sampler_info.addressModeW           = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sampler_info.anisotropyEnable       = VK_TRUE;
     VkSampler linear_sampler_anisotropy = VK_NULL_HANDLE;
     VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &linear_sampler_anisotropy));
+
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 
     VkSamplerReductionModeCreateInfoEXT reduction_info = {
         .sType         = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO_EXT,
@@ -1501,6 +1509,13 @@ int main() {
 
     VkSampler depth_sampler = VK_NULL_HANDLE;
     VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &depth_sampler));
+
+    sampler_info.anisotropyEnable = VK_FALSE;
+    sampler_info.magFilter        = VK_FILTER_NEAREST;
+    sampler_info.minFilter        = VK_FILTER_NEAREST;
+    sampler_info.pNext            = nullptr;
+    VkSampler nearest_sampler     = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &nearest_sampler));
 
     Buffer staging_buffer = create_buffer(
         1024 * 1024 * 128,
@@ -1911,6 +1926,17 @@ int main() {
 
     Image smaa_area_tex = load_image(
         "data/textures/smaa_area_tex.png",
+        VK_FORMAT_R8G8B8A8_UNORM,
+        false,
+        staging_buffer,
+        command_buffers[0],
+        graphics_queue,
+        vma_allocator,
+        device
+    );
+
+    Image blue_noise_texure = load_image(
+        "data/textures/LDR_RGBA_0.png",
         VK_FORMAT_R8G8B8A8_UNORM,
         false,
         staging_buffer,
@@ -2463,10 +2489,10 @@ int main() {
         //     VK_CHECK(vkCreateImageView(device, &mip_view_info, nullptr, &specular_image_views[i]));
         // }
 
-        // Framegraph ibl_graph(device, graphics_queue, command_buffer, 1, false);
+        Framegraph ibl_graph(device, graphics_queue, command_buffer, 1, false);
         // ibl_graph.import_image(irradiance_cubemap, VK_IMAGE_LAYOUT_GENERAL);
         // ibl_graph.import_image(specular_cubemap, VK_IMAGE_LAYOUT_GENERAL);
-        // ibl_graph.import_image(brdf_lut, VK_IMAGE_LAYOUT_GENERAL);
+        ibl_graph.import_image(brdf_lut, VK_IMAGE_LAYOUT_GENERAL);
         //
         // Pipeline irradiance_pipeline = create_compute_pipeline(
         //     device,
@@ -2529,55 +2555,55 @@ int main() {
         //             );
         //         });
         //
-        // Pipeline brdf_lut_pipeline = create_compute_pipeline(
-        //     device,
-        //     shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/brdf_lut.comp.spv"),
-        //     {
-        //         DescriptorLayout{
-        //             .bindings = {DescriptorBinding{
-        //                 .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        //                 .write_info = DescriptorInfo(brdf_lut.view, VK_IMAGE_LAYOUT_GENERAL)
-        //             }}
-        //         },
-        //     }
-        // );
-        // std::vector<VkDescriptorSet> lut_sets = allocate_descriptor_sets(device, descriptor_pool, brdf_lut_pipeline);
-        //
-        // auto lut_pass =
-        //     ibl_graph.add_pass("lut")
-        //         .writes_storage_image(brdf_lut, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-        //         .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-        //             vkCmdBindPipeline(command_buffer, brdf_lut_pipeline.bind_point,
-        //             brdf_lut_pipeline.pipeline_handle); vkCmdBindDescriptorSets(
-        //                 command_buffer,
-        //                 brdf_lut_pipeline.bind_point,
-        //                 brdf_lut_pipeline.pipeline_layout,
-        //                 0,
-        //                 lut_sets.size(),
-        //                 lut_sets.data(),
-        //                 0,
-        //                 nullptr
-        //             );
-        //
-        //             uint32_t resolution = brdf_lut.width;
-        //             vkCmdDispatch(
-        //                 command_buffer,
-        //                 (resolution + 15) / 16, // X
-        //                 (resolution + 15) / 16, // Y
-        //                 1
-        //             );
-        //
-        //             image_pipeline_barrier(
-        //                 brdf_lut,
-        //                 command_buffer,
-        //                 VK_IMAGE_LAYOUT_GENERAL,
-        //                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        //                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        //                 VK_ACCESS_2_SHADER_WRITE_BIT,
-        //                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        //                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-        //             );
-        //         });
+        Pipeline brdf_lut_pipeline = create_compute_pipeline(
+            device,
+            shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/brdf_lut.comp.spv"),
+            {
+                DescriptorLayout{
+                    .bindings = {DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        .write_info = DescriptorInfo(brdf_lut.view, VK_IMAGE_LAYOUT_GENERAL)
+                    }}
+                },
+            }
+        );
+        std::vector<VkDescriptorSet> lut_sets = allocate_descriptor_sets(device, descriptor_pool, brdf_lut_pipeline);
+
+        auto lut_pass =
+            ibl_graph.add_pass("lut")
+                .writes_storage_image(brdf_lut, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                    vkCmdBindPipeline(command_buffer, brdf_lut_pipeline.bind_point, brdf_lut_pipeline.pipeline_handle);
+                    vkCmdBindDescriptorSets(
+                        command_buffer,
+                        brdf_lut_pipeline.bind_point,
+                        brdf_lut_pipeline.pipeline_layout,
+                        0,
+                        lut_sets.size(),
+                        lut_sets.data(),
+                        0,
+                        nullptr
+                    );
+
+                    uint32_t resolution = brdf_lut.width;
+                    vkCmdDispatch(
+                        command_buffer,
+                        (resolution + 15) / 16, // X
+                        (resolution + 15) / 16, // Y
+                        1
+                    );
+
+                    image_pipeline_barrier(
+                        brdf_lut,
+                        command_buffer,
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+                    );
+                });
         //
         // struct IBLConstants {
         //     uint32_t face;
@@ -2687,8 +2713,8 @@ int main() {
         //             }
         //         });
         //
-        // ibl_graph.build();
-        // ibl_graph.execute(command_buffer, 0);
+        ibl_graph.build();
+        ibl_graph.execute(command_buffer, 0);
         //
         // image_pipeline_barrier(
         //     specular_cubemap,
@@ -2722,7 +2748,7 @@ int main() {
         //     vkDestroyImageView(device, view, nullptr);
         // }
 
-        // destroy_pipeline(device, brdf_lut_pipeline);
+        destroy_pipeline(device, brdf_lut_pipeline);
         // destroy_pipeline(device, specular_pipeline);
         // destroy_pipeline(device, irradiance_pipeline);
     }
@@ -2901,7 +2927,7 @@ int main() {
     std::vector<MeshInstance> mesh_instances;
 
     load_scene(
-        "data/models/blender.glb",
+        "data/models/bistro.glb",
         meshes,
         materials,
         mesh_instances,
@@ -2976,9 +3002,13 @@ int main() {
     float camera_speed             = base_camera_speed;
 
     bool      capturing_mouse = false;
-    glm::vec2 last_mouse_pos  = {};
+    glm::vec2 mouse_pos       = {};
 
-    bool pressed_keys[512] = {0};
+    bool pressed_keys[512]   = {0};
+    bool pressed_buttons[12] = {0};
+
+    MeshInstance* grabbed_mesh = nullptr;
+    glm::vec2     grab_origin  = {};
 
     uint32_t frame_count = 0;
     uint32_t frame_index = 0;
@@ -2999,11 +3029,11 @@ int main() {
     bool debug_frustum   = false;
     bool disable_culling = false;
 
-    bool use_fxaa = true;
+    bool use_fxaa = false;
 
     bool running = true;
 
-    int bloom_levels = (bloom_buffer.levels - 2);
+    int bloom_levels = (6);
 
     std::array<uint64_t, 2> pipeline_stats;
 
@@ -3347,6 +3377,12 @@ int main() {
                             )
                         },
                         DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler_clamped, brdf_lut.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
                             .write_info = DescriptorInfo(
                                 lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
@@ -3564,7 +3600,7 @@ int main() {
 
                 vkCmdBeginQuery(command_buffer, statistics_pools[frame_index], 0, 0);
 
-                // rebuild_tlas(rt_scene, device, vma_allocator, command_buffer, meshes, mesh_instances);
+                rebuild_tlas(rt_scene, device, vma_allocator, command_buffer, meshes, mesh_instances);
 
                 std::vector<VkRenderingAttachmentInfo> gbuffer_color_attachments = {
                     {
@@ -4438,6 +4474,12 @@ int main() {
                             )
                         },
                         DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                linear_sampler, blue_noise_texure.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
                             .write_info = DescriptorInfo(rt_scene.tlas.handle)
                         },
@@ -4482,7 +4524,7 @@ int main() {
             .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(rt_reflection_chain, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
                 ZoneScopedN("RT Shadows");
@@ -5285,13 +5327,13 @@ int main() {
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
-                                linear_sampler, smaa_area_tex.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                linear_sampler_clamped, smaa_area_tex.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
-                                linear_sampler, smaa_search_tex.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                linear_sampler_clamped, smaa_search_tex.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
                     }
@@ -5850,6 +5892,7 @@ int main() {
                 pressed_keys[window_event.key.scancode] = false;
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                pressed_buttons[window_event.button.button] = true;
                 if (window_event.button.button == SDL_BUTTON_RIGHT) {
                     SDL_SetWindowMouseGrab(window, true);
                     SDL_SetWindowRelativeMouseMode(window, true);
@@ -5858,6 +5901,7 @@ int main() {
                 }
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
+                pressed_buttons[window_event.button.button] = false;
                 if (window_event.button.button == SDL_BUTTON_RIGHT) {
                     SDL_SetWindowMouseGrab(window, false);
                     SDL_SetWindowRelativeMouseMode(window, false);
@@ -5871,6 +5915,8 @@ int main() {
 
                 auto x = static_cast<float>(window_event.motion.x);
                 auto y = static_cast<float>(window_event.motion.y);
+
+                mouse_pos = {x, y};
 
                 if (capturing_mouse) {
 
@@ -5892,8 +5938,14 @@ int main() {
             }
         }
 
-        if (pressed_keys[SDL_SCANCODE_LSHIFT]) {
-            camera_speed = base_camera_speed * camera_speed_mod;
+        if (pressed_keys[SDL_SCANCODE_LSHIFT] | pressed_keys[SDL_SCANCODE_LCTRL]) {
+            if (pressed_keys[SDL_SCANCODE_LCTRL]) {
+                camera_speed = base_camera_speed / camera_speed_mod;
+            }
+
+            if (pressed_keys[SDL_SCANCODE_LSHIFT]) {
+                camera_speed = base_camera_speed * camera_speed_mod;
+            }
         } else {
             camera_speed = base_camera_speed;
         }
@@ -5978,6 +6030,20 @@ int main() {
             ImGui::SliderFloat("Light intensity", &lighting_data.light_color.w, 0.0, 100.0);
 
             ImGui::SeparatorText("DDGI");
+            if (ImGui::BeginCombo("DDGI Rays Per Probe", std::to_string(lighting_data.rays_per_probe).c_str())) {
+                for (int i = 0; i < IM_ARRAYSIZE(ray_per_probe_values); i++) {
+                    bool is_selected = (lighting_data.rays_per_probe == ray_per_probe_values[i]);
+                    if (ImGui::Selectable(std::to_string(ray_per_probe_values[i]).c_str(), is_selected)) {
+                        lighting_data.rays_per_probe = ray_per_probe_values[i];
+                    }
+
+                    if (is_selected) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+
             ImGui::DragFloat("Probe Spacing", &lighting_data.probe_spacing, 0.01, 0.1, 10.0);
             ImGui::DragFloat3("Grid Origin", &lighting_data.grid_origin.x, 0.03, -100.0, 100.0);
             ImGui::Checkbox("Visualize Probes", (bool*)&visualize_probes);
@@ -5988,7 +6054,6 @@ int main() {
             ImGui::Checkbox("Remove Visibility Checks", (bool*)&lighting_data.remove_visibility_checks);
             ImGui::Checkbox("Indirect Only", (bool*)&lighting_data.indirect_only);
             ImGui::Checkbox("AO Only", (bool*)&lighting_data.ao_only);
-            ImGui::Checkbox("AO Construct normals", (bool*)&xegtao_constants.construct_normals);
 
             ImGui::SeparatorText("Bloom");
             ImGui::SliderFloat("Bloom strength", &composite_push_constants.bloom_strength, 0.0, 1.0);
@@ -6095,6 +6160,77 @@ int main() {
                         debug_renderer_draw_sphere(debug_renderer, probe_pos, 1.0, {1, 1, 0, 1});
                     }
                 }
+            }
+        }
+
+        if (pressed_keys[SDL_SCANCODE_LSHIFT] && !capturing_mouse) {
+            if (pressed_buttons[SDL_BUTTON_LEFT]) {
+                auto transform_point =
+                    [](glm::vec3 point, glm::vec3 position, glm::quat rotation, float scale) -> glm::vec3 {
+                    return (point + 2.0f * glm::cross(
+                                               glm::vec3(rotation.x, rotation.y, rotation.z),
+                                               glm::cross(glm::vec3(rotation.x, rotation.y, rotation.z), point) +
+                                                   rotation.w * point
+                                           )) *
+                               scale +
+                           position;
+                };
+
+                if (grabbed_mesh == nullptr) {
+                    int w;
+                    int h;
+                    SDL_GetWindowSizeInPixels(window, &w, &h);
+
+                    glm::vec4 mouse_near = {(mouse_pos / glm::vec2(w, h)) * 2.0f - 1.0f, 1, 1.0};
+                    mouse_near.y *= -1;
+                    mouse_near = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_near;
+                    glm::vec3 near = glm::vec3(mouse_near) / mouse_near.w;
+
+                    glm::vec4 mouse_far = {(mouse_pos / glm::vec2(w, h)) * 2.0f - 1.0f, 0.01, 1.0};
+                    mouse_far.y *= -1;
+                    mouse_far = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_far;
+                    glm::vec3 far = glm::vec3(mouse_far) / mouse_far.w;
+
+                    glm::vec3 origin  = camera.position;
+                    glm::vec3 ray_dir = glm::normalize(far - near);
+
+                    float closest_t = std::numeric_limits<float>::max();
+                    for (auto& i : mesh_instances) {
+                        auto& m = meshes[i.mesh_id];
+
+                        glm::vec3 boxMin = transform_point(m.bounds_min, i.position, i.rotation, i.scale);
+                        glm::vec3 boxMax = transform_point(m.bounds_max, i.position, i.rotation, i.scale);
+
+                        glm::vec3 tMin   = (boxMin - origin) / ray_dir;
+                        glm::vec3 tMax   = (boxMax - origin) / ray_dir;
+                        glm::vec3 t1     = glm::min(tMin, tMax);
+                        glm::vec3 t2     = glm::max(tMin, tMax);
+                        float     tNear  = glm::max(glm::max(t1.x, t1.y), t1.z);
+                        float     tFar   = glm::min(glm::min(t2.x, t2.y), t2.z);
+                        glm::vec2 result = glm::vec2(tNear, tFar);
+
+                        if (result.x < result.y) {
+                            float t = glm::abs(result.x);
+
+                            if (t < closest_t) {
+                                grabbed_mesh = &i;
+                                grab_origin  = mouse_pos;
+                            }
+                        }
+                    }
+                } else {
+                    glm::vec2 delta = grab_origin - mouse_pos;
+                    delta.x *= -1.0f;
+
+                    float scale = glm::distance(camera.position, grabbed_mesh->position) / 1000.0f;
+
+                    grabbed_mesh->position +=
+                        transform_point(glm::vec3(delta * scale, 0.0), glm::vec3(0.0), camera.orientation, 1.0);
+
+                    grab_origin = mouse_pos;
+                }
+            } else {
+                grabbed_mesh = nullptr;
             }
         }
 

@@ -29,8 +29,10 @@ struct Mesh {
     uint32_t vertex_count;
     uint32_t index_count;
 
-    glm::vec3 center = {};
-    float     radius = 0.0f;
+    glm::vec3 center     = {};
+    float     radius     = 0.0f;
+    glm::vec3 bounds_min = {};
+    glm::vec3 bounds_max = {};
 };
 
 struct MeshInstance {

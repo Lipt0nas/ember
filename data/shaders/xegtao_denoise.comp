@@ -23,7 +23,6 @@ layout(push_constant, std430) uniform pc {
     vec2 camera_near_far;
 
     uint final_pass;
-    uint construct_normals;
 } push;
 
 void XeGTAO_decode_visibility_bent_normal(const uint packed_value, out float visibility, out vec3 bent_normal) {
