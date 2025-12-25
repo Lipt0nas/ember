@@ -157,7 +157,7 @@ void main() {
         vec3 emission = draw.emission_color;
         vec3 indirect = vec3(0.0);
         indirect = sample_ddgi(lighting, hit_pos, world_normal, lighting.invert_multibounce_view_dir == 1 ? ray_dir : -ray_dir, ddgi_atlas, ddgi_depth);
-        indirect *= min(albedo, 0.95f);
+        indirect *= min(albedo, 0.97f);
 
         if (lighting.multibounce == 0) {
             indirect *= 0.0;

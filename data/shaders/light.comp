@@ -145,7 +145,7 @@ void main() {
     }
 
     if (lighting.ao_only == 1) {
-        color = specular_ibl;
+        color = rt_specular;
     }
 
     imageStore(out_color, pixel_coord, vec4(color, 1.0));
