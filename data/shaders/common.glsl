@@ -55,6 +55,10 @@ struct DrawData {
     float scale;
     vec4 rotation;
 
+    vec3 last_position;
+    float last_scale;
+    vec4 last_rotation;
+
     uint index_count;
     uint first_index;
     int vertex_offset;
@@ -146,6 +150,8 @@ struct SceneUBO {
 
     float near_plane;
     float far_plane;
+
+    mat4 last_frame_view_proj;
 };
 
 vec3 rotate_quat(vec3 v, vec4 q) {

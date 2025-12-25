@@ -31,6 +31,11 @@ FetchContent_Declare(imgui
     GIT_SHALLOW TRUE
 )
 
+FetchContent_Declare(imguizmo
+    GIT_REPOSITORY https://github.com/Lipt0nas/ImGuizmo.git
+    GIT_TAG df1c30142e7c3fb13c171aaeb328bb338fa7aaa6
+)
+
 FetchContent_Declare(vma
     GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
     GIT_TAG v3.3.0
@@ -94,6 +99,7 @@ FetchContent_MakeAvailable(
     meshoptimizer
     stb
     imgui
+    imguizmo
     implot
     tracy
 )
@@ -127,6 +133,12 @@ add_library(implot STATIC
 target_link_libraries(implot PUBLIC imgui)
 target_include_directories(implot INTERFACE ${implot_SOURCE_DIR})
 
+add_library(imguizmo STATIC
+    ${imguizmo_SOURCE_DIR}/ImGuizmo.cpp
+)
+target_link_libraries(imguizmo PUBLIC imgui)
+target_include_directories(imguizmo INTERFACE ${imguizmo_SOURCE_DIR})
+
 set(SOURCES
     "src/main.cpp"
     "src/ember.cpp"
@@ -153,6 +165,7 @@ target_link_libraries(Ember PRIVATE
     meshoptimizer
     stb
     implot
+    imguizmo
     TracyClient
 )
 

@@ -16,6 +16,8 @@
 #include <tracy/Tracy.hpp>
 #include <tracy/TracyVulkan.hpp>
 
+#include <ImGuizmo.h>
+
 void draw_pass_timings_lines(const std::vector<std::pair<std::string, PassTiming>>& passes) {
     ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.25f);
     if (ImPlot::BeginPlot("Pass Timings", ImVec2(-1, 300))) {
@@ -157,6 +159,8 @@ struct alignas(16) SceneUBO {
 
     float near_plane;
     float far_plane;
+
+    glm::mat4 last_frame_view_proj;
 };
 
 const int ray_per_probe_values[] = {16, 32, 64, 128, 256};
@@ -254,6 +258,10 @@ struct DrawData {
     glm::vec3 position;
     float     scale;
     glm::quat rotation;
+
+    glm::vec3 last_position;
+    float     last_scale;
+    glm::quat last_rotation;
 
     // --- INDIRECT VERTEX PIPELINE ---
     uint32_t index_count;
@@ -1162,29 +1170,6 @@ void load_scene(
     spdlog::info("Constructing scene");
     const tinygltf::Scene& scene = model.scenes[scene_id];
 
-    // if (scene.nodes.size() == 1) {
-    //     for (int m = 0; m < model.meshes.size(); m++) {
-    //         auto& mesh = model.meshes[m];
-    //         for (int i = 0; i < mesh.primitives.size(); i++) {
-    //             int mesh_id = mesh_primitive_offsets[m] + i;
-    //
-    //             auto rot = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0));
-    //             rot *= glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
-    //
-    //             MeshInstance instance = {
-    //                 .mesh_id     = mesh_id,
-    //                 .material_id = mesh.primitives[i].material,
-    //                 .position    = {0, 0, 0},
-    //                 .scale       = 0.01,
-    //                 .rotation    = rot,
-    //             };
-    //             instances.push_back(instance);
-    //         }
-    //     }
-    //
-    //     return;
-    // }
-
     for (int node_id : scene.nodes) {
         const auto& node = model.nodes[node_id];
         if (node.mesh <= -1)
@@ -1225,6 +1210,29 @@ void load_scene(
             };
             instances.push_back(instance);
         }
+    }
+
+    if (instances.size() == 0) {
+        for (int m = 0; m < model.meshes.size(); m++) {
+            auto& mesh = model.meshes[m];
+            for (int i = 0; i < mesh.primitives.size(); i++) {
+                int mesh_id = mesh_primitive_offsets[m] + i;
+
+                auto rot = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0));
+                rot *= glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
+
+                MeshInstance instance = {
+                    .mesh_id     = mesh_id,
+                    .material_id = mesh.primitives[i].material,
+                    .position    = {0, 0, 0},
+                    .scale       = 0.01,
+                    .rotation    = rot,
+                };
+                instances.push_back(instance);
+            }
+        }
+
+        return;
     }
 }
 
@@ -1269,7 +1277,7 @@ int main() {
         return 1;
     }
 
-    auto* window = SDL_CreateWindow("Ember", 2540, 1440, SDL_WINDOW_VULKAN);
+    auto* window = SDL_CreateWindow("Ember", 2550, 1440, SDL_WINDOW_VULKAN);
     if (!window) {
         spdlog::error("Failed to create SDL window");
         return 1;
@@ -1612,6 +1620,17 @@ int main() {
     );
 
     Image gbuffer_normals = create_image(
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Image gbuffer_velocity = create_image(
         VK_FORMAT_R16G16B16A16_SFLOAT,
         swapchain.width,
         swapchain.height,
@@ -1994,6 +2013,7 @@ int main() {
         gbuffer_albedo,
         gbuffer_normals,
         gbuffer_emissive,
+        gbuffer_velocity,
     };
 
     {
@@ -2927,7 +2947,7 @@ int main() {
     std::vector<MeshInstance> mesh_instances;
 
     load_scene(
-        "data/models/bistro.glb",
+        "data/models/material_test.glb",
         meshes,
         materials,
         mesh_instances,
@@ -3007,6 +3027,8 @@ int main() {
     bool pressed_keys[512]   = {0};
     bool pressed_buttons[12] = {0};
 
+    ImGuizmo::OPERATION tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
+
     MeshInstance* grabbed_mesh = nullptr;
     glm::vec2     grab_origin  = {};
 
@@ -3033,7 +3055,7 @@ int main() {
 
     bool running = true;
 
-    int bloom_levels = (6);
+    int bloom_levels = 6;
 
     std::array<uint64_t, 2> pipeline_stats;
 
@@ -3158,6 +3180,7 @@ int main() {
             gbuffer_albedo.format,
             gbuffer_normals.format,
             gbuffer_emissive.format,
+            gbuffer_velocity.format,
         },
         depth_buffer.format,
         sizeof(GeometryPushConstants),
@@ -3502,6 +3525,7 @@ int main() {
     framegraph.import_image(gbuffer_albedo, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_normals, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_emissive, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    framegraph.import_image(gbuffer_velocity, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(fxaa_output, VK_IMAGE_LAYOUT_GENERAL);
@@ -3574,6 +3598,7 @@ int main() {
             .writes_color_attachment(gbuffer_albedo)
             .writes_color_attachment(gbuffer_normals)
             .writes_color_attachment(gbuffer_emissive)
+            .writes_color_attachment(gbuffer_velocity)
             .reads_buffer_dynamic(
                 indirect_command_buffer,
                 VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
@@ -3599,8 +3624,6 @@ int main() {
                 ZoneScopedN("Gbuffer Pass");
 
                 vkCmdBeginQuery(command_buffer, statistics_pools[frame_index], 0, 0);
-
-                rebuild_tlas(rt_scene, device, vma_allocator, command_buffer, meshes, mesh_instances);
 
                 std::vector<VkRenderingAttachmentInfo> gbuffer_color_attachments = {
                     {
@@ -3639,7 +3662,18 @@ int main() {
                         .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
                         .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
                     },
-
+                    {
+                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                        .pNext              = nullptr,
+                        .imageView          = gbuffer_velocity.view,
+                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .resolveMode        = VK_RESOLVE_MODE_NONE,
+                        .resolveImageView   = VK_NULL_HANDLE,
+                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                    },
                 };
 
                 VkRenderingAttachmentInfo depth_attachment_info = {
@@ -5887,6 +5921,20 @@ int main() {
                 break;
             case SDL_EVENT_KEY_DOWN:
                 pressed_keys[window_event.key.scancode] = true;
+
+                if (pressed_keys[SDL_SCANCODE_LSHIFT]) {
+                    if (window_event.key.scancode == SDL_SCANCODE_C) {
+                        tranform_gizmo_op = ImGuizmo::OPERATION::SCALEU;
+                    }
+
+                    if (window_event.key.scancode == SDL_SCANCODE_R) {
+                        tranform_gizmo_op = ImGuizmo::OPERATION::ROTATE;
+                    }
+
+                    if (window_event.key.scancode == SDL_SCANCODE_T) {
+                        tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
+                    }
+                }
                 break;
             case SDL_EVENT_KEY_UP:
                 pressed_keys[window_event.key.scancode] = false;
@@ -5980,6 +6028,7 @@ int main() {
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
+        ImGuizmo::BeginFrame();
 
         bool open = true;
         ImGui::Begin("Debug", &open, ImGuiWindowFlags_NoTitleBar);
@@ -6064,7 +6113,68 @@ int main() {
             ImGui::Checkbox("Apply FXAA", (bool*)&use_fxaa);
             ImGui::TreePop();
         }
+
+        if (ImGui::TreeNode("Mesh Material")) {
+            if (grabbed_mesh != nullptr) {
+                auto& material = materials[grabbed_mesh->material_id];
+                ImGui::SliderFloat("Roughness multiplier", &material.roughness_multiplier, 0.0, 1.0f);
+                ImGui::SliderFloat("Metallic multiplier", &material.metallic_multiplier, 0.0, 1.0f);
+            }
+
+            ImGui::TreePop();
+        }
         ImGui::End();
+
+        if (grabbed_mesh != nullptr) {
+            auto inst = grabbed_mesh;
+            auto mesh = meshes[inst->mesh_id];
+
+            glm::mat4 transform = glm::translate(glm::mat4(1.0f), inst->position);
+            transform           = transform * glm::mat4_cast(inst->rotation);
+            transform           = glm::scale(transform, glm::vec3(inst->scale));
+
+            auto      angle      = glm::normalize(glm::eulerAngles(camera.orientation));
+            glm::mat4 view       = glm::mat4_cast(camera.orientation);
+            glm::mat4 projection = glm::perspective(
+                glm::radians(camera.fov), camera.viewport_width / camera.viewport_height, 0.01f, 1000.0f
+            );
+
+            view = camera.view_matrix;
+
+            view = glm::scale(glm::identity<glm::mat4>(), glm::vec3(1, 1, -1)) * view;
+
+            glm::mat4 delta_mat;
+
+            auto& io = ImGui::GetIO();
+            ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
+            if (ImGuizmo::Manipulate(
+                    &view[0].x,
+                    &projection[0].x,
+                    tranform_gizmo_op,
+                    ImGuizmo::MODE::WORLD,
+                    &transform[0].x,
+                    &delta_mat[0].x
+                )) {
+                glm::vec3 position;
+                glm::vec3 rotation;
+                glm::vec3 scale;
+                ImGuizmo::DecomposeMatrixToComponents(&delta_mat[0].x, &position.x, &rotation.x, &scale.x);
+
+                if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
+                    inst->position += position;
+                }
+
+                if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
+                    inst->rotation = glm::rotate(inst->rotation, glm::radians(rotation.x), glm::vec3(1, 0, 0));
+                    inst->rotation = glm::rotate(inst->rotation, glm::radians(rotation.y), glm::vec3(0, 1, 0));
+                    inst->rotation = glm::rotate(inst->rotation, glm::radians(rotation.z), glm::vec3(0, 0, 1));
+                }
+
+                if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
+                    inst->scale *= scale.x;
+                }
+            }
+        }
 
         ImGui::Render();
         ImGui::UpdatePlatformWindows();
@@ -6122,6 +6232,8 @@ int main() {
         scene_ubo.near_plane = camera.near_plane;
         scene_ubo.far_plane  = 1000.0f;
 
+        scene_ubo.last_frame_view_proj = last_frame_view_proj;
+
         {
             void*  scene_ubo_ptr  = nullptr;
             size_t ubo_ptr_offset = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
@@ -6176,61 +6288,47 @@ int main() {
                            position;
                 };
 
-                if (grabbed_mesh == nullptr) {
-                    int w;
-                    int h;
-                    SDL_GetWindowSizeInPixels(window, &w, &h);
+                int w;
+                int h;
+                SDL_GetWindowSizeInPixels(window, &w, &h);
 
-                    glm::vec4 mouse_near = {(mouse_pos / glm::vec2(w, h)) * 2.0f - 1.0f, 1, 1.0};
-                    mouse_near.y *= -1;
-                    mouse_near = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_near;
-                    glm::vec3 near = glm::vec3(mouse_near) / mouse_near.w;
+                glm::vec4 mouse_near = {(mouse_pos / glm::vec2(w, h)) * 2.0f - 1.0f, 1, 1.0};
+                mouse_near.y *= -1;
+                mouse_near     = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_near;
+                glm::vec3 near = glm::vec3(mouse_near) / mouse_near.w;
 
-                    glm::vec4 mouse_far = {(mouse_pos / glm::vec2(w, h)) * 2.0f - 1.0f, 0.01, 1.0};
-                    mouse_far.y *= -1;
-                    mouse_far = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_far;
-                    glm::vec3 far = glm::vec3(mouse_far) / mouse_far.w;
+                glm::vec4 mouse_far = {(mouse_pos / glm::vec2(w, h)) * 2.0f - 1.0f, 0.01, 1.0};
+                mouse_far.y *= -1;
+                mouse_far     = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_far;
+                glm::vec3 far = glm::vec3(mouse_far) / mouse_far.w;
 
-                    glm::vec3 origin  = camera.position;
-                    glm::vec3 ray_dir = glm::normalize(far - near);
+                glm::vec3 origin  = camera.position;
+                glm::vec3 ray_dir = glm::normalize(far - near);
 
-                    float closest_t = std::numeric_limits<float>::max();
-                    for (auto& i : mesh_instances) {
-                        auto& m = meshes[i.mesh_id];
+                float closest_t = std::numeric_limits<float>::max();
+                for (auto& i : mesh_instances) {
+                    auto& m = meshes[i.mesh_id];
 
-                        glm::vec3 boxMin = transform_point(m.bounds_min, i.position, i.rotation, i.scale);
-                        glm::vec3 boxMax = transform_point(m.bounds_max, i.position, i.rotation, i.scale);
+                    glm::vec3 boxMin = transform_point(m.bounds_min, i.position, i.rotation, i.scale);
+                    glm::vec3 boxMax = transform_point(m.bounds_max, i.position, i.rotation, i.scale);
 
-                        glm::vec3 tMin   = (boxMin - origin) / ray_dir;
-                        glm::vec3 tMax   = (boxMax - origin) / ray_dir;
-                        glm::vec3 t1     = glm::min(tMin, tMax);
-                        glm::vec3 t2     = glm::max(tMin, tMax);
-                        float     tNear  = glm::max(glm::max(t1.x, t1.y), t1.z);
-                        float     tFar   = glm::min(glm::min(t2.x, t2.y), t2.z);
-                        glm::vec2 result = glm::vec2(tNear, tFar);
+                    glm::vec3 tMin   = (boxMin - origin) / ray_dir;
+                    glm::vec3 tMax   = (boxMax - origin) / ray_dir;
+                    glm::vec3 t1     = glm::min(tMin, tMax);
+                    glm::vec3 t2     = glm::max(tMin, tMax);
+                    float     tNear  = glm::max(glm::max(t1.x, t1.y), t1.z);
+                    float     tFar   = glm::min(glm::min(t2.x, t2.y), t2.z);
+                    glm::vec2 result = glm::vec2(tNear, tFar);
 
-                        if (result.x < result.y) {
-                            float t = glm::abs(result.x);
+                    if (result.x < result.y) {
+                        float t = result.x;
 
-                            if (t < closest_t) {
-                                grabbed_mesh = &i;
-                                grab_origin  = mouse_pos;
-                            }
+                        if (t < closest_t) {
+                            grabbed_mesh = &i;
+                            grab_origin  = mouse_pos;
                         }
                     }
-                } else {
-                    glm::vec2 delta = grab_origin - mouse_pos;
-                    delta.x *= -1.0f;
-
-                    float scale = glm::distance(camera.position, grabbed_mesh->position) / 1000.0f;
-
-                    grabbed_mesh->position +=
-                        transform_point(glm::vec3(delta * scale, 0.0), glm::vec3(0.0), camera.orientation, 1.0);
-
-                    grab_origin = mouse_pos;
                 }
-            } else {
-                grabbed_mesh = nullptr;
             }
         }
 
@@ -6291,6 +6389,8 @@ int main() {
         vkBeginCommandBuffer(command_buffer, &begin_info);
 
         vkCmdResetQueryPool(command_buffer, statistics_pools[frame_index], 0, 1);
+
+        rebuild_tlas(rt_scene, device, vma_allocator, command_buffer, meshes, mesh_instances);
 
         VkViewport viewport = {
             .x        = 0,

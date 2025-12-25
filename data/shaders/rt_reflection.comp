@@ -273,20 +273,24 @@ void main() {
         return;
     }
 
-    float roughness = texture(albedo_roughness, uv).a;
+    vec4 albedo_rougness_data = texture(albedo_roughness, uv);
+
+    float roughness = albedo_rougness_data.a;
     if (roughness >= 0.4) {
         imageStore(out_reflection, pixel_coord, vec4(0.0, 0, 0, 0));
         return;
     }
 
-    vec3 normal = unpack_normals(texture(normal_metallic, uv));
-    float metallic = texture(normal_metallic, uv).a;
-    vec3 albedo = texture(albedo_roughness, uv).rgb;
+    vec4 normal_data = texture(normal_metallic, uv);
+
+    vec3 normal = unpack_normals(normal_data);
+    float metallic = normal_data.a;
+    vec3 albedo = albedo_rougness_data.rgb;
 
     vec3 world_pos = reconstruct_world_position(uv, depth, scene.inverse_view_proj);
     vec3 V = normalize(scene.camera_position.xyz - world_pos);
 
-    // if (roughness < 0.05) {
+    // if (roughness < 0.15) {
     //     vec3 R = reflect(-V, normal);
     //     vec4 result = trace_ray(world_pos, R, normal);
     //     imageStore(out_reflection, pixel_coord, result);

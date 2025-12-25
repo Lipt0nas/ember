@@ -161,7 +161,7 @@ void main() {
     }
 
     // Blend with clamped history
-    vec3 blended = mix(current_color, history, 0.97);
+    vec3 blended = mix(current_color, history, 0.99);
 
     imageStore(upsampled, pixel_coord, vec4(blended, 1.0));
 }

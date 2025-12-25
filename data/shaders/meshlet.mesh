@@ -21,6 +21,7 @@ layout(location = 6) flat out uint out_occlusion_index[];
 layout(location = 7) out vec3 out_world_pos[];
 layout(location = 8) out vec3 out_emissive[];
 layout(location = 9) out vec2 out_multipliers[];
+layout(location = 10) out vec3 out_veloctiy[];
 
 taskPayloadSharedEXT MeshletTaskPayload payload;
 
