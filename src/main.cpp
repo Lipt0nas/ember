@@ -3029,8 +3029,10 @@ int main() {
 
     ImGuizmo::OPERATION tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
 
-    MeshInstance* grabbed_mesh = nullptr;
-    glm::vec2     grab_origin  = {};
+    bool          enable_transform_snap = true;
+    glm::vec3     transform_snap        = glm::vec3(1.0f);
+    MeshInstance* grabbed_mesh          = nullptr;
+    glm::vec2     grab_origin           = {};
 
     uint32_t frame_count = 0;
     uint32_t frame_index = 0;
@@ -6031,6 +6033,24 @@ int main() {
         ImGuizmo::BeginFrame();
 
         bool open = true;
+        ImGui::Begin("Scene", &open, ImGuiWindowFlags_NoTitleBar);
+
+        ImGui::Checkbox("Enable Transform Snap", &enable_transform_snap);
+        if (ImGui::InputFloat("Transform Snap", &transform_snap.x, 1.0f)) {
+            transform_snap = glm::vec3(transform_snap.x);
+        }
+
+        if (ImGui::TreeNode("Mesh Material")) {
+            if (grabbed_mesh != nullptr) {
+                auto& material = materials[grabbed_mesh->material_id];
+                ImGui::SliderFloat("Roughness multiplier", &material.roughness_multiplier, 0.0, 1.0f);
+                ImGui::SliderFloat("Metallic multiplier", &material.metallic_multiplier, 0.0, 1.0f);
+            }
+
+            ImGui::TreePop();
+        }
+        ImGui::End();
+
         ImGui::Begin("Debug", &open, ImGuiWindowFlags_NoTitleBar);
 
         ImGui::SeparatorText("Info");
@@ -6113,16 +6133,6 @@ int main() {
             ImGui::Checkbox("Apply FXAA", (bool*)&use_fxaa);
             ImGui::TreePop();
         }
-
-        if (ImGui::TreeNode("Mesh Material")) {
-            if (grabbed_mesh != nullptr) {
-                auto& material = materials[grabbed_mesh->material_id];
-                ImGui::SliderFloat("Roughness multiplier", &material.roughness_multiplier, 0.0, 1.0f);
-                ImGui::SliderFloat("Metallic multiplier", &material.metallic_multiplier, 0.0, 1.0f);
-            }
-
-            ImGui::TreePop();
-        }
         ImGui::End();
 
         if (grabbed_mesh != nullptr) {
@@ -6153,7 +6163,8 @@ int main() {
                     tranform_gizmo_op,
                     ImGuizmo::MODE::WORLD,
                     &transform[0].x,
-                    &delta_mat[0].x
+                    &delta_mat[0].x,
+                    enable_transform_snap ? &transform_snap.x : nullptr
                 )) {
                 glm::vec3 position;
                 glm::vec3 rotation;
@@ -6165,9 +6176,12 @@ int main() {
                 }
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
-                    inst->rotation = glm::rotate(inst->rotation, glm::radians(rotation.x), glm::vec3(1, 0, 0));
-                    inst->rotation = glm::rotate(inst->rotation, glm::radians(rotation.y), glm::vec3(0, 1, 0));
-                    inst->rotation = glm::rotate(inst->rotation, glm::radians(rotation.z), glm::vec3(0, 0, 1));
+                    inst->rotation = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.x), glm::vec3(1, 0, 0)) *
+                                     inst->rotation;
+                    inst->rotation = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.y), glm::vec3(0, 1, 0)) *
+                                     inst->rotation;
+                    inst->rotation = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.z), glm::vec3(0, 0, 1)) *
+                                     inst->rotation;
                 }
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
