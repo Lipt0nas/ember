@@ -3,6 +3,7 @@
 #include "camera.hpp"
 #include "device.hpp"
 #include "framegraph.hpp"
+#include "geometry.hpp"
 #include "pipeline.hpp"
 #include "resources.hpp"
 #include "rt_scene.hpp"
@@ -17,6 +18,18 @@
 #include <tracy/TracyVulkan.hpp>
 
 #include <ImGuizmo.h>
+
+enum class DynamicOffset : uint32_t {
+    SCENE_UBO               = 0,
+    DRAW_DATA               = 1,
+    INDIRECT_COMMAND_BUFFER = 2,
+    DDGI_RAY_BUFFER         = 3,
+    LIGHTING_UBO            = 4,
+    MESH_BUFFER             = 5,
+    MATERIAL_BUFFER         = 6,
+
+    COUNT = MATERIAL_BUFFER + 1
+};
 
 void draw_pass_timings_lines(const std::vector<std::pair<std::string, PassTiming>>& passes) {
     ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.25f);
@@ -251,249 +264,9 @@ struct GeometryPushConstants {
     uint32_t disable_small_triangle_cull;
 };
 
-struct DrawData {
-    glm::vec3 center;
-    float     radius;
-
-    glm::vec3 position;
-    float     scale;
-    glm::quat rotation;
-
-    glm::vec3 last_position;
-    float     last_scale;
-    glm::quat last_rotation;
-
-    // --- INDIRECT VERTEX PIPELINE ---
-    uint32_t index_count;
-    uint32_t first_index;
-    int32_t  vertex_offset;
-
-    // --- MESHLET PIPELINE ---
-    uint32_t meshlet_offset;
-    uint32_t meshlet_count;
-
-    uint32_t albedo_index;
-    uint32_t normals_index;
-    uint32_t material_index;
-    uint32_t occlusion_index;
-
-    glm::vec3 emissive_color;
-    uint32_t  emissive_index;
-
-    float roughness_multiplier;
-    float metallic_multiplier;
-};
-
-struct MeshletBounds {
-    glm::vec3 center;
-    float     radius;
-
-    glm::vec3 cone_axis;
-    float     cone_cutoff;
-
-    glm::vec3 cone_apex;
-    float     _pad;
-};
-
-struct DebugVertex {
-    glm::vec3 position;
-    glm::vec4 color;
-};
-
 struct DebugRendererConstants {
     glm::mat4 combined_matrix;
     glm::vec3 camera_pos;
-};
-
-class IcosphereGenerator {
-private:
-    std::vector<Vertex>                               vertices;
-    std::vector<uint32_t>                             indices;
-    std::map<std::pair<uint32_t, uint32_t>, uint32_t> midpointCache;
-
-    // Get midpoint between two vertices and normalize it to sphere surface
-    uint32_t getMiddlePoint(uint32_t p1, uint32_t p2) {
-        // Make sure p1 < p2 for consistent cache key
-        bool                          firstIsSmaller = p1 < p2;
-        std::pair<uint32_t, uint32_t> key            = firstIsSmaller ? std::make_pair(p1, p2) : std::make_pair(p2, p1);
-
-        // Check if we already computed this midpoint
-        auto it = midpointCache.find(key);
-        if (it != midpointCache.end()) {
-            return it->second;
-        }
-
-        // Calculate midpoint
-        glm::vec3 point1 = vertices[p1].position;
-        glm::vec3 point2 = vertices[p2].position;
-        glm::vec3 middle = glm::normalize((point1 + point2) * 0.5f);
-
-        // Add vertex makes sure point is on unit sphere
-        uint32_t index = static_cast<uint32_t>(vertices.size());
-        vertices.push_back({middle, middle, calculateTexCoord(middle)});
-
-        midpointCache[key] = index;
-        return index;
-    }
-
-    glm::vec2 calculateTexCoord(const glm::vec3& pos) {
-        // Spherical UV mapping
-        float u = 0.5f + atan2f(pos.z, pos.x) / (2.0f * M_PI);
-        float v = 0.5f - asinf(pos.y) / M_PI;
-        return glm::vec2(u, v);
-    }
-
-public:
-    void generate(float radius, int subdivisions) {
-        vertices.clear();
-        indices.clear();
-        midpointCache.clear();
-
-        // Golden ratio
-        const float t = (1.0f + sqrtf(5.0f)) / 2.0f;
-
-        // Create 12 vertices of icosahedron
-        std::vector<glm::vec3> baseVertices = {
-            glm::normalize(glm::vec3(-1, t, 0)),
-            glm::normalize(glm::vec3(1, t, 0)),
-            glm::normalize(glm::vec3(-1, -t, 0)),
-            glm::normalize(glm::vec3(1, -t, 0)),
-
-            glm::normalize(glm::vec3(0, -1, t)),
-            glm::normalize(glm::vec3(0, 1, t)),
-            glm::normalize(glm::vec3(0, -1, -t)),
-            glm::normalize(glm::vec3(0, 1, -t)),
-
-            glm::normalize(glm::vec3(t, 0, -1)),
-            glm::normalize(glm::vec3(t, 0, 1)),
-            glm::normalize(glm::vec3(-t, 0, -1)),
-            glm::normalize(glm::vec3(-t, 0, 1))
-        };
-
-        // Add vertices
-        for (const auto& pos : baseVertices) {
-            vertices.push_back({pos, pos, calculateTexCoord(pos)});
-        }
-
-        // Create 20 triangles of the icosahedron
-        std::vector<uint32_t> baseIndices = {
-            // 5 faces around point 0
-            0,
-            11,
-            5,
-            0,
-            5,
-            1,
-            0,
-            1,
-            7,
-            0,
-            7,
-            10,
-            0,
-            10,
-            11,
-
-            // 5 adjacent faces
-            1,
-            5,
-            9,
-            5,
-            11,
-            4,
-            11,
-            10,
-            2,
-            10,
-            7,
-            6,
-            7,
-            1,
-            8,
-
-            // 5 faces around point 3
-            3,
-            9,
-            4,
-            3,
-            4,
-            2,
-            3,
-            2,
-            6,
-            3,
-            6,
-            8,
-            3,
-            8,
-            9,
-
-            // 5 adjacent faces
-            4,
-            9,
-            5,
-            2,
-            4,
-            11,
-            6,
-            2,
-            10,
-            8,
-            6,
-            7,
-            9,
-            8,
-            1
-        };
-
-        indices = baseIndices;
-
-        // Subdivide triangles
-        for (int i = 0; i < subdivisions; i++) {
-            std::vector<uint32_t> newIndices;
-
-            for (size_t j = 0; j < indices.size(); j += 3) {
-                uint32_t v1 = indices[j];
-                uint32_t v2 = indices[j + 1];
-                uint32_t v3 = indices[j + 2];
-
-                // Get midpoints
-                uint32_t a = getMiddlePoint(v1, v2);
-                uint32_t b = getMiddlePoint(v2, v3);
-                uint32_t c = getMiddlePoint(v3, v1);
-
-                // Create 4 new triangles
-                newIndices.push_back(v1);
-                newIndices.push_back(a);
-                newIndices.push_back(c);
-                newIndices.push_back(v2);
-                newIndices.push_back(b);
-                newIndices.push_back(a);
-                newIndices.push_back(v3);
-                newIndices.push_back(c);
-                newIndices.push_back(b);
-                newIndices.push_back(a);
-                newIndices.push_back(b);
-                newIndices.push_back(c);
-            }
-
-            indices = newIndices;
-        }
-
-        // Scale to desired radius
-        if (radius != 1.0f) {
-            for (auto& vertex : vertices) {
-                vertex.position *= radius;
-            }
-        }
-    }
-
-    const std::vector<Vertex>& getVertices() const {
-        return vertices;
-    }
-    const std::vector<uint32_t>& getIndices() const {
-        return indices;
-    }
 };
 
 struct DebugRenderer {
@@ -549,8 +322,8 @@ DebugRenderer create_debug_renderer(
 
     auto max_instances = 2048 * 5;
 
-    auto vertices = generator.getVertices();
-    auto indices  = generator.getIndices();
+    auto vertices = generator.get_vertices();
+    auto indices  = generator.get_indices();
 
     Buffer vertex_buffer = create_buffer(
         sizeof(Vertex) * vertices.size(),
@@ -2821,6 +2594,20 @@ int main(int argc, char* argv[]) {
     );
     std::vector<DrawData> bindless_draw_data_cpu_buffer;
 
+    Buffer material_buffer = create_buffer(
+        1024 * 1024 * 6 * FRAMES_IN_FLIGHT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+
+    Buffer mesh_buffer = create_buffer(
+        1024 * 1024 * 6 * FRAMES_IN_FLIGHT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+
     Buffer meshlet_buffer = create_buffer(
         1024 * 1024 * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
@@ -3538,7 +3325,8 @@ int main(int argc, char* argv[]) {
     std::vector<VkDescriptorSet> fxaa_descriptor_sets =
         allocate_descriptor_sets(device, descriptor_pool, fxaa_pipeline);
 
-    std::vector<uint32_t> dynamic_offsets = {0, 0, 0, 0, 0};
+    std::vector<uint32_t> dynamic_offsets;
+    dynamic_offsets.resize(static_cast<uint32_t>(DynamicOffset::COUNT));
 
     Framegraph framegraph(device, graphics_queue, command_buffers[0], FRAMES_IN_FLIGHT, supports_timestamp_queries);
 
@@ -3589,6 +3377,12 @@ int main(int argc, char* argv[]) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Early Cull Pass");
                 ZoneScopedN("Early Cull Pass");
 
+                std::array<uint32_t, 3> offsets = {
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAW_DATA)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                };
+
                 vkCmdBindPipeline(command_buffer, cull_pipeline.bind_point, cull_pipeline.pipeline_handle);
                 vkCmdBindDescriptorSets(
                     command_buffer,
@@ -3597,8 +3391,8 @@ int main(int argc, char* argv[]) {
                     0,
                     3,
                     cull_descriptor_sets.data(),
-                    3,
-                    dynamic_offsets.data()
+                    offsets.size(),
+                    offsets.data()
                 );
 
                 cull_push_constants.draw_count = static_cast<uint32_t>(bindless_draw_data_cpu_buffer.size());
@@ -3740,7 +3534,7 @@ int main(int argc, char* argv[]) {
                     &gpass_push_constants
                 );
 
-                VkDescriptorSet sets[] = {
+                std::array<VkDescriptorSet, 5> sets = {
                     gpass_descriptor_sets[0],
                     gpass_descriptor_sets[1],
                     gpass_descriptor_sets[2],
@@ -3748,24 +3542,30 @@ int main(int argc, char* argv[]) {
                     global_texture_descriptor_set,
                 };
 
+                std::array<uint32_t, 3> offsets = {
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAW_DATA)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                };
+
                 vkCmdBindDescriptorSets(
                     command_buffer,
                     VK_PIPELINE_BIND_POINT_GRAPHICS,
                     gpass_pipeline.pipeline_layout,
                     0,
-                    5,
-                    sets,
-                    3,
-                    &dynamic_offsets[0]
+                    sets.size(),
+                    sets.data(),
+                    offsets.size(),
+                    offsets.data()
                 );
 
                 if (use_meshlets) {
                     vkCmdDrawMeshTasksIndirectCountEXT(
                         command_buffer,
                         indirect_command_buffer.handle,
-                        dynamic_offsets[2] + sizeof(uint32_t),
+                        offsets[2] + sizeof(uint32_t),
                         indirect_command_buffer.handle,
-                        dynamic_offsets[2],
+                        offsets[2],
                         bindless_draw_data_cpu_buffer.size(),
                         sizeof(MeshIndirectDrawCommand)
                     );
@@ -3775,9 +3575,9 @@ int main(int argc, char* argv[]) {
                     vkCmdDrawIndexedIndirectCount(
                         command_buffer,
                         indirect_command_buffer.handle,
-                        dynamic_offsets[2] + sizeof(uint32_t),
+                        offsets[2] + sizeof(uint32_t),
                         indirect_command_buffer.handle,
-                        dynamic_offsets[2],
+                        offsets[2],
                         bindless_draw_data_cpu_buffer.size(),
                         sizeof(VkDrawIndexedIndirectCommand)
                     );
@@ -3923,7 +3723,7 @@ int main(int argc, char* argv[]) {
                     ao_prefilter_descriptor_sets.size(),
                     ao_prefilter_descriptor_sets.data(),
                     1,
-                    &dynamic_offsets[0]
+                    &dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)]
                 );
 
                 vkCmdPushConstants(
@@ -3962,7 +3762,7 @@ int main(int argc, char* argv[]) {
                                ao_descriptor_sets.size(),
                                ao_descriptor_sets.data(),
                                1,
-                               &dynamic_offsets[0]
+                               &dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)]
                            );
 
                            vkCmdPushConstants(
@@ -4169,22 +3969,29 @@ int main(int argc, char* argv[]) {
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
 
-                VkDescriptorSet sets[] = {
+                std::array<VkDescriptorSet, 4> sets = {
                     ddgi_ray_descriptor_sets[0],
                     ddgi_ray_descriptor_sets[1],
                     ddgi_ray_descriptor_sets[2],
                     global_texture_descriptor_set,
                 };
 
-                uint32_t offsets[] = {
-                    dynamic_offsets[4],
-                    dynamic_offsets[3],
-                    dynamic_offsets[1],
-                    dynamic_offsets[2],
+                std::array<uint32_t, 4> offsets = {
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAW_DATA)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
                 };
 
                 vkCmdBindDescriptorSets(
-                    command_buffer, pipeline.bind_point, pipeline.pipeline_layout, 0, 4, sets, 4, &offsets[0]
+                    command_buffer,
+                    pipeline.bind_point,
+                    pipeline.pipeline_layout,
+                    0,
+                    sets.size(),
+                    sets.data(),
+                    offsets.size(),
+                    offsets.data()
                 );
 
                 uint32_t probe_count =
@@ -4253,8 +4060,12 @@ int main(int argc, char* argv[]) {
 
                 const Pipeline& pipeline = ddgi_ray_conv_pipeline;
 
-                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                std::array<uint32_t, 2> offsets = {
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]
+                };
 
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
                 vkCmdBindDescriptorSets(
                     command_buffer,
                     VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -4262,8 +4073,8 @@ int main(int argc, char* argv[]) {
                     0,
                     ddgi_ray_conv_descriptor_sets.size(),
                     ddgi_ray_conv_descriptor_sets.data(),
-                    2,
-                    &dynamic_offsets[3]
+                    offsets.size(),
+                    offsets.data()
                 );
 
                 vkCmdDispatch(
@@ -4477,7 +4288,7 @@ int main(int argc, char* argv[]) {
                                          ddgi_border_descriptor_sets.size(),
                                          ddgi_border_descriptor_sets.data(),
                                          1,
-                                         &dynamic_offsets[4]
+                                         &dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]
                                      );
 
                                      vkCmdDispatch(
@@ -4589,7 +4400,7 @@ int main(int argc, char* argv[]) {
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
 
-                VkDescriptorSet sets[] = {
+                std::array<VkDescriptorSet, 5> sets = {
                     rt_reflection_pass_descriptor_sets[0],
                     rt_reflection_pass_descriptor_sets[1],
                     rt_reflection_pass_descriptor_sets[2],
@@ -4597,10 +4408,22 @@ int main(int argc, char* argv[]) {
                     global_texture_descriptor_set,
                 };
 
-                uint32_t offsets[] = {dynamic_offsets[4], dynamic_offsets[0], dynamic_offsets[1], dynamic_offsets[2]};
+                std::array<uint32_t, 4> offsets = {
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAW_DATA)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                };
 
                 vkCmdBindDescriptorSets(
-                    command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline_layout, 0, 5, sets, 4, &offsets[0]
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    sets.size(),
+                    sets.data(),
+                    offsets.size(),
+                    offsets.data()
                 );
 
                 vkCmdDispatch(
@@ -4684,7 +4507,7 @@ int main(int argc, char* argv[]) {
                     rt_upsample_pass_descriptor_sets.size(),
                     rt_upsample_pass_descriptor_sets.data(),
                     1,
-                    &dynamic_offsets[0]
+                    &dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)]
                 );
 
                 GlossyRTConstants constants = {
@@ -5004,58 +4827,69 @@ int main(int argc, char* argv[]) {
     std::vector<VkDescriptorSet> shadow_pass_descriptor_sets =
         allocate_descriptor_sets(device, descriptor_pool, shadow_pipeline);
 
-    auto& shadow_pass =
-        framegraph.add_pass("RT Shadows")
-            .reads_buffer_dynamic(
-                scene_ubo_buffer,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_UNIFORM_READ_BIT,
-                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
-            )
-            .reads_buffer_dynamic(
-                draw_data_buffer,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_UNIFORM_READ_BIT,
-                draw_data_buffer.size / FRAMES_IN_FLIGHT
-            )
-            .reads_buffer_dynamic(
-                lighting_ubo_buffer,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_UNIFORM_READ_BIT,
-                lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
-            )
-            .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadows");
-                ZoneScopedN("RT Shadows");
+    auto& shadow_pass = framegraph.add_pass("RT Shadows")
+                            .reads_buffer_dynamic(
+                                scene_ubo_buffer,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_UNIFORM_READ_BIT,
+                                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                            .reads_buffer_dynamic(
+                                draw_data_buffer,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_UNIFORM_READ_BIT,
+                                draw_data_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                            .reads_buffer_dynamic(
+                                lighting_ubo_buffer,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_UNIFORM_READ_BIT,
+                                lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                            .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                            .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                            .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadows");
+                                ZoneScopedN("RT Shadows");
 
-                const Pipeline& pipeline = shadow_pipeline;
+                                const Pipeline& pipeline = shadow_pipeline;
 
-                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
 
-                VkDescriptorSet sets[] = {
-                    shadow_pass_descriptor_sets[0],
-                    shadow_pass_descriptor_sets[1],
-                    shadow_pass_descriptor_sets[2],
-                    shadow_pass_descriptor_sets[3],
-                    global_texture_descriptor_set,
-                };
+                                std::array<VkDescriptorSet, 5> sets = {
+                                    shadow_pass_descriptor_sets[0],
+                                    shadow_pass_descriptor_sets[1],
+                                    shadow_pass_descriptor_sets[2],
+                                    shadow_pass_descriptor_sets[3],
+                                    global_texture_descriptor_set,
+                                };
 
-                uint32_t offsets[] = {dynamic_offsets[4], dynamic_offsets[0], dynamic_offsets[1], dynamic_offsets[2]};
+                                std::array<uint32_t, 4> offsets = {
+                                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
+                                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
+                                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAW_DATA)],
+                                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                                };
 
-                vkCmdBindDescriptorSets(
-                    command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline_layout, 0, 5, sets, 4, &offsets[0]
-                );
+                                vkCmdBindDescriptorSets(
+                                    command_buffer,
+                                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    pipeline.pipeline_layout,
+                                    0,
+                                    sets.size(),
+                                    sets.data(),
+                                    offsets.size(),
+                                    offsets.data()
+                                );
 
-                vkCmdDispatch(
-                    command_buffer,
-                    (((directional_shadow_buffer.width + 1) / 2) + 7) / 8,
-                    (directional_shadow_buffer.height + 7) / 8,
-                    1
-                );
-            });
+                                vkCmdDispatch(
+                                    command_buffer,
+                                    (((directional_shadow_buffer.width + 1) / 2) + 7) / 8,
+                                    (directional_shadow_buffer.height + 7) / 8,
+                                    1
+                                );
+                            });
 
     Pipeline shadow_fill_pipeline = create_compute_pipeline(
         device,
@@ -5279,7 +5113,10 @@ int main(int argc, char* argv[]) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Light Pass");
                 ZoneScopedN("Light Pass");
 
-                uint32_t offsets[] = {dynamic_offsets[4], dynamic_offsets[0]};
+                std::array<uint32_t, 2> offsets = {
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)]
+                };
 
                 vkCmdBindPipeline(command_buffer, light_pipeline.bind_point, light_pipeline.pipeline_handle);
                 vkCmdBindDescriptorSets(
@@ -5289,8 +5126,8 @@ int main(int argc, char* argv[]) {
                     0,
                     light_descriptor_sets.size(),
                     light_descriptor_sets.data(),
-                    2,
-                    &offsets[0]
+                    offsets.size(),
+                    offsets.data()
                 );
 
                 vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
@@ -5786,17 +5623,19 @@ int main(int argc, char* argv[]) {
 
                 uint32_t instance_offset =
                     (debug_renderer.instance_buffer.size / debug_renderer.frames_in_flight) * frame_index;
-                uint32_t offsets[] = {instance_offset, dynamic_offsets[4]};
+                std::array<uint32_t, 2> offsets = {
+                    instance_offset, dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]
+                };
 
                 vkCmdBindDescriptorSets(
                     command_buffer,
                     VK_PIPELINE_BIND_POINT_GRAPHICS,
                     debug_renderer.pipeline.pipeline_layout,
                     0,
-                    1,
+                    debug_renderer.descriptor_sets.size(),
                     debug_renderer.descriptor_sets.data(),
-                    2,
-                    offsets
+                    offsets.size(),
+                    offsets.data()
                 );
 
                 debug_renderer_constants.camera_pos = camera.position;
@@ -6454,11 +6293,20 @@ int main(int argc, char* argv[]) {
             indirect_command_buffer.size / FRAMES_IN_FLIGHT
         );
 
-        dynamic_offsets[0] = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-        dynamic_offsets[1] = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-        dynamic_offsets[2] = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-        dynamic_offsets[3] = (ddgi_ray_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-        dynamic_offsets[4] = (lighting_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)] =
+            (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAW_DATA)] =
+            (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)] =
+            (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)] =
+            (ddgi_ray_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)] =
+            (lighting_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)] =
+            (mesh_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)] =
+            (material_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
 
         framegraph.execute(command_buffer, frame_index);
 
