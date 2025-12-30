@@ -19,38 +19,46 @@ layout(set = 0, binding = 0) uniform UBO {
     SceneUBO scene;
 };
 
-layout(scalar, set = 1, binding = 0) readonly buffer DrawDataBuffer {
-    DrawData draw_data[];
-} uniforms;
-
-layout(scalar, set = 1, binding = 1) readonly buffer MeshDrawCommands {
+layout(scalar, set = 1, binding = 0) readonly buffer MeshDrawCommands {
     uint culled_count;
     MeshDrawCommand cmds[];
-} draw_commands;
+};
+
+layout(scalar, set = 1, binding = 1) readonly buffer MeshBuffer {
+    MeshInstance draw_calls[];
+};
+
+layout(scalar, set = 1, binding = 2) readonly buffer Meshes {
+    Mesh meshes[];
+};
+
+layout(scalar, set = 1, binding = 3) readonly buffer Materials {
+    Material materials[];
+};
 
 layout(scalar, set = 2, binding = 0) readonly buffer IndexBuffer {
     uint indices[];
-} global_indices;
+};
 
 layout(scalar, set = 2, binding = 1) readonly buffer VertexBuffer {
     Vertex vertices[];
-} global_vertices;
+};
 
 layout(scalar, set = 2, binding = 2) readonly buffer MeshletBuffer {
     Meshlet meshlets[];
-} meshlets;
+};
 
 layout(scalar, set = 2, binding = 3) readonly buffer MeshletBoundsBuffer {
-    MeshletBounds bounds[];
-} meshlet_bounds;
+    MeshletBounds meshlet_bounds[];
+};
 
 layout(scalar, set = 2, binding = 4) readonly buffer MeshletVertexIndices {
-    uint indices[];
-} meshlet_vertex_indices;
+    uint meshlet_vertex_indices[];
+};
 
 layout(scalar, set = 2, binding = 5) readonly buffer MeshletPrimitiveIndices {
-    uint8_t indices[];
-} meshlet_primitive_indices;
+    uint8_t meshlet_primitive_indices[];
+};
 
 layout(set = 3, binding = 0) uniform sampler2D depth;
 
@@ -61,15 +69,16 @@ layout(push_constant, std430) uniform push {
     uint disable_depth_cull;
     uint disable_cone_cull;
     uint disable_small_triangle_cull;
-} pc;
+};
 
 void main() {
     uint thread_id = gl_LocalInvocationIndex;
     uint base_meshlet_id = gl_WorkGroupID.x * MESHLETS_PER_TASK;
     uint meshlet_id = base_meshlet_id + thread_id;
 
-    uint object_id = draw_commands.cmds[gl_DrawID].object_id;
-    DrawData draw = uniforms.draw_data[object_id];
+    uint object_id = cmds[gl_DrawID].object_id;
+    MeshInstance draw = draw_calls[object_id];
+    Mesh mesh = meshes[draw.mesh_id];
     payload.draw_id = object_id;
 
     if (thread_id == 0) {
@@ -79,9 +88,9 @@ void main() {
     barrier();
 
     bool visible = true;
-    if (meshlet_id < draw.meshlet_count) {
-        uint global_meshlet_id = draw.meshlet_offset + meshlet_id;
-        MeshletBounds bounds = meshlet_bounds.bounds[global_meshlet_id];
+    if (meshlet_id < mesh.meshlet_count) {
+        uint global_meshlet_id = mesh.meshlet_offset + meshlet_id;
+        MeshletBounds bounds = meshlet_bounds[global_meshlet_id];
 
         mat4 view = scene.view;
         vec4 frustum = scene.frustum;
@@ -101,22 +110,22 @@ void main() {
 
         float cone_cutoff = bounds.cone_cutoff;
 
-        if (pc.disable_cone_cull == 0) {
+        if (disable_cone_cull == 0) {
             visible = visible && !cone_cull(center, radius, cone_axis, cone_cutoff);
         }
 
-        if (pc.disable_frustum_cull == 0) {
+        if (disable_frustum_cull == 0) {
             visible = visible && center.z * frustum[1] - abs(center.x) * frustum[0] > -radius;
             visible = visible && center.z * frustum[3] - abs(center.y) * frustum[2] > -radius;
 
             visible = visible && center.z + radius > scene.near_plane && center.z - radius < scene.far_plane;
         }
 
-        if (pc.disable_depth_cull == 0) {
+        if (disable_depth_cull == 0) {
             vec4 aabb;
             if (project_sphere(center, radius, scene.near_plane, scene.P00, scene.P11, aabb)) {
-                float width = (aabb.z - aabb.x) * pc.screen_size.x;
-                float height = (aabb.w - aabb.y) * pc.screen_size.y;
+                float width = (aabb.z - aabb.x) * screen_size.x;
+                float height = (aabb.w - aabb.y) * screen_size.y;
 
                 float level = ceil(log2(max(width, height)));
 

@@ -14,14 +14,18 @@ layout(set = 0, binding = 0) uniform UBO {
     SceneUBO scene;
 };
 
-layout(scalar, set = 1, binding = 0) readonly buffer DrawDataBuffer {
-    DrawData draw_data[];
-} uniforms;
-
-layout(scalar, set = 1, binding = 1) buffer MeshDrawCommands {
+layout(scalar, set = 1, binding = 0) buffer MeshDrawCommands {
     uint culled_count;
     MeshDrawCommand cmds[];
-} draw_commands;
+};
+
+layout(scalar, set = 1, binding = 1) readonly buffer MeshBuffer {
+    MeshInstance draw_calls[];
+};
+
+layout(scalar, set = 1, binding = 2) readonly buffer Meshes {
+    Mesh meshes[];
+};
 
 layout(push_constant, std430) uniform pc {
     vec2 screen_size;
@@ -30,16 +34,17 @@ layout(push_constant, std430) uniform pc {
 
     uint disable_frustum_cull;
     uint disable_depth_cull;
-} push_constants;
+};
 
 layout(set = 2, binding = 0) uniform sampler2D depth;
 
 void main() {
     uint object_id = gl_GlobalInvocationID.x;
 
-    if (object_id >= push_constants.draw_count) return;
+    if (object_id >= draw_count) return;
 
-    DrawData draw_data = uniforms.draw_data[object_id];
+    MeshInstance draw = draw_calls[object_id];
+    Mesh mesh = meshes[draw.mesh_id];
 
     mat4 view = scene.view;
     vec4 frustum = scene.frustum;
@@ -49,25 +54,25 @@ void main() {
         frustum = scene.frozen_frustum;
     }
 
-    vec3 center = rotate_quat(draw_data.center, draw_data.rotation) * draw_data.scale + draw_data.position;
+    vec3 center = rotate_quat(mesh.center, draw.rotation) * draw.scale + draw.position;
     center = (view * vec4(center, 1.0f)).xyz;
 
-    float radius = draw_data.radius * draw_data.scale;
+    float radius = mesh.radius * draw.scale;
 
     bool visible = true;
 
-    if (push_constants.disable_frustum_cull == 0) {
+    if (disable_frustum_cull == 0) {
         visible = visible && center.z * frustum[1] - abs(center.x) * frustum[0] > -radius;
         visible = visible && center.z * frustum[3] - abs(center.y) * frustum[2] > -radius;
 
         visible = visible && center.z + radius > scene.near_plane && center.z - radius < scene.far_plane;
     }
 
-    if (push_constants.disable_depth_cull == 0) {
+    if (disable_depth_cull == 0) {
         vec4 aabb;
         if (project_sphere(center, radius, scene.near_plane, scene.P00, scene.P11, aabb)) {
-            float width = (aabb.z - aabb.x) * push_constants.screen_size.x;
-            float height = (aabb.w - aabb.y) * push_constants.screen_size.y;
+            float width = (aabb.z - aabb.x) * screen_size.x;
+            float height = (aabb.w - aabb.y) * screen_size.y;
 
             float level = ceil(log2(max(width, height)));
 
@@ -83,11 +88,11 @@ void main() {
     }
 
     if (visible) {
-        uint cmd_index = atomicAdd(draw_commands.culled_count, 1);
+        uint cmd_index = atomicAdd(culled_count, 1);
 
-        draw_commands.cmds[cmd_index].group_count_x = (draw_data.meshlet_count + MESHLETS_PER_TASK - 1) / MESHLETS_PER_TASK;
-        draw_commands.cmds[cmd_index].group_count_y = 1;
-        draw_commands.cmds[cmd_index].group_count_z = 1;
-        draw_commands.cmds[cmd_index].object_id = object_id;
+        cmds[cmd_index].group_count_x = (mesh.meshlet_count + MESHLETS_PER_TASK - 1) / MESHLETS_PER_TASK;
+        cmds[cmd_index].group_count_y = 1;
+        cmds[cmd_index].group_count_z = 1;
+        cmds[cmd_index].object_id = object_id;
     }
 }

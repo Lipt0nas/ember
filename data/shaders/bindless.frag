@@ -1,18 +1,17 @@
 #version 460
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
 
 #include "common.glsl"
 
 layout(location = 0) in vec3 in_normal;
 layout(location = 1) in vec2 in_uv;
-layout(location = 2) in vec3 in_meshlet_color;
-layout(location = 3) flat in uint in_albedo_index;
-layout(location = 4) flat in uint in_normals_index;
-layout(location = 5) flat in uint in_material_index;
-layout(location = 6) flat in uint in_occlusion_index;
-layout(location = 7) in vec3 in_world_pos;
-layout(location = 8) in vec3 in_emission;
-layout(location = 9) in vec2 in_multipliers;
+layout(location = 2) in vec3 in_world_pos;
+layout(location = 3) flat in int in_material_index;
+
+layout(scalar, set = 1, binding = 3) readonly buffer Materials {
+    Material materials[];
+};
 
 layout(set = 4, binding = 0) uniform sampler2D textures[];
 
@@ -40,15 +39,17 @@ vec3 world_normal(vec3 normal_map, vec3 vertex_normal, vec3 world_pos, vec2 uv) 
 }
 
 void main() {
-    vec4 albedo = texture(textures[nonuniformEXT(in_albedo_index)], in_uv).rgba;
+    Material material = materials[in_material_index];
+
+    vec4 albedo = texture(textures[nonuniformEXT(material.albedo_index)], in_uv).rgba;
     if (albedo.a < 0.2) {
         discard;
     }
 
-    vec3 normal = texture(textures[nonuniformEXT(in_normals_index)], in_uv).rgb * 2.0 - 1.0;
-    vec3 material = texture(textures[nonuniformEXT(in_material_index)], in_uv).rgb;
+    vec3 normal = texture(textures[nonuniformEXT(material.normals_index)], in_uv).rgb * 2.0 - 1.0;
+    vec3 metallic_roughness = texture(textures[nonuniformEXT(material.material_index)], in_uv).rgb;
 
-    out_color = vec4(albedo.rgb, material.y * in_multipliers.x);
-    out_normal = vec4(world_normal(normal, in_normal, in_world_pos, in_uv), MAP_METALLIC(material.z) * in_multipliers.y);
-    out_emission = vec4(in_emission, 1.0);
+    out_color = vec4(albedo.rgb, metallic_roughness.y * material.roughness_multiplier);
+    out_normal = vec4(world_normal(normal, in_normal, in_world_pos, in_uv), MAP_METALLIC(metallic_roughness.z) * material.metallic_multiplier);
+    out_emission = vec4(material.emissive_color, 1.0);
 }

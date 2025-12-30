@@ -5,12 +5,8 @@
 
 layout(location = 0) out vec3 out_normal;
 layout(location = 1) out vec2 out_uv;
-layout(location = 2) out vec3 out_meshlet_color;
-layout(location = 3) flat out uint out_albedo_index;
-layout(location = 4) flat out uint out_normals_index;
-layout(location = 5) flat out uint out_material_index;
-layout(location = 6) flat out uint out_occlusion_index;
-layout(location = 7) out vec3 out_world_pos;
+layout(location = 2) out vec3 out_world_pos;
+layout(location = 3) flat out uint out_material_index;
 
 #include "common.glsl"
 
@@ -18,44 +14,44 @@ layout(set = 0, binding = 0) uniform UBO {
     SceneUBO scene;
 };
 
-layout(scalar, set = 1, binding = 0) readonly buffer DrawDataBuffer {
-    DrawData draw_data[];
-} uniforms;
-
-layout(scalar, set = 1, binding = 1) readonly buffer MeshDrawCommands {
+layout(scalar, set = 1, binding = 0) readonly buffer MeshDrawCommands {
     uint culled_count;
     MeshDrawCommand cmds[];
-} draw_commands;
+};
+
+layout(scalar, set = 1, binding = 1) readonly buffer MeshBuffer {
+    MeshInstance draw_calls[];
+};
 
 layout(scalar, set = 2, binding = 0) readonly buffer IndexBuffer {
     uint indices[];
-} global_indices;
+};
 
 layout(scalar, set = 2, binding = 1) readonly buffer VertexBuffer {
     Vertex vertices[];
-} global_vertices;
+};
 
 layout(scalar, set = 2, binding = 2) readonly buffer MeshletBuffer {
     Meshlet meshlets[];
-} meshlets;
+};
 
 layout(scalar, set = 2, binding = 3) readonly buffer MeshletBoundsBuffer {
     MeshletBounds bounds[];
-} meshlet_bounds;
+};
 
 layout(scalar, set = 2, binding = 4) readonly buffer MeshletVertexIndices {
-    uint indices[];
-} meshlet_vertex_indices;
+    uint meshlet_vertex_indices[];
+};
 
 layout(scalar, set = 2, binding = 5) readonly buffer MeshletPrimitiveIndices {
-    uint8_t indices[];
-} meshlet_primitive_indices;
+    uint8_t meshlet_primitive_indices[];
+};
 
 void main() {
-    DrawData draw = uniforms.draw_data[gl_BaseInstance];
+    MeshInstance draw = draw_calls[gl_BaseInstance];
 
     uint base = gl_VertexIndex;
-    Vertex vertex = global_vertices.vertices[base];
+    Vertex vertex = vertices[base];
 
     vec3 world_pos = rotate_quat(vertex.position, draw.rotation) * draw.scale + draw.position;
 
@@ -65,10 +61,6 @@ void main() {
     gl_Position = clip_pos;
     out_normal = rotate_quat(vertex.normal, draw.rotation);
     out_uv = vertex.uv;
-    out_meshlet_color = meshlet_color;
-    out_albedo_index = draw.albedo_index;
-    out_normals_index = draw.normals_index;
-    out_material_index = draw.material_index;
-    out_occlusion_index = draw.occlusion_index;
     out_world_pos = world_pos.xyz;
+    out_material_index = draw.material_id;
 }

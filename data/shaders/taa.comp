@@ -1,0 +1,36 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba8) uniform image2D out_color;
+
+layout(set = 0, binding = 1) uniform sampler2D color_buffer;
+layout(set = 0, binding = 2) uniform sampler2D color_buffer_history;
+layout(set = 0, binding = 3) uniform sampler2D depth_buffer;
+layout(set = 0, binding = 4) uniform sampler2D depth_buffer_history;
+
+void main() {
+    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 image_size = imageSize(out_color);
+
+    if (pixel_coord.x >= image_size.x || pixel_coord.y >= image_size.y) {
+        return;
+    }
+
+    vec2 uv = (vec2(pixel_coord) + 0.5) / vec2(image_size);
+
+    vec3 color = texture(color_buffer, uv).rgb;
+    vec3 color_history = texture(color_buffer_history, uv).rgb;
+
+    vec3 final = mix(color_history, color, 0.9);
+
+    imageStore(out_color, pixel_coord, vec4(final, 1.0));
+}

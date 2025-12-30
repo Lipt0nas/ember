@@ -47,35 +47,46 @@ struct MeshDrawCommand {
     uint object_id;
 };
 
-struct DrawData {
-    vec3 center;
-    float radius;
-
-    vec3 position;
-    float scale;
-    vec4 rotation;
-
-    vec3 last_position;
-    float last_scale;
-    vec4 last_rotation;
-
-    uint index_count;
-    uint first_index;
-    int vertex_offset;
-
-    uint meshlet_offset;
-    uint meshlet_count;
-
+struct Material {
     uint albedo_index;
     uint normals_index;
     uint material_index;
     uint occlusion_index;
 
-    vec3 emission_color;
+    vec3 emissive_color;
     uint emissive_index;
 
     float roughness_multiplier;
     float metallic_multiplier;
+};
+
+struct Mesh {
+    uint vertex_buffer_offset;
+    uint index_buffer_offset;
+
+    uint meshlet_offset;
+    uint meshlet_count;
+
+    uint vertex_count;
+    uint vertex_offset;
+
+    uint index_count;
+    uint first_index;
+
+    vec3 center;
+    float radius;
+    vec3 bounds_min;
+    vec3 bounds_max;
+};
+
+struct MeshInstance {
+    int mesh_id;
+    int material_id;
+
+    vec3 position;
+    float scale;
+
+    vec4 rotation;
 };
 
 struct LightingUBO {
