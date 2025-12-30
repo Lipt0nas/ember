@@ -680,6 +680,7 @@ void load_scene(
     VkQueue                              queue,
     VkDevice                             device
 ) {
+    ZoneScopedN("Load Scene");
     spdlog::info("Loading scene: {}", path.string());
 
     tinygltf::TinyGLTF loader;
@@ -688,21 +689,24 @@ void load_scene(
     std::string        warning;
 
     bool ret = false;
-    if (path.extension() == ".gltf") {
-        ret = loader.LoadASCIIFromFile(&model, &error, &warning, path.string());
-    } else if (path.extension() == ".glb") {
-        ret = loader.LoadBinaryFromFile(&model, &error, &warning, path.string());
-    }
-    if (!warning.empty()) {
-        spdlog::warn("Warning loading model {}: {}", path.string(), warning);
-    }
+    {
+        ZoneScopedN("Read Scene File");
+        if (path.extension() == ".gltf") {
+            ret = loader.LoadASCIIFromFile(&model, &error, &warning, path.string());
+        } else if (path.extension() == ".glb") {
+            ret = loader.LoadBinaryFromFile(&model, &error, &warning, path.string());
+        }
+        if (!warning.empty()) {
+            spdlog::warn("Warning loading model {}: {}", path.string(), warning);
+        }
 
-    if (!error.empty()) {
-        spdlog::error("Error loading model {}: {}", path.string(), error);
-    }
+        if (!error.empty()) {
+            spdlog::error("Error loading model {}: {}", path.string(), error);
+        }
 
-    if (!ret) {
-        spdlog::error("Failed loading model {}", path.string());
+        if (!ret) {
+            spdlog::error("Failed loading model {}", path.string());
+        }
     }
 
     uint32_t                               local_cache_offset = global_texture_cache.size();
@@ -714,6 +718,7 @@ void load_scene(
     void* staging_buffer_ptr = nullptr;
     VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
     for (int i = 0; i < model.materials.size(); i++) {
+        ZoneScopedN("Load Material");
         auto& mat = model.materials[i];
 
         uint32_t albedo_index    = missing_albedo_index;
@@ -815,12 +820,14 @@ void load_scene(
     std::vector<int> mesh_primitive_offsets(model.meshes.size());
     spdlog::info("Loading {} meshes", model.meshes.size());
     for (int m = 0; m < model.meshes.size(); m++) {
+        ZoneScopedN("Load Mesh");
         spdlog::trace("mesh {}", m);
         const tinygltf::Mesh& mesh = model.meshes[m];
 
         mesh_primitive_offsets[m] = current_entry;
 
         for (int p = 0; p < mesh.primitives.size(); p++) {
+            ZoneScopedN("Load Primitive");
             spdlog::trace("primitive {}", p);
             std::vector<Vertex>   vertices;
             std::vector<uint32_t> indices;
@@ -1141,7 +1148,7 @@ void load_scene(
             );
             meshlet_primitive_indices_offset += sizeof(unsigned char) * meshlet_triangles.size();
 
-            spdlog::info("Loaded mesh {} with vertices={}, indices={}", m, vertices.size(), indices.size());
+            spdlog::debug("Loaded mesh {} with vertices={}, indices={}", m, vertices.size(), indices.size());
 
             meshes.emplace_back(
                 mesh_vertex_offset,
@@ -1171,6 +1178,7 @@ void load_scene(
     const tinygltf::Scene& scene = model.scenes[scene_id];
 
     for (int node_id : scene.nodes) {
+        ZoneScopedN("Parse Scene Node");
         const auto& node = model.nodes[node_id];
         if (node.mesh <= -1)
             continue;
@@ -1265,7 +1273,7 @@ void populate_materials(
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     spdlog::set_level(spdlog::level::info);
     spdlog::info("Starting ember");
 
@@ -2794,9 +2802,8 @@ int main() {
     uint32_t probe_count = lighting_data.probe_counts.x * lighting_data.probe_counts.y * lighting_data.probe_counts.z;
     Buffer   ddgi_ray_buffer = create_buffer(
         sizeof(DDGIRay) * probe_count * MAX_RAYS_PER_PROBE * FRAMES_IN_FLIGHT,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        vma_allocator,
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        vma_allocator
     );
     spdlog::info("DDGI Ray buffer size: {}MB", ddgi_ray_buffer.size / 1024 / 1024);
 
@@ -2815,19 +2822,19 @@ int main() {
     std::vector<DrawData> bindless_draw_data_cpu_buffer;
 
     Buffer meshlet_buffer = create_buffer(
-        1024 * 1024 * 164, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer meshlet_vertex_indices_buffer = create_buffer(
-        1024 * 1024 * 164, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer meshlet_primitive_indices_buffer = create_buffer(
-        1024 * 1024 * 164, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer meshlet_bounds_buffer = create_buffer(
-        1024 * 1024 * 164, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer scene_ubo_buffer = create_buffer(
@@ -2946,8 +2953,10 @@ int main() {
     std::vector<Material>     materials;
     std::vector<MeshInstance> mesh_instances;
 
+    std::string load_path = argc > 1 ? argv[1] : "data/models/room2.glb";
+
     load_scene(
-        "data/models/material_test.glb",
+        load_path,
         meshes,
         materials,
         mesh_instances,
@@ -2970,6 +2979,17 @@ int main() {
         command_buffers[0],
         graphics_queue,
         device
+    );
+
+    spdlog::info(
+        "Buffer usage:\n\tVertex: {}MB\n\tIndex: {}MB\n\tMeshlet: {}MB\n\tMeshlet Vertex: {}MB\n\tMeshlet Index: "
+        "{}MB\n\tMeshlet Bounds: {}MB",
+        indirect_vertex_buffer_offset / 1024 / 1024,
+        indirect_index_buffer_offset / 1024 / 1024,
+        meshlet_buffer_offset / 1024 / 1024,
+        meshlet_vertex_indices_offset / 1024 / 1024,
+        meshlet_vertex_primitive_indices_offset / 1024 / 1024,
+        meshlet_bounds_buffer_offset / 1024 / 1024
     );
 
     populate_materials(texture_cache, global_texture_descriptor_set, linear_sampler_anisotropy, device);
