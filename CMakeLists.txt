@@ -150,6 +150,7 @@ set(SOURCES
     "src/ui.cpp"
     "src/rt_scene.cpp"
     "src/framegraph.cpp"
+    "src/geometry.cpp"
 )
 add_executable(Ember ${SOURCES})
 

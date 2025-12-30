@@ -1,60 +1,9 @@
 #pragma once
 
 #include "ember.hpp"
+#include "geometry.hpp"
 #include "pipeline.hpp"
 #include "resources.hpp"
-
-// TODO: move this out
-struct Material {
-    uint32_t albedo_index;
-    uint32_t normals_index;
-    uint32_t material_index;
-    uint32_t occlusion_index;
-
-    glm::vec3 emissive_color;
-    uint32_t  emissive_index;
-
-    float roughness_multiplier;
-    float metallic_multiplier;
-};
-
-// TODO: move this out
-struct Mesh {
-    VkDeviceSize vertex_buffer_offset;
-    VkDeviceSize index_buffer_offset;
-
-    uint32_t meshlet_offset;
-    uint32_t meshlet_count;
-
-    uint32_t vertex_count;
-    uint32_t index_count;
-
-    glm::vec3 center     = {};
-    float     radius     = 0.0f;
-    glm::vec3 bounds_min = {};
-    glm::vec3 bounds_max = {};
-};
-
-struct MeshInstance {
-    int mesh_id;
-    int material_id;
-
-    glm::vec3 position = {};
-    float     scale    = 1.0f;
-
-    glm::quat rotation = {0.0f, 0.0f, 0.0f, 1.0f};
-};
-
-// TODO: move this out
-struct Vertex {
-    glm::vec3 position;
-    glm::vec3 normal;
-    glm::vec2 uv;
-
-    bool operator==(const Vertex& other) const {
-        return position == other.position && normal == other.normal && uv == other.uv;
-    }
-};
 
 struct TLAS {
     Buffer buffer;
