@@ -30,9 +30,17 @@ layout(set = 1, binding = 0) uniform UBO {
     SceneUBO scene;
 };
 
-layout(scalar, set = 2, binding = 0) readonly buffer DrawDataBuffer {
-    DrawData draw_data[];
-} uniforms;
+layout(scalar, set = 2, binding = 1) readonly buffer MeshBuffer {
+    MeshInstance draw_calls[];
+};
+
+layout(scalar, set = 2, binding = 2) readonly buffer Meshes {
+    Mesh meshes[];
+};
+
+layout(scalar, set = 2, binding = 3) readonly buffer Materials {
+    Material materials[];
+};
 
 layout(scalar, set = 3, binding = 0) readonly buffer IndexBuffer {
     uint indices[];
@@ -171,14 +179,16 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
 
         mat4x3 objectToWorld = rayQueryGetIntersectionObjectToWorldEXT(ray_query, true);
 
-        DrawData draw = uniforms.draw_data[object_id];
+        MeshInstance draw = draw_calls[object_id];
+        Mesh mesh = meshes[draw.mesh_id];
+        Material material = materials[draw.material_id];
 
-        uint index_offset = draw.first_index + primitiveID * 3;
+        uint index_offset = mesh.first_index + primitiveID * 3;
         uint i0 = global_indices.indices[index_offset + 0];
         uint i1 = global_indices.indices[index_offset + 1];
         uint i2 = global_indices.indices[index_offset + 2];
 
-        uint vertex_offset = draw.vertex_offset;
+        uint vertex_offset = mesh.vertex_offset;
         Vertex v0 = global_vertices.vertices[vertex_offset + i0];
         Vertex v1 = global_vertices.vertices[vertex_offset + i1];
         Vertex v2 = global_vertices.vertices[vertex_offset + i2];
@@ -193,13 +203,13 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         vec2 uv0 = v0.uv;
         vec2 uv1 = v1.uv;
         vec2 uv2 = v2.uv;
-        vec2 hit_uv = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
+        vec2 uv = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
 
-        vec3 albedo = texture(textures[nonuniformEXT(draw.albedo_index)], hit_uv).rgb;
-        vec3 material = texture(textures[nonuniformEXT(draw.material_index)], hit_uv).rgb;
+        vec3 albedo = texture(textures[nonuniformEXT(material.albedo_index)], uv).rgb;
+        vec3 roughness_metallic = texture(textures[nonuniformEXT(material.material_index)], uv).rgb;
 
-        float roughness = material.y * draw.roughness_multiplier;
-        float metallic = MAP_METALLIC(material.z) * draw.metallic_multiplier;
+        float roughness = roughness_metallic.y * material.roughness_multiplier;
+        float metallic = MAP_METALLIC(roughness_metallic.z) * material.metallic_multiplier;
 
         vec3 sun_dir = (-lighting.light_direction.xyz);
         float shadow = 1.0;
@@ -241,7 +251,7 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         vec3 kD_ibl = vec3(1.0) - kS_ibl;
         kD_ibl *= 1.0 - metallic;
 
-        vec3 emission = draw.emission_color;
+        vec3 emission = material.emissive_color;
         vec3 direct_radiance = lighting.light_color.xyz * lighting.light_color.a;
 
         vec3 Lo = (kD * albedo / PI + specular) * direct_radiance * NdotL * shadow;

@@ -13,15 +13,8 @@ layout(triangles, max_vertices = 64, max_primitives = 124) out;
 
 layout(location = 0) out vec3 out_normal[];
 layout(location = 1) out vec2 out_uv[];
-layout(location = 2) out vec3 out_meshlet_color[];
-layout(location = 3) flat out uint out_albedo_index[];
-layout(location = 4) flat out uint out_normals_index[];
-layout(location = 5) flat out uint out_material_index[];
-layout(location = 6) flat out uint out_occlusion_index[];
-layout(location = 7) out vec3 out_world_pos[];
-layout(location = 8) out vec3 out_emissive[];
-layout(location = 9) out vec2 out_multipliers[];
-layout(location = 10) out vec3 out_veloctiy[];
+layout(location = 2) out vec3 out_world_pos[];
+layout(location = 3) flat out uint out_material_index[];
 
 taskPayloadSharedEXT MeshletTaskPayload payload;
 
@@ -29,38 +22,46 @@ layout(set = 0, binding = 0) uniform UBO {
     SceneUBO scene;
 };
 
-layout(scalar, set = 1, binding = 0) readonly buffer DrawDataBuffer {
-    DrawData draw_data[];
-} uniforms;
-
-layout(scalar, set = 1, binding = 1) readonly buffer MeshDrawCommands {
+layout(scalar, set = 1, binding = 0) readonly buffer MeshDrawCommands {
     uint culled_count;
     MeshDrawCommand cmds[];
-} draw_commands;
+};
+
+layout(scalar, set = 1, binding = 1) readonly buffer MeshBuffer {
+    MeshInstance draw_calls[];
+};
+
+layout(scalar, set = 1, binding = 2) readonly buffer Meshes {
+    Mesh meshes[];
+};
+
+layout(scalar, set = 1, binding = 3) readonly buffer Materials {
+    Material materials[];
+};
 
 layout(scalar, set = 2, binding = 0) readonly buffer IndexBuffer {
     uint indices[];
-} global_indices;
+};
 
 layout(scalar, set = 2, binding = 1) readonly buffer VertexBuffer {
     Vertex vertices[];
-} global_vertices;
+};
 
 layout(scalar, set = 2, binding = 2) readonly buffer MeshletBuffer {
     Meshlet meshlets[];
-} meshlets;
+};
 
 layout(scalar, set = 2, binding = 3) readonly buffer MeshletBoundsBuffer {
-    MeshletBounds bounds[];
-} meshlet_bounds;
+    MeshletBounds meshlet_bounds[];
+};
 
 layout(scalar, set = 2, binding = 4) readonly buffer MeshletVertexIndices {
-    uint indices[];
-} meshlet_vertex_indices;
+    uint meshlet_vertex_indices[];
+};
 
 layout(scalar, set = 2, binding = 5) readonly buffer MeshletPrimitiveIndices {
-    uint8_t indices[];
-} meshlet_primitive_indices;
+    uint8_t meshlet_primitive_indices[];
+};
 
 layout(push_constant, std430) uniform push {
     vec2 screen_size;
@@ -69,7 +70,7 @@ layout(push_constant, std430) uniform push {
     uint disable_depth_cull;
     uint disable_cone_cull;
     uint disable_small_triangle_cull;
-} pc;
+};
 
 shared vec3 vertex_clip[64];
 
@@ -79,26 +80,19 @@ void main() {
 
     uint meshlet_id = payload.meshlet_offset + local_meshlet_id;
 
-    DrawData draw = uniforms.draw_data[payload.draw_id];
+    MeshInstance draw = draw_calls[payload.draw_id];
+    Mesh mesh = meshes[draw.mesh_id];
 
-    uint draw_meshlet_id = draw.meshlet_offset + meshlet_id;
-    Meshlet m = meshlets.meshlets[draw_meshlet_id];
+    uint draw_meshlet_id = mesh.meshlet_offset + meshlet_id;
+    Meshlet m = meshlets[draw_meshlet_id];
 
     SetMeshOutputsEXT(m.vertex_count, m.triangle_count);
 
     if (thread_id < m.vertex_count) {
-        uint global_vertex_index = meshlet_vertex_indices.indices[m.vertex_offset + thread_id];
+        uint global_vertex_index = meshlet_vertex_indices[m.vertex_offset + thread_id];
 
         uint base = global_vertex_index;
-        Vertex vertex = global_vertices.vertices[base];
-
-        // uint hash = draw_meshlet_id * 747796405u + 2891336453u;
-        // vec3 meshlet_color = vec3(
-        //         float((hash >> 0) & 0xFF) / 255.0,
-        //         float((hash >> 8) & 0xFF) / 255.0,
-        //         float((hash >> 16) & 0xFF) / 255.0
-        //     );
-        vec3 meshlet_color = vec3(1.0);
+        Vertex vertex = vertices[base];
 
         vec3 world_pos = rotate_quat(vertex.position, draw.rotation) * draw.scale + draw.position;
         vec4 clip = scene.proj * (scene.view * vec4(world_pos, 1.0));
@@ -106,16 +100,10 @@ void main() {
         gl_MeshVerticesEXT[thread_id].gl_Position = scene.view_proj * vec4(world_pos, 1.0);
         out_normal[thread_id] = rotate_quat(vertex.normal, draw.rotation);
         out_uv[thread_id] = vertex.uv;
-        out_meshlet_color[thread_id] = meshlet_color;
-        out_albedo_index[thread_id] = draw.albedo_index;
-        out_normals_index[thread_id] = draw.normals_index;
-        out_material_index[thread_id] = draw.material_index;
-        out_occlusion_index[thread_id] = draw.occlusion_index;
-        out_world_pos[thread_id] = world_pos.xyz;
-        out_emissive[thread_id] = draw.emission_color.xyz;
-        out_multipliers[thread_id] = vec2(draw.roughness_multiplier, draw.metallic_multiplier);
+        out_world_pos[thread_id] = world_pos;
+        out_material_index[thread_id] = draw.material_id;
 
-        vertex_clip[thread_id] = vec3((clip.xy / clip.w * 0.5 + vec2(0.5)) * pc.screen_size, clip.w);
+        vertex_clip[thread_id] = vec3((clip.xy / clip.w * 0.5 + vec2(0.5)) * screen_size, clip.w);
     }
 
     barrier();
@@ -123,13 +111,13 @@ void main() {
     if (thread_id < m.triangle_count) {
         uint prim_base = m.triangle_offset + thread_id * 3;
 
-        uint i_0 = uint(meshlet_primitive_indices.indices[prim_base + 0]);
-        uint i_1 = uint(meshlet_primitive_indices.indices[prim_base + 1]);
-        uint i_2 = uint(meshlet_primitive_indices.indices[prim_base + 2]);
+        uint i_0 = uint(meshlet_primitive_indices[prim_base + 0]);
+        uint i_1 = uint(meshlet_primitive_indices[prim_base + 1]);
+        uint i_2 = uint(meshlet_primitive_indices[prim_base + 2]);
 
         gl_PrimitiveTriangleIndicesEXT[thread_id] = uvec3(i_0, i_1, i_2);
 
-        if (scene.disable_culling == 0 && pc.disable_small_triangle_cull == 0) {
+        if (scene.disable_culling == 0 && disable_small_triangle_cull == 0) {
             bool culled = false;
 
             vec2 pa = vertex_clip[i_0].xy;

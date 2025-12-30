@@ -20,15 +20,15 @@
 #include <ImGuizmo.h>
 
 enum class DynamicOffset : uint32_t {
-    SCENE_UBO               = 0,
-    DRAW_DATA               = 1,
-    INDIRECT_COMMAND_BUFFER = 2,
-    DDGI_RAY_BUFFER         = 3,
-    LIGHTING_UBO            = 4,
-    MESH_BUFFER             = 5,
-    MATERIAL_BUFFER         = 6,
+    SCENE_UBO = 0,
+    INDIRECT_COMMAND_BUFFER,
+    DDGI_RAY_BUFFER,
+    LIGHTING_UBO,
+    MESH_BUFFER,
+    MATERIAL_BUFFER,
+    DRAWCALL_BUFFER,
 
-    COUNT = MATERIAL_BUFFER + 1
+    COUNT = DRAWCALL_BUFFER + 1
 };
 
 void draw_pass_timings_lines(const std::vector<std::pair<std::string, PassTiming>>& passes) {
@@ -929,7 +929,9 @@ void load_scene(
                 current_meshlet_offset,
                 meshlet_count,
                 vertices.size(),
+                static_cast<int32_t>(mesh_vertex_offset / sizeof(Vertex)),
                 indices.size(),
+                static_cast<uint32_t>(mesh_index_offset / sizeof(uint32_t)),
                 center,
                 radius,
                 bounds_min,
@@ -2586,13 +2588,12 @@ int main(int argc, char* argv[]) {
         vma_allocator
     );
 
-    Buffer draw_data_buffer = create_buffer(
-        1024 * 1024 * 12 * FRAMES_IN_FLIGHT,
+    Buffer drawcall_buffer = create_buffer(
+        1024 * 1024 * 6 * FRAMES_IN_FLIGHT,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
-    std::vector<DrawData> bindless_draw_data_cpu_buffer;
 
     Buffer material_buffer = create_buffer(
         1024 * 1024 * 6 * FRAMES_IN_FLIGHT,
@@ -2880,13 +2881,21 @@ int main(int argc, char* argv[]) {
     DescriptorLayout draw_data_layout = {
         .bindings = {
             DescriptorBinding{
-                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-                .write_info = DescriptorInfo(draw_data_buffer.handle, 0, draw_data_buffer.size / FRAMES_IN_FLIGHT),
-            },
-            DescriptorBinding{
                 .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
                 .write_info =
                     DescriptorInfo(indirect_command_buffer.handle, 0, indirect_command_buffer.size / FRAMES_IN_FLIGHT)
+            },
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                .write_info = DescriptorInfo(drawcall_buffer.handle, 0, drawcall_buffer.size / FRAMES_IN_FLIGHT)
+            },
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                .write_info = DescriptorInfo(mesh_buffer.handle, 0, mesh_buffer.size / FRAMES_IN_FLIGHT)
+            },
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                .write_info = DescriptorInfo(material_buffer.handle, 0, material_buffer.size / FRAMES_IN_FLIGHT)
             },
         },
     };
@@ -3356,16 +3365,22 @@ int main(int argc, char* argv[]) {
         framegraph.add_pass("cull early")
             .reads_storage_image(depth_hiz, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .reads_buffer_dynamic(
-                draw_data_buffer,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_SHADER_READ_BIT,
-                draw_data_buffer.size / FRAMES_IN_FLIGHT
-            )
-            .reads_buffer_dynamic(
                 scene_ubo_buffer,
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_SHADER_READ_BIT,
                 scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                drawcall_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                drawcall_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                mesh_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                mesh_buffer.size / FRAMES_IN_FLIGHT
             )
             .writes_buffer_dynamic(
                 indirect_command_buffer,
@@ -3377,10 +3392,12 @@ int main(int argc, char* argv[]) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Early Cull Pass");
                 ZoneScopedN("Early Cull Pass");
 
-                std::array<uint32_t, 3> offsets = {
+                std::array<uint32_t, 5> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
-                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAW_DATA)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
                 };
 
                 vkCmdBindPipeline(command_buffer, cull_pipeline.bind_point, cull_pipeline.pipeline_handle);
@@ -3389,13 +3406,13 @@ int main(int argc, char* argv[]) {
                     VK_PIPELINE_BIND_POINT_COMPUTE,
                     cull_pipeline.pipeline_layout,
                     0,
-                    3,
+                    cull_descriptor_sets.size(),
                     cull_descriptor_sets.data(),
                     offsets.size(),
                     offsets.data()
                 );
 
-                cull_push_constants.draw_count = static_cast<uint32_t>(bindless_draw_data_cpu_buffer.size());
+                cull_push_constants.draw_count = static_cast<uint32_t>(mesh_instances.size());
                 vkCmdPushConstants(
                     command_buffer,
                     cull_pipeline.pipeline_layout,
@@ -3405,7 +3422,7 @@ int main(int argc, char* argv[]) {
                     &cull_push_constants
                 );
 
-                vkCmdDispatch(command_buffer, (bindless_draw_data_cpu_buffer.size() + 255) / 256, 1, 1);
+                vkCmdDispatch(command_buffer, (mesh_instances.size() + 255) / 256, 1, 1);
             });
 
     auto gbuffer_pass =
@@ -3429,11 +3446,25 @@ int main(int argc, char* argv[]) {
                 scene_ubo_buffer.size / FRAMES_IN_FLIGHT
             )
             .reads_buffer_dynamic(
-                draw_data_buffer,
+                drawcall_buffer,
                 VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-                VK_ACCESS_2_UNIFORM_READ_BIT,
-                draw_data_buffer.size / FRAMES_IN_FLIGHT
+                VK_ACCESS_2_SHADER_READ_BIT,
+                drawcall_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                mesh_buffer,
+                VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                mesh_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                material_buffer,
+                VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                material_buffer.size / FRAMES_IN_FLIGHT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Gbuffer Pass");
@@ -3542,10 +3573,12 @@ int main(int argc, char* argv[]) {
                     global_texture_descriptor_set,
                 };
 
-                std::array<uint32_t, 3> offsets = {
+                std::array<uint32_t, 5> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
-                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAW_DATA)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
                 };
 
                 vkCmdBindDescriptorSets(
@@ -3563,10 +3596,10 @@ int main(int argc, char* argv[]) {
                     vkCmdDrawMeshTasksIndirectCountEXT(
                         command_buffer,
                         indirect_command_buffer.handle,
-                        offsets[2] + sizeof(uint32_t),
+                        offsets[1] + sizeof(uint32_t),
                         indirect_command_buffer.handle,
-                        offsets[2],
-                        bindless_draw_data_cpu_buffer.size(),
+                        offsets[1],
+                        mesh_instances.size(),
                         sizeof(MeshIndirectDrawCommand)
                     );
                 } else {
@@ -3575,10 +3608,10 @@ int main(int argc, char* argv[]) {
                     vkCmdDrawIndexedIndirectCount(
                         command_buffer,
                         indirect_command_buffer.handle,
-                        offsets[2] + sizeof(uint32_t),
+                        offsets[1] + sizeof(uint32_t),
                         indirect_command_buffer.handle,
-                        offsets[2],
-                        bindless_draw_data_cpu_buffer.size(),
+                        offsets[1],
+                        mesh_instances.size(),
                         sizeof(VkDrawIndexedIndirectCommand)
                     );
                 }
@@ -3943,12 +3976,6 @@ int main(int argc, char* argv[]) {
     auto& ddgi_ray_pass =
         framegraph.add_pass("ddgi ray")
             .reads_buffer_dynamic(
-                draw_data_buffer,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_UNIFORM_READ_BIT,
-                draw_data_buffer.size / FRAMES_IN_FLIGHT
-            )
-            .reads_buffer_dynamic(
                 lighting_ubo_buffer,
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_UNIFORM_READ_BIT,
@@ -3959,6 +3986,24 @@ int main(int argc, char* argv[]) {
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                 ddgi_ray_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                drawcall_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                drawcall_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                mesh_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                mesh_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                material_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                material_buffer.size / FRAMES_IN_FLIGHT
             )
             // .samples_image(ddgi_irradiance_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
@@ -3976,11 +4021,13 @@ int main(int argc, char* argv[]) {
                     global_texture_descriptor_set,
                 };
 
-                std::array<uint32_t, 4> offsets = {
+                std::array<uint32_t, 6> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)],
-                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAW_DATA)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
                 };
 
                 vkCmdBindDescriptorSets(
@@ -4377,16 +4424,28 @@ int main(int argc, char* argv[]) {
                 scene_ubo_buffer.size / FRAMES_IN_FLIGHT
             )
             .reads_buffer_dynamic(
-                draw_data_buffer,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_UNIFORM_READ_BIT,
-                draw_data_buffer.size / FRAMES_IN_FLIGHT
-            )
-            .reads_buffer_dynamic(
                 lighting_ubo_buffer,
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_UNIFORM_READ_BIT,
                 lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                drawcall_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                drawcall_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                mesh_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                mesh_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                material_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                material_buffer.size / FRAMES_IN_FLIGHT
             )
             .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
@@ -4408,11 +4467,13 @@ int main(int argc, char* argv[]) {
                     global_texture_descriptor_set,
                 };
 
-                std::array<uint32_t, 4> offsets = {
+                std::array<uint32_t, 6> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
-                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAW_DATA)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
                 };
 
                 vkCmdBindDescriptorSets(
@@ -4835,16 +4896,28 @@ int main(int argc, char* argv[]) {
                                 scene_ubo_buffer.size / FRAMES_IN_FLIGHT
                             )
                             .reads_buffer_dynamic(
-                                draw_data_buffer,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                VK_ACCESS_2_UNIFORM_READ_BIT,
-                                draw_data_buffer.size / FRAMES_IN_FLIGHT
-                            )
-                            .reads_buffer_dynamic(
                                 lighting_ubo_buffer,
                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                                 VK_ACCESS_2_UNIFORM_READ_BIT,
                                 lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                            .reads_buffer_dynamic(
+                                drawcall_buffer,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_SHADER_READ_BIT,
+                                drawcall_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                            .reads_buffer_dynamic(
+                                mesh_buffer,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_SHADER_READ_BIT,
+                                mesh_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                            .reads_buffer_dynamic(
+                                material_buffer,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_SHADER_READ_BIT,
+                                material_buffer.size / FRAMES_IN_FLIGHT
                             )
                             .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                             .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
@@ -4865,11 +4938,13 @@ int main(int argc, char* argv[]) {
                                     global_texture_descriptor_set,
                                 };
 
-                                std::array<uint32_t, 4> offsets = {
+                                std::array<uint32_t, 6> offsets = {
                                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
                                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
-                                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAW_DATA)],
                                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
+                                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
+                                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
                                 };
 
                                 vkCmdBindDescriptorSets(
@@ -5914,12 +5989,12 @@ int main(int argc, char* argv[]) {
 
         ImGui::SeparatorText("Info");
         ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
-        ImGui::Text("Objects: %lu", bindless_draw_data_cpu_buffer.size());
+        ImGui::Text("Objects: %lu", mesh_instances.size());
         ImGui::Text("FPS: %u", fps);
         ImGui::Text("Camera Position: %s", glm::to_string(camera.position).c_str());
         ImGui::Text("Camera Orientation: %s", glm::to_string(camera.orientation).c_str());
-        // ImGui::Text("Triangles Rendered: %.3fM", (double(pipeline_stats[0]) / 1'000'000.0));
-        // ImGui::Text("Fragment shader invocations: %.3fM", (double(pipeline_stats[1]) / 1'000'000.0));
+        ImGui::Text("Triangles Rendered: %.3fM", (double(pipeline_stats[0]) / 1'000'000.0));
+        ImGui::Text("Fragment shader invocations: %.3fM", (double(pipeline_stats[1]) / 1'000'000.0));
         ImGui::NewLine();
 
         if (ImGui::TreeNode("Performance")) {
@@ -6205,51 +6280,36 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        bindless_draw_data_cpu_buffer.clear();
-
-        for (auto& instance : mesh_instances) {
-            Mesh&     mesh     = meshes[instance.mesh_id];
-            Material& material = materials[instance.material_id];
-
-            uint32_t first_index   = static_cast<uint32_t>(mesh.index_buffer_offset / sizeof(uint32_t));
-            int32_t  vertex_offset = static_cast<int32_t>(mesh.vertex_buffer_offset / sizeof(Vertex));
-
-            bindless_draw_data_cpu_buffer.push_back(
-                DrawData{
-                    .center               = mesh.center,
-                    .radius               = mesh.radius,
-                    .position             = instance.position,
-                    .scale                = instance.scale,
-                    .rotation             = instance.rotation,
-                    .index_count          = mesh.index_count,
-                    .first_index          = first_index,
-                    .vertex_offset        = vertex_offset,
-                    .meshlet_offset       = mesh.meshlet_offset,
-                    .meshlet_count        = mesh.meshlet_count,
-                    .albedo_index         = material.albedo_index,
-                    .normals_index        = material.normals_index,
-                    .material_index       = material.material_index,
-                    .occlusion_index      = material.occlusion_index,
-                    .emissive_color       = material.emissive_color,
-                    .emissive_index       = material.emissive_index,
-                    .roughness_multiplier = material.roughness_multiplier,
-                    .metallic_multiplier  = material.metallic_multiplier,
-                }
+        {
+            void*  ptr          = nullptr;
+            size_t frame_offset = (drawcall_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+            VK_CHECK(vmaMapMemory(vma_allocator, drawcall_buffer.allocation, &ptr));
+            memcpy(
+                reinterpret_cast<char*>(ptr) + frame_offset,
+                mesh_instances.data(),
+                sizeof(MeshInstance) * mesh_instances.size()
             );
+            vmaUnmapMemory(vma_allocator, drawcall_buffer.allocation);
+            VK_CHECK(vmaFlushAllocation(vma_allocator, drawcall_buffer.allocation, frame_offset, drawcall_buffer.size));
         }
 
-        void*  bindless_uniform_ptr       = nullptr;
-        size_t draw_data_ptr_frame_offset = (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-        VK_CHECK(vmaMapMemory(vma_allocator, draw_data_buffer.allocation, &bindless_uniform_ptr));
-        memcpy(
-            reinterpret_cast<char*>(bindless_uniform_ptr) + draw_data_ptr_frame_offset,
-            bindless_draw_data_cpu_buffer.data(),
-            sizeof(DrawData) * bindless_draw_data_cpu_buffer.size()
-        );
-        vmaUnmapMemory(vma_allocator, draw_data_buffer.allocation);
-        VK_CHECK(vmaFlushAllocation(
-            vma_allocator, draw_data_buffer.allocation, draw_data_ptr_frame_offset, draw_data_buffer.size
-        ));
+        {
+            void*  ptr          = nullptr;
+            size_t frame_offset = (mesh_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+            VK_CHECK(vmaMapMemory(vma_allocator, mesh_buffer.allocation, &ptr));
+            memcpy(reinterpret_cast<char*>(ptr) + frame_offset, meshes.data(), sizeof(Mesh) * meshes.size());
+            vmaUnmapMemory(vma_allocator, mesh_buffer.allocation);
+            VK_CHECK(vmaFlushAllocation(vma_allocator, mesh_buffer.allocation, frame_offset, mesh_buffer.size));
+        }
+
+        {
+            void*  ptr          = nullptr;
+            size_t frame_offset = (material_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+            VK_CHECK(vmaMapMemory(vma_allocator, material_buffer.allocation, &ptr));
+            memcpy(reinterpret_cast<char*>(ptr) + frame_offset, materials.data(), sizeof(Material) * materials.size());
+            vmaUnmapMemory(vma_allocator, material_buffer.allocation);
+            VK_CHECK(vmaFlushAllocation(vma_allocator, material_buffer.allocation, frame_offset, material_buffer.size));
+        }
 
         VkCommandBufferBeginInfo begin_info = {
             .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -6295,8 +6355,6 @@ int main(int argc, char* argv[]) {
 
         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)] =
             (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAW_DATA)] =
-            (draw_data_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)] =
             (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)] =
@@ -6307,6 +6365,8 @@ int main(int argc, char* argv[]) {
             (mesh_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)] =
             (material_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)] =
+            (drawcall_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
 
         framegraph.execute(command_buffer, frame_index);
 
@@ -6517,7 +6577,6 @@ int main(int argc, char* argv[]) {
     destroy_buffer(staging_buffer, device, vma_allocator);
     destroy_buffer(global_index_buffer, device, vma_allocator);
     destroy_buffer(global_vertex_buffer, device, vma_allocator);
-    destroy_buffer(draw_data_buffer, device, vma_allocator);
     destroy_buffer(indirect_command_buffer, device, vma_allocator);
     destroy_buffer(meshlet_bounds_buffer, device, vma_allocator);
     destroy_buffer(meshlet_primitive_indices_buffer, device, vma_allocator);
@@ -6526,6 +6585,9 @@ int main(int argc, char* argv[]) {
     destroy_buffer(scene_ubo_buffer, device, vma_allocator);
     destroy_buffer(lighting_ubo_buffer, device, vma_allocator);
     destroy_buffer(ddgi_ray_buffer, device, vma_allocator);
+    destroy_buffer(material_buffer, device, vma_allocator);
+    destroy_buffer(drawcall_buffer, device, vma_allocator);
+    destroy_buffer(mesh_buffer, device, vma_allocator);
     destroy_image(depth_buffer, device, vma_allocator);
     destroy_image(lightpass_output, device, vma_allocator);
     destroy_image(composite_output, device, vma_allocator);

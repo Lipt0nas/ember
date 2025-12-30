@@ -25,9 +25,17 @@ layout(set = 1, binding = 0) uniform UBO {
     SceneUBO scene;
 };
 
-layout(scalar, set = 2, binding = 0) readonly buffer DrawDataBuffer {
-    DrawData draw_data[];
-} uniforms;
+layout(scalar, set = 2, binding = 1) readonly buffer MeshBuffer {
+    MeshInstance draw_calls[];
+};
+
+layout(scalar, set = 2, binding = 2) readonly buffer Meshes {
+    Mesh meshes[];
+};
+
+layout(scalar, set = 2, binding = 3) readonly buffer Materials {
+    Material materials[];
+};
 
 layout(scalar, set = 3, binding = 0) readonly buffer IndexBuffer {
     uint indices[];

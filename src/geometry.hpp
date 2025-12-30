@@ -16,14 +16,17 @@ struct Material {
 };
 
 struct Mesh {
-    VkDeviceSize vertex_buffer_offset;
-    VkDeviceSize index_buffer_offset;
+    uint32_t vertex_buffer_offset;
+    uint32_t index_buffer_offset;
 
     uint32_t meshlet_offset;
     uint32_t meshlet_count;
 
     uint32_t vertex_count;
+    uint32_t vertex_offset;
+
     uint32_t index_count;
+    uint32_t first_index;
 
     glm::vec3 center     = {};
     float     radius     = 0.0f;
@@ -49,39 +52,6 @@ struct Vertex {
     bool operator==(const Vertex& other) const {
         return position == other.position && normal == other.normal && uv == other.uv;
     }
-};
-
-struct DrawData {
-    glm::vec3 center;
-    float     radius;
-
-    glm::vec3 position;
-    float     scale;
-    glm::quat rotation;
-
-    glm::vec3 last_position;
-    float     last_scale;
-    glm::quat last_rotation;
-
-    // --- INDIRECT VERTEX PIPELINE ---
-    uint32_t index_count;
-    uint32_t first_index;
-    int32_t  vertex_offset;
-
-    // --- MESHLET PIPELINE ---
-    uint32_t meshlet_offset;
-    uint32_t meshlet_count;
-
-    uint32_t albedo_index;
-    uint32_t normals_index;
-    uint32_t material_index;
-    uint32_t occlusion_index;
-
-    glm::vec3 emissive_color;
-    uint32_t  emissive_index;
-
-    float roughness_multiplier;
-    float metallic_multiplier;
 };
 
 struct MeshletBounds {
