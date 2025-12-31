@@ -1384,17 +1384,6 @@ int main(int argc, char* argv[]) {
         device
     );
 
-    Image gbuffer_velocity = create_image(
-        VK_FORMAT_R16G16B16A16_SFLOAT,
-        swapchain.width,
-        swapchain.height,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT,
-        false,
-        vma_allocator,
-        device
-    );
-
     Image gbuffer_emissive = create_image(
         VK_FORMAT_B10G11R11_UFLOAT_PACK32,
         swapchain.width,
@@ -1767,7 +1756,6 @@ int main(int argc, char* argv[]) {
         gbuffer_albedo,
         gbuffer_normals,
         gbuffer_emissive,
-        gbuffer_velocity,
     };
 
     {
@@ -2944,7 +2932,6 @@ int main(int argc, char* argv[]) {
             gbuffer_albedo.format,
             gbuffer_normals.format,
             gbuffer_emissive.format,
-            gbuffer_velocity.format,
         },
         depth_buffer.format,
         sizeof(GeometryPushConstants),
@@ -3290,7 +3277,6 @@ int main(int argc, char* argv[]) {
     framegraph.import_image(gbuffer_albedo, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_normals, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_emissive, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    framegraph.import_image(gbuffer_velocity, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(fxaa_output, VK_IMAGE_LAYOUT_GENERAL);
@@ -3377,7 +3363,6 @@ int main(int argc, char* argv[]) {
             .writes_color_attachment(gbuffer_albedo)
             .writes_color_attachment(gbuffer_normals)
             .writes_color_attachment(gbuffer_emissive)
-            .writes_color_attachment(gbuffer_velocity)
             .reads_buffer_dynamic(
                 indirect_command_buffer,
                 VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
@@ -3447,18 +3432,6 @@ int main(int argc, char* argv[]) {
                         .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                         .pNext              = nullptr,
                         .imageView          = gbuffer_emissive.view,
-                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        .resolveMode        = VK_RESOLVE_MODE_NONE,
-                        .resolveImageView   = VK_NULL_HANDLE,
-                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                        .loadOp             = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
-                    },
-                    {
-                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                        .pNext              = nullptr,
-                        .imageView          = gbuffer_velocity.view,
                         .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                         .resolveMode        = VK_RESOLVE_MODE_NONE,
                         .resolveImageView   = VK_NULL_HANDLE,
