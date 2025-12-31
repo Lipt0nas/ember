@@ -4,7 +4,7 @@ PFN_vkVoidFunction imgui_load_function(const char* function_name, void* user_dat
     return vkGetInstanceProcAddr((VkInstance)user_data, function_name);
 }
 
-VkDescriptorPool init_imgui(
+VkDescriptorPool imgui_init(
     SDL_Window*      window,
     VkInstance       instance,
     VkPhysicalDevice physical_device,
@@ -143,14 +143,6 @@ VkDescriptorPool init_imgui(
         style.Colors[ImGuiCol_WindowBg].w = 1.0f;
     }
 
-    // NOTE: Little hack to make the ui look a little better when under sRGB
-    // for (int i = 0; i < ImGuiCol_COUNT; i++) {
-    //     ImVec4& col = style.Colors[i];
-    //     col.x       = col.x <= 0.04045f ? col.x / 12.92f : pow((col.x + 0.055f) / 1.055f, 2.4f);
-    //     col.y       = col.y <= 0.04045f ? col.y / 12.92f : pow((col.y + 0.055f) / 1.055f, 2.4f);
-    //     col.z       = col.z <= 0.04045f ? col.z / 12.92f : pow((col.z + 0.055f) / 1.055f, 2.4f);
-    // }
-
     VkPipelineRenderingCreateInfo imgui_rendering_info = {
         .sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         .pNext                   = nullptr,
@@ -183,4 +175,12 @@ VkDescriptorPool init_imgui(
     ImGui_ImplVulkan_Init(&init_info);
 
     return imgui_descriptor_pool;
+}
+
+VkDescriptorSet imgui_image_handle(const Image& image, VkSampler sampler) {
+    return ImGui_ImplVulkan_AddTexture(sampler, image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+void imgui_image_handle_free(VkDescriptorSet handle) {
+    ImGui_ImplVulkan_RemoveTexture(handle);
 }

@@ -2740,7 +2740,7 @@ int main(int argc, char* argv[]) {
         );
     }
 
-    VkDescriptorPool imgui_descriptor_pool = init_imgui(
+    VkDescriptorPool imgui_descriptor_pool = imgui_init(
         window,
         instance,
         physical_device,
@@ -2750,6 +2750,11 @@ int main(int argc, char* argv[]) {
         graphics_queue,
         FRAMES_IN_FLIGHT
     );
+
+    std::unordered_map<uint32_t, VkDescriptorSet> imgui_material_image_handles;
+    for (auto& [slot, image] : texture_cache) {
+        imgui_material_image_handles.insert({slot, imgui_image_handle(image, linear_sampler_clamped)});
+    }
 
     Camera camera = {
         .near_plane      = 0.01f,
@@ -5918,13 +5923,24 @@ int main(int argc, char* argv[]) {
         if (ImGui::TreeNode("Mesh Material")) {
             if (grabbed_mesh != nullptr) {
                 auto& material = materials[grabbed_mesh->material_id];
-                ImGui::Text(
-                    "Material indices: [%ul, %ul, %ul, %ul]",
-                    material.albedo_index,
-                    material.normals_index,
-                    material.material_index,
-                    material.emissive_index
-                );
+
+                std::vector<uint32_t*> material_indices = {
+                    &material.albedo_index, &material.normals_index, &material.material_index, &material.emissive_index
+                };
+
+                for (auto id : material_indices) {
+                    ImGui::Image(imgui_material_image_handles[*id], ImVec2(50, 50));
+                    if (ImGui::BeginDragDropTarget()) {
+                        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("texture_id");
+                        if (payload) {
+                            *id = *(uint32_t*)payload->Data;
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
+                    ImGui::SameLine();
+                }
+
+                ImGui::NewLine();
 
                 ImGui::SliderFloat("Roughness factor", &material.roughness_factor, 0.0, 1.0f);
                 ImGui::SliderFloat("Metallic factor", &material.metallic_factor, 0.0, 1.0f);
@@ -5932,6 +5948,29 @@ int main(int argc, char* argv[]) {
 
                 ImGui::ColorPicker4("Albedo factor", &material.albedo_factor.x);
                 ImGui::ColorPicker3("Emissive factor", &material.emissive_factor.x);
+            }
+
+            ImGui::TreePop();
+        }
+        ImGui::End();
+
+        ImGui::Begin("Assets", &open, ImGuiWindowFlags_NoTitleBar);
+        if (ImGui::TreeNode("Textures")) {
+            int images_per_row = 6;
+            int row_id         = 0;
+            for (auto& [slot, handle] : imgui_material_image_handles) {
+                ImGui::Image(handle, ImVec2(50, 50));
+                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                    ImGui::SetDragDropPayload("texture_id", &slot, sizeof(uint32_t));
+                    ImGui::EndDragDropSource();
+                }
+
+                row_id++;
+                if (row_id < images_per_row) {
+                    ImGui::SameLine();
+                } else {
+                    row_id = 0;
+                }
             }
 
             ImGui::TreePop();
