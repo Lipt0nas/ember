@@ -205,11 +205,12 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         vec2 uv2 = v2.uv;
         vec2 uv = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
 
-        vec3 albedo = texture(textures[nonuniformEXT(material.albedo_index)], uv).rgb;
-        vec3 roughness_metallic = texture(textures[nonuniformEXT(material.material_index)], uv).rgb;
+        vec4 albedo = material_get_albedo(material, textures[nonuniformEXT(material.albedo_index)], uv);
+        vec3 emissive = material_get_emissive(material, textures[nonuniformEXT(material.emissive_index)], uv);
+        vec2 rougness_metallic = material_get_roughness_metallic(material, textures[nonuniformEXT(material.material_index)], uv);
 
-        float roughness = roughness_metallic.y * material.roughness_multiplier;
-        float metallic = MAP_METALLIC(roughness_metallic.z) * material.metallic_multiplier;
+        float roughness = rougness_metallic.x;
+        float metallic = rougness_metallic.y;
 
         vec3 sun_dir = (-lighting.light_direction.xyz);
         float shadow = 1.0;
@@ -228,7 +229,7 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         }
 
         vec3 F0 = vec3(0.04);
-        F0 = mix(F0, albedo, metallic);
+        F0 = mix(F0, albedo.rgb, metallic);
 
         vec3 V = normalize(lighting.camera_pos.xyz - hit_pos);
         vec3 L = normalize(sun_dir);
@@ -251,16 +252,14 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         vec3 kD_ibl = vec3(1.0) - kS_ibl;
         kD_ibl *= 1.0 - metallic;
 
-        vec3 emission = material.emissive_color;
         vec3 direct_radiance = lighting.light_color.xyz * lighting.light_color.a;
 
-        vec3 Lo = (kD * albedo / PI + specular) * direct_radiance * NdotL * shadow;
+        vec3 Lo = (kD * albedo.rgb / PI + specular) * direct_radiance * NdotL * shadow;
 
-        // Use DDGI for secondary bounces
         vec3 indirect = sample_ddgi(lighting, hit_pos, world_normal, -direction, ddgi_atlas, ddgi_depth);
-        vec3 diffuse_ibl = kD_ibl * indirect * albedo;
+        vec3 diffuse_ibl = kD_ibl * indirect * albedo.rgb;
 
-        return vec4(Lo + diffuse_ibl + emission, hit_distance);
+        return vec4(Lo + diffuse_ibl + emissive, hit_distance);
     } else {
         return vec4(getSkyColor(direction, -lighting.light_direction.xyz), t_max);
     }

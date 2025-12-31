@@ -39,11 +39,11 @@ layout(scalar, set = 2, binding = 3) readonly buffer Materials {
 
 layout(scalar, set = 3, binding = 0) readonly buffer IndexBuffer {
     uint indices[];
-} global_indices;
+};
 
 layout(scalar, set = 3, binding = 1) readonly buffer VertexBuffer {
     Vertex vertices[];
-} global_vertices;
+};
 
 layout(set = 4, binding = 0) uniform sampler2D textures[];
 

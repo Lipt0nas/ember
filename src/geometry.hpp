@@ -6,19 +6,17 @@ struct Material {
     uint32_t albedo_index;
     uint32_t normals_index;
     uint32_t material_index;
-    uint32_t occlusion_index;
+    uint32_t emissive_index;
 
-    glm::vec3 emissive_color;
-    uint32_t  emissive_index;
+    glm::vec4 albedo_factor;
+    glm::vec3 emissive_factor;
 
-    float roughness_multiplier;
-    float metallic_multiplier;
+    float roughness_factor;
+    float metallic_factor;
+    float normal_scale;
 };
 
 struct Mesh {
-    uint32_t vertex_buffer_offset;
-    uint32_t index_buffer_offset;
-
     uint32_t meshlet_offset;
     uint32_t meshlet_count;
 

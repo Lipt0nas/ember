@@ -423,11 +423,6 @@ void destroy_debug_renderer(const DebugRenderer& renderer, VkDevice device, VmaA
     destroy_pipeline(device, renderer.pipeline);
 }
 
-// TODO: is not nice
-uint32_t missing_albedo_index   = 0;
-uint32_t missing_normals_index  = 0;
-uint32_t missing_material_index = 0;
-
 void load_scene(
     const std::filesystem::path&         path,
     std::vector<Mesh>&                   meshes,
@@ -494,99 +489,78 @@ void load_scene(
         ZoneScopedN("Load Material");
         auto& mat = model.materials[i];
 
-        uint32_t albedo_index    = missing_albedo_index;
-        uint32_t normals_index   = missing_normals_index;
-        uint32_t material_index  = missing_material_index;
-        uint32_t occlusion_index = missing_material_index;
-
         auto upload_texture = [&](int texture_index, VkFormat format) {
-            tinygltf::Texture& texture     = model.textures[texture_index];
-            int                image_index = texture.source;
-
-            if (image_index >= 0) {
-                auto local_it = local_texture_cache.find(image_index + local_cache_offset);
-                if (local_it != local_texture_cache.end()) {
-                    return local_it->second;
-                } else {
-                    tinygltf::Image& img = model.images[image_index];
-
-                    Image image = create_image(
-                        format,
-                        static_cast<uint32_t>(img.width),
-                        static_cast<uint32_t>(img.height),
-                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                        VK_IMAGE_ASPECT_COLOR_BIT,
-                        true,
-                        allocator,
-                        device
-                    );
-
-                    if (img.image.size() > staging_buffer.size) {
-                        spdlog::error(
-                            "Attempted out of bounds image buffer write for image, size={}, staging size={}",
-                            img.image.size(),
-                            staging_buffer.size
-                        );
-                        exit(1);
-                    }
-
-                    memcpy(staging_buffer_ptr, &img.image.at(0), img.image.size());
-                    copy_image(staging_buffer, image, true, command_buffer, queue, device);
-
-                    uint32_t index = global_texture_cache.size();
-                    global_texture_cache.insert({index, image});
-                    local_texture_cache.insert({image_index + local_cache_offset, index});
-
-                    loaded_images.push_back(image);
-
-                    return index;
-                };
+            if (texture_index < 0) {
+                return 0u;
             }
 
-            return 0u;
+            tinygltf::Texture& texture = model.textures[texture_index];
+
+            int image_index = texture.source;
+            if (image_index < 0) {
+                return 0u;
+            }
+
+            auto local_it = local_texture_cache.find(image_index + local_cache_offset);
+            if (local_it != local_texture_cache.end()) {
+                return local_it->second;
+            } else {
+                tinygltf::Image& img = model.images[image_index];
+
+                Image image = create_image(
+                    format,
+                    static_cast<uint32_t>(img.width),
+                    static_cast<uint32_t>(img.height),
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    true,
+                    allocator,
+                    device
+                );
+
+                if (img.image.size() > staging_buffer.size) {
+                    spdlog::error(
+                        "Attempted out of bounds image buffer write for image, size={}, staging size={}",
+                        img.image.size(),
+                        staging_buffer.size
+                    );
+                    exit(1);
+                }
+
+                memcpy(staging_buffer_ptr, &img.image.at(0), img.image.size());
+                copy_image(staging_buffer, image, true, command_buffer, queue, device);
+
+                uint32_t index = global_texture_cache.size();
+                global_texture_cache.insert({index, image});
+                local_texture_cache.insert({image_index + local_cache_offset, index});
+
+                loaded_images.push_back(image);
+
+                return index;
+            };
         };
 
-        if (mat.pbrMetallicRoughness.baseColorTexture.index >= 0) {
-            albedo_index = upload_texture(mat.pbrMetallicRoughness.baseColorTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
-        } else {
-            spdlog::warn("Material id {} \"{}\" does not have a base color texture", i, mat.name);
-        }
+        uint32_t albedo_index =
+            upload_texture(mat.pbrMetallicRoughness.baseColorTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
+        uint32_t material_index =
+            upload_texture(mat.pbrMetallicRoughness.metallicRoughnessTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
+        uint32_t normals_index  = upload_texture(mat.normalTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
+        uint32_t emissive_index = upload_texture(mat.emissiveTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
 
-        if (mat.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0) {
-            material_index =
-                upload_texture(mat.pbrMetallicRoughness.metallicRoughnessTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
-        } else {
-            spdlog::warn("Material id {} \"{}\" does not have a metallic/rougness texture", i, mat.name);
-        }
-
-        if (mat.normalTexture.index >= 0) {
-            normals_index = upload_texture(mat.normalTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
-        } else {
-            spdlog::warn("Material id {} \"{}\" does not have a normals texture", i, mat.name);
-        }
-
-        if (mat.occlusionTexture.index >= 0) {
-            occlusion_index = upload_texture(mat.occlusionTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
-        } else {
-            spdlog::warn("Material id {} \"{}\" does not have an occlusion texture", i, mat.name);
-        }
-
-        if (mat.occlusionTexture.index >= 0) {
-            occlusion_index = upload_texture(mat.emissiveTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
-        } else {
-            spdlog::warn("Material id {} \"{}\" does not have an emissive texture", i, mat.name);
-        }
-
-        materials[i].albedo_index         = albedo_index;
-        materials[i].normals_index        = normals_index;
-        materials[i].material_index       = material_index;
-        materials[i].occlusion_index      = material_index;
-        materials[i].emissive_index       = material_index;
-        materials[i].roughness_multiplier = mat.pbrMetallicRoughness.roughnessFactor;
-        materials[i].metallic_multiplier  = mat.pbrMetallicRoughness.metallicFactor;
-
-        spdlog::info("({}, {}, {}) ", mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
-        materials[i].emissive_color = glm::vec3(mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
+        materials[i].albedo_index     = albedo_index;
+        materials[i].normals_index    = normals_index;
+        materials[i].material_index   = material_index;
+        materials[i].emissive_index   = emissive_index;
+        materials[i].roughness_factor = mat.pbrMetallicRoughness.roughnessFactor;
+        materials[i].metallic_factor  = mat.pbrMetallicRoughness.metallicFactor;
+        materials[i].emissive_factor  = glm::vec3(mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
+        materials[i].albedo_factor    = glm::vec4(
+            mat.pbrMetallicRoughness.baseColorFactor[0],
+            mat.pbrMetallicRoughness.baseColorFactor[1],
+            mat.pbrMetallicRoughness.baseColorFactor[2],
+            mat.pbrMetallicRoughness.baseColorFactor[3]
+        );
+        materials[i].normal_scale = mat.normalTexture.scale;
     }
 
     int              current_entry = 0;
@@ -606,7 +580,6 @@ void load_scene(
             std::vector<uint32_t> indices;
 
             const tinygltf::Primitive& primitive = mesh.primitives[p];
-            spdlog::info("Loading {}", mesh.name);
 
             auto has_position  = primitive.attributes.count("POSITION");
             auto has_normals   = primitive.attributes.count("NORMAL");
@@ -924,8 +897,6 @@ void load_scene(
             spdlog::debug("Loaded mesh {} with vertices={}, indices={}", m, vertices.size(), indices.size());
 
             meshes.emplace_back(
-                mesh_vertex_offset,
-                mesh_index_offset,
                 current_meshlet_offset,
                 meshlet_count,
                 vertices.size(),
@@ -2692,36 +2663,6 @@ int main(int argc, char* argv[]) {
     std::unordered_map<uint32_t, Image> texture_cache;
     std::vector<Image>                  loaded_images;
 
-    Image missing_albedo = load_image(
-        "data/textures/missing_albedo.png",
-        VK_FORMAT_R8G8B8A8_SRGB,
-        false,
-        staging_buffer,
-        command_buffers[0],
-        graphics_queue,
-        vma_allocator,
-        device
-    );
-
-    missing_albedo_index = texture_cache.size();
-    texture_cache.insert({missing_albedo_index, missing_albedo});
-    loaded_images.push_back(missing_albedo);
-
-    Image missing_normals = load_image(
-        "data/textures/missing_normals.png",
-        VK_FORMAT_R8G8B8A8_UNORM,
-        false,
-        staging_buffer,
-        command_buffers[0],
-        graphics_queue,
-        vma_allocator,
-        device
-    );
-
-    missing_normals_index = texture_cache.size();
-    texture_cache.insert({missing_normals_index, missing_normals});
-    loaded_images.push_back(missing_normals);
-
     Image missing_material = load_image(
         "data/textures/missing_material.png",
         VK_FORMAT_R8G8B8A8_UNORM,
@@ -2733,8 +2674,8 @@ int main(int argc, char* argv[]) {
         device
     );
 
-    missing_material_index = texture_cache.size();
-    texture_cache.insert({missing_material_index, missing_material});
+    // index 0 is a dummy texture that acts as a missing index
+    texture_cache.insert({0, missing_material});
     loaded_images.push_back(missing_material);
 
     std::vector<Mesh>         meshes;
@@ -5977,8 +5918,20 @@ int main(int argc, char* argv[]) {
         if (ImGui::TreeNode("Mesh Material")) {
             if (grabbed_mesh != nullptr) {
                 auto& material = materials[grabbed_mesh->material_id];
-                ImGui::SliderFloat("Roughness multiplier", &material.roughness_multiplier, 0.0, 1.0f);
-                ImGui::SliderFloat("Metallic multiplier", &material.metallic_multiplier, 0.0, 1.0f);
+                ImGui::Text(
+                    "Material indices: [%ul, %ul, %ul, %ul]",
+                    material.albedo_index,
+                    material.normals_index,
+                    material.material_index,
+                    material.emissive_index
+                );
+
+                ImGui::SliderFloat("Roughness factor", &material.roughness_factor, 0.0, 1.0f);
+                ImGui::SliderFloat("Metallic factor", &material.metallic_factor, 0.0, 1.0f);
+                ImGui::SliderFloat("Normal scale", &material.normal_scale, 0.0, 1.0f);
+
+                ImGui::ColorPicker4("Albedo factor", &material.albedo_factor.x);
+                ImGui::ColorPicker3("Emissive factor", &material.emissive_factor.x);
             }
 
             ImGui::TreePop();

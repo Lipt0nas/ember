@@ -45,14 +45,14 @@ RTScene create_rt_scene(
                          .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
                          .vertexData =
                              {
-                                 .deviceAddress = global_vertex_buffer_address + (mesh.vertex_buffer_offset),
+                                 .deviceAddress = global_vertex_buffer_address + (mesh.vertex_offset * sizeof(Vertex)),
                              },
                          .vertexStride = sizeof(Vertex),
                          .maxVertex    = mesh.vertex_count - 1,
                          .indexType    = VK_INDEX_TYPE_UINT32,
                          .indexData =
                              {
-                                 .deviceAddress = global_index_buffer_address + (mesh.index_buffer_offset),
+                                 .deviceAddress = global_index_buffer_address + (mesh.first_index * sizeof(uint32_t)),
                              },
                          .transformData = {},
                      }},
