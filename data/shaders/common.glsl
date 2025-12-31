@@ -3,8 +3,6 @@
 
 #define MESHLETS_PER_TASK 32
 
-#define MAP_METALLIC(input) (input)
-
 #define EFFECT_RADIUS 0.75
 #define EFFECT_FALLOFF_RANGE 0.615
 
@@ -51,19 +49,17 @@ struct Material {
     uint albedo_index;
     uint normals_index;
     uint material_index;
-    uint occlusion_index;
-
-    vec3 emissive_color;
     uint emissive_index;
 
-    float roughness_multiplier;
-    float metallic_multiplier;
+    vec4 albedo_factor;
+    vec3 emissive_factor;
+
+    float roughness_factor;
+    float metallic_factor;
+    float normal_scale;
 };
 
 struct Mesh {
-    uint vertex_buffer_offset;
-    uint index_buffer_offset;
-
     uint meshlet_offset;
     uint meshlet_count;
 
@@ -164,6 +160,39 @@ struct SceneUBO {
 
     mat4 last_frame_view_proj;
 };
+
+vec4 material_get_albedo(const Material material, sampler2D albedo_sampler, vec2 uv) {
+    vec4 albedo = material.albedo_factor;
+    if (material.albedo_index > 0) {
+        albedo *= texture(albedo_sampler, uv);
+    }
+
+    return albedo;
+}
+
+vec3 material_get_normal(const Material material, sampler2D normal_sampler, vec2 uv) {
+    return normalize(texture(normal_sampler, uv).rgb * 2.0 - 1.0) * vec3(material.normal_scale, material.normal_scale, 1.0);
+}
+
+vec3 material_get_emissive(const Material material, sampler2D emissive_sampler, vec2 uv) {
+    vec3 emissive = material.emissive_factor;
+
+    if (material.emissive_index > 0) {
+        emissive *= texture(emissive_sampler, uv).rgb;
+    }
+
+    return emissive;
+}
+
+vec2 material_get_roughness_metallic(const Material material, sampler2D material_sampler, vec2 uv) {
+    vec2 roughness_metallic = vec2(material.roughness_factor, material.metallic_factor);
+
+    if (material.material_index > 0) {
+        roughness_metallic *= texture(material_sampler, uv).yz;
+    }
+
+    return roughness_metallic;
+}
 
 vec3 rotate_quat(vec3 v, vec4 q) {
     return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);

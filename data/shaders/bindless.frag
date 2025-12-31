@@ -41,15 +41,16 @@ vec3 world_normal(vec3 normal_map, vec3 vertex_normal, vec3 world_pos, vec2 uv) 
 void main() {
     Material material = materials[in_material_index];
 
-    vec4 albedo = texture(textures[nonuniformEXT(material.albedo_index)], in_uv).rgba;
+    vec4 albedo = material_get_albedo(material, textures[nonuniformEXT(material.albedo_index)], in_uv);
     if (albedo.a < 0.2) {
         discard;
     }
 
-    vec3 normal = texture(textures[nonuniformEXT(material.normals_index)], in_uv).rgb * 2.0 - 1.0;
-    vec3 metallic_roughness = texture(textures[nonuniformEXT(material.material_index)], in_uv).rgb;
+    vec3 emissive = material_get_emissive(material, textures[nonuniformEXT(material.emissive_index)], in_uv);
+    vec3 normal = material_get_normal(material, textures[nonuniformEXT(material.normals_index)], in_uv);
+    vec2 rougness_metallic = material_get_roughness_metallic(material, textures[nonuniformEXT(material.material_index)], in_uv);
 
-    out_color = vec4(albedo.rgb, metallic_roughness.y * material.roughness_multiplier);
-    out_normal = vec4(world_normal(normal, in_normal, in_world_pos, in_uv), MAP_METALLIC(metallic_roughness.z) * material.metallic_multiplier);
-    out_emission = vec4(material.emissive_color, 1.0);
+    out_color = vec4(albedo.rgb, rougness_metallic.x);
+    out_normal = vec4(world_normal(normal, in_normal, in_world_pos, in_uv), rougness_metallic.y);
+    out_emission = vec4(emissive, 1.0);
 }
