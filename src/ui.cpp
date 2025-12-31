@@ -17,7 +17,7 @@ VkDescriptorPool imgui_init(
     VkDescriptorPoolSize imgui_pool_sizes[] = {
         {
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            IMGUI_IMPL_VULKAN_MINIMUM_IMAGE_SAMPLER_POOL_SIZE + 100,
+            IMGUI_IMPL_VULKAN_MINIMUM_IMAGE_SAMPLER_POOL_SIZE + 1000,
         },
     };
 
