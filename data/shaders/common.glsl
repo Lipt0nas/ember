@@ -171,7 +171,13 @@ vec4 material_get_albedo(const Material material, sampler2D albedo_sampler, vec2
 }
 
 vec3 material_get_normal(const Material material, sampler2D normal_sampler, vec2 uv) {
-    return normalize(texture(normal_sampler, uv).rgb * 2.0 - 1.0) * vec3(material.normal_scale, material.normal_scale, 1.0);
+    vec3 normal = vec3(0, 0, 1.0);
+
+    if (material.normals_index > 0) {
+        normal = normalize(texture(normal_sampler, uv).rgb * 2.0 - 1.0);
+    }
+
+    return normal * vec3(material.normal_scale, material.normal_scale, 1.0);
 }
 
 vec3 material_get_emissive(const Material material, sampler2D emissive_sampler, vec2 uv) {
