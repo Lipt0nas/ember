@@ -199,8 +199,8 @@ struct alignas(16) LightingUBO {
 
     int ignore_backface_hits;
     int use_bent_normals;
-    int indirect_only;
-    int ao_only;
+    int compensate_specular;
+    int disney_diffuse;
 
     int invert_multibounce_view_dir;
 };
@@ -1408,6 +1408,7 @@ int main(int argc, char* argv[]) {
     };
 
     lighting_data.use_bent_normals         = 1;
+    lighting_data.compensate_specular      = 1;
     lighting_data.multibounce              = 1;
     lighting_data.remove_visibility_checks = 0;
 
@@ -6020,8 +6021,8 @@ int main(int argc, char* argv[]) {
             ImGui::Checkbox("Ignore backface hits", (bool*)&lighting_data.ignore_backface_hits);
             ImGui::Checkbox("Use Bent Normals", (bool*)&lighting_data.use_bent_normals);
             ImGui::Checkbox("Remove Visibility Checks", (bool*)&lighting_data.remove_visibility_checks);
-            ImGui::Checkbox("Indirect Only", (bool*)&lighting_data.indirect_only);
-            ImGui::Checkbox("AO Only", (bool*)&lighting_data.ao_only);
+            ImGui::Checkbox("Compensate Specular", (bool*)&lighting_data.compensate_specular);
+            ImGui::Checkbox("Disney Diffuse", (bool*)&lighting_data.disney_diffuse);
 
             ImGui::SeparatorText("Bloom");
             ImGui::SliderFloat("Bloom strength", &composite_push_constants.bloom_strength, 0.0, 1.0);
