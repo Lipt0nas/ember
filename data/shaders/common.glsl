@@ -106,8 +106,8 @@ struct LightingUBO {
 
     int ignore_backface_hits;
     int use_bent_normals;
-    int indirect_only;
-    int ao_only;
+    int compensate_specular;
+    int disney_diffuse;
 
     int invert_multibounce_view_dir;
 };
@@ -197,6 +197,8 @@ vec2 material_get_roughness_metallic(const Material material, sampler2D material
         roughness_metallic *= texture(material_sampler, uv).yz;
     }
 
+    // roughness_metallic = vec2(1.0, 0.0);
+
     return roughness_metallic;
 }
 
@@ -268,50 +270,6 @@ vec3 oct_decode(vec2 oct) {
 
 float gradient_noise(vec2 uv) {
     return fract(52.9829189 * fract(dot(uv, vec2(0.06711056, 0.00583715))));
-}
-
-// Trowbridge-Reitz GGX normal distribution
-float DistributionGGX(vec3 N, vec3 H, float roughness) {
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float NdotH = max(dot(N, H), 0.0);
-    float NdotH2 = NdotH * NdotH;
-
-    float nom = a2;
-    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
-    denom = PI * denom * denom;
-
-    return nom / denom;
-}
-
-// Schlick-GGX geometry function
-float GeometrySchlickGGX(float NdotV, float roughness) {
-    float r = (roughness + 1.0);
-    float k = (r * r) / 8.0;
-
-    float nom = NdotV;
-    float denom = NdotV * (1.0 - k) + k;
-
-    return nom / denom;
-}
-
-// Smith's method for geometry obstruction
-float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
-    float NdotV = max(dot(N, V), 0.0);
-    float NdotL = max(dot(N, L), 0.0);
-    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
-    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
-
-    return ggx1 * ggx2;
-}
-
-// Fresnel-Schlick approximation
-vec3 fresnelSchlick(float cosTheta, vec3 F0) {
-    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
-}
-
-vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
-    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 vec3 getSkyColor(vec3 ray_dir, vec3 sun_dir) {
@@ -391,6 +349,61 @@ vec3 aces_film(vec3 x) {
     float d = 0.59;
     float e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+float D_GGX(float NoH, float a) {
+    float a2 = a * a;
+    float f = (NoH * a2 - NoH) * NoH + 1.0;
+    return a2 / (PI * f * f);
+}
+
+vec3 F_Schlick_Roughness(float cosTheta, vec3 F0, float roughness) {
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+vec3 F_Schlick(float u, vec3 f0) {
+    return f0 + (vec3(1.0) - f0) * pow(1.0 - u, 5.0);
+}
+
+float F_Schlick(float u, float f0, float f90) {
+    return f0 + (f90 - f0) * pow(1.0 - u, 5.0);
+}
+
+float V_Smith_GGX_Correlated(float NoV, float NoL, float a) {
+    float a2 = a * a;
+
+    NoV = max(NoV, 1e-5);
+    NoL = max(NoL, 1e-5);
+
+    float GGXL = NoV * sqrt((-NoL * a2 + NoL) * NoL + a2);
+    float GGXV = NoL * sqrt((-NoV * a2 + NoV) * NoV + a2);
+    return 0.5 / (GGXV + GGXL);
+}
+
+vec3 D_Lambert(vec3 albedo) {
+    return albedo / PI;
+}
+
+float D_Disney(float NoV, float NoL, float LoH, float roughness) {
+    float f90 = 0.5 + 2.0 * roughness * LoH * LoH;
+    float light_scatter = F_Schlick(NoL, 1.0, f90);
+    float view_scatter = F_Schlick(NoV, 1.0, f90);
+
+    return light_scatter * view_scatter * (1.0 / PI);
+}
+
+float D_Oren_Nayar(float roughness, vec3 N, vec3 V, vec3 L) {
+    float NdotV = max(dot(N, V), 0.0001);
+    float NdotL = max(dot(N, L), 0.0001);
+
+    float a2 = roughness * roughness;
+    float A = 1.0 - 0.5 * (a2 / (a2 + 0.57));
+    float B = 0.45 * (a2 / (a2 + 0.09));
+
+    float s = dot(L, V) - NdotL * NdotV;
+    float t = mix(1.0, max(NdotL, NdotV), step(0.0, s));
+
+    return (A + B * max(0.0, s) / t) / PI;
 }
 
 #endif
