@@ -87,7 +87,7 @@ void main() {
 
     vec3 world_pos = reconstruct_world_position(uv, depth, scene.inverse_view_proj);
 
-    float shadow = trace_shadow_ray(world_pos, dir, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT) ? 0.0 : 1.0;
+    float shadow = trace_shadow_ray(world_pos + normal * 0.01, dir, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT) ? 0.0 : 1.0;
 
     imageStore(out_shadow, pixel_coord, vec4(shadow, 0, 0, 0));
 }
