@@ -21,7 +21,7 @@ layout(push_constant) uniform PushConstants {
 vec3 downsampleBox13(sampler2D srcTex, vec2 uv, vec2 texelSize) {
     vec3 a = texture(srcTex, uv + vec2(-2.0, 2.0) * texelSize).rgb;
     vec3 b = texture(srcTex, uv + vec2(0.0, 2.0) * texelSize).rgb;
-    vec3 c = texture(srcTex, uv + vec2(-2.0, 2.0) * texelSize).rgb;
+    vec3 c = texture(srcTex, uv + vec2(2.0, 2.0) * texelSize).rgb;
 
     vec3 j = texture(srcTex, uv + vec2(-1.0, 1.0) * texelSize).rgb;
     vec3 k = texture(srcTex, uv + vec2(1.0, 1.0) * texelSize).rgb;
@@ -48,7 +48,7 @@ vec3 downsampleBox13(sampler2D srcTex, vec2 uv, vec2 texelSize) {
 vec3 downsampleBox13Karis(sampler2D srcTex, vec2 uv, vec2 texelSize) {
     vec3 a = texture(srcTex, uv + vec2(-2.0, 2.0) * texelSize).rgb;
     vec3 b = texture(srcTex, uv + vec2(0.0, 2.0) * texelSize).rgb;
-    vec3 c = texture(srcTex, uv + vec2(-2.0, 2.0) * texelSize).rgb;
+    vec3 c = texture(srcTex, uv + vec2(2.0, 2.0) * texelSize).rgb;
 
     vec3 j = texture(srcTex, uv + vec2(-1.0, 1.0) * texelSize).rgb;
     vec3 k = texture(srcTex, uv + vec2(1.0, 1.0) * texelSize).rgb;
