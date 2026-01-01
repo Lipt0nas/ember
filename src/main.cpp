@@ -202,7 +202,8 @@ struct alignas(16) LightingUBO {
     int compensate_specular;
     int disney_diffuse;
 
-    int invert_multibounce_view_dir;
+    glm::vec4 sky_hemisphere_top;
+    glm::vec4 sky_hemisphere_bottom;
 };
 
 struct ShadowBlurConstants {
@@ -1411,6 +1412,8 @@ int main(int argc, char* argv[]) {
     lighting_data.compensate_specular      = 1;
     lighting_data.multibounce              = 1;
     lighting_data.remove_visibility_checks = 0;
+    lighting_data.sky_hemisphere_top       = {0.6, 0.7, 0.9, 1.0};
+    lighting_data.sky_hemisphere_bottom    = {0.3, 0.5, 0.8, 1.0};
 
     lighting_data.depth_texels_per_probe = 14;
     lighting_data.rays_per_probe         = 256;
@@ -5920,8 +5923,8 @@ int main(int argc, char* argv[]) {
                 ImGui::SliderFloat("Metallic factor", &material.metallic_factor, 0.0, 1.0f);
                 ImGui::SliderFloat("Normal scale", &material.normal_scale, 0.0, 1.0f);
 
-                ImGui::ColorPicker4("Albedo factor", &material.albedo_factor.x);
-                ImGui::ColorPicker3("Emissive factor", &material.emissive_factor.x);
+                ImGui::ColorEdit4("Albedo factor", &material.albedo_factor.x);
+                ImGui::ColorEdit3("Emissive factor", &material.emissive_factor.x);
             }
 
             ImGui::TreePop();
@@ -5998,6 +6001,17 @@ int main(int argc, char* argv[]) {
             ImGui::SliderFloat3("Light color", &lighting_data.light_color.x, 0.0, 1.0);
             ImGui::SliderFloat("Light intensity", &lighting_data.light_color.w, 0.0, 100.0);
 
+            ImGui::ColorEdit3(
+                "Sky Hemisphere Top",
+                &lighting_data.sky_hemisphere_top.x,
+                ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float
+            );
+            ImGui::ColorEdit3(
+                "Sky Hemisphere Bottom",
+                &lighting_data.sky_hemisphere_bottom.x,
+                ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float
+            );
+
             ImGui::SeparatorText("DDGI");
             if (ImGui::BeginCombo("DDGI Rays Per Probe", std::to_string(lighting_data.rays_per_probe).c_str())) {
                 for (int i = 0; i < IM_ARRAYSIZE(ray_per_probe_values); i++) {
@@ -6017,7 +6031,6 @@ int main(int argc, char* argv[]) {
             ImGui::DragFloat3("Grid Origin", &lighting_data.grid_origin.x, 0.03, -100.0, 100.0);
             ImGui::Checkbox("Visualize Probes", (bool*)&visualize_probes);
             ImGui::Checkbox("Multibounce Diffuse", (bool*)&lighting_data.multibounce);
-            ImGui::Checkbox("Invert Multibounce Dir", (bool*)&lighting_data.invert_multibounce_view_dir);
             ImGui::Checkbox("Ignore backface hits", (bool*)&lighting_data.ignore_backface_hits);
             ImGui::Checkbox("Use Bent Normals", (bool*)&lighting_data.use_bent_normals);
             ImGui::Checkbox("Remove Visibility Checks", (bool*)&lighting_data.remove_visibility_checks);

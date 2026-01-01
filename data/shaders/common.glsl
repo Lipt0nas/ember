@@ -109,7 +109,8 @@ struct LightingUBO {
     int compensate_specular;
     int disney_diffuse;
 
-    int invert_multibounce_view_dir;
+    vec4 sky_hemisphere_top;
+    vec4 sky_hemisphere_bottom;
 };
 
 struct Meshlet {
@@ -272,9 +273,9 @@ float gradient_noise(vec2 uv) {
     return fract(52.9829189 * fract(dot(uv, vec2(0.06711056, 0.00583715))));
 }
 
-vec3 getSkyColor(vec3 ray_dir, vec3 sun_dir) {
+vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisphere_bottom) {
     float sky = ray_dir.y * 0.5 + 0.5;
-    return mix(vec3(0.6, 0.7, 0.9), vec3(0.3, 0.5, 0.8), sky);
+    return mix(hemisphere_bottom.rgb, hemisphere_top.rgb, sky);
 }
 
 // Assuming normals are stored in the xy and channel

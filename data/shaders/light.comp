@@ -61,7 +61,7 @@ void main() {
         mat3 viewRotation = mat3(scene.view);
         vec3 worldDirection = inverse(viewRotation) * viewDir;
 
-        vec3 radiance = getSkyColor(worldDirection, -lighting.light_direction.xyz);
+        vec3 radiance = get_sky_color(worldDirection, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom);
         imageStore(out_color, pixel_coord, vec4(radiance, 1.0));
 
         return;
