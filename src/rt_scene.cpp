@@ -6,6 +6,7 @@ RTScene create_rt_scene(
     VmaAllocator                     allocator,
     VkCommandBuffer                  command_buffer,
     VkQueue                          queue,
+    uint32_t                         frames_in_flight,
     const std::vector<Mesh>&         meshes,
     const std::vector<MeshInstance>& mesh_instances,
     VkDeviceAddress                  global_vertex_buffer_address,
@@ -200,13 +201,17 @@ RTScene create_rt_scene(
         tlas_instances.push_back(instance);
     }
 
-    Buffer instance_buffer = create_buffer(
-        tlas_instances.size() * sizeof(VkAccelerationStructureInstanceKHR),
-        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        allocator,
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-    );
+    std::vector<Buffer> instance_buffers(frames_in_flight);
+    for (int i = 0; i < frames_in_flight; i++) {
+        instance_buffers[i] = create_buffer(
+            tlas_instances.size() * sizeof(VkAccelerationStructureInstanceKHR),
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            allocator,
+            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+        );
+    }
+    Buffer          instance_buffer         = instance_buffers[0];
     VkDeviceAddress instance_buffer_address = get_buffer_device_address(instance_buffer, device);
 
     void* instance_buffer_ptr = nullptr;
@@ -272,12 +277,18 @@ RTScene create_rt_scene(
         device, &acceleration_structure_create_info, nullptr, &top_level_acceleration_structure.handle
     );
 
-    Buffer scratch_buffer = create_buffer(
-        acceleration_structure_build_sizes_info.buildScratchSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        allocator,
-        VMA_MEMORY_USAGE_GPU_ONLY
-    );
+    std::vector<Buffer> scratch_buffers(frames_in_flight);
+
+    for (int i = 0; i < frames_in_flight; i++) {
+        scratch_buffers[i] = create_buffer(
+            acceleration_structure_build_sizes_info.buildScratchSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            allocator,
+            VMA_MEMORY_USAGE_GPU_ONLY
+        );
+    }
+
+    Buffer          scratch_buffer         = scratch_buffers[0];
     VkDeviceAddress scratch_buffer_address = get_buffer_device_address(scratch_buffer, device);
 
     VkAccelerationStructureBuildGeometryInfoKHR acceleration_build_geometry_info = {
@@ -348,8 +359,8 @@ RTScene create_rt_scene(
         .tlas                            = top_level_acceleration_structure,
         .rt_properties                   = ray_tracing_properties,
         .acceleration_structure_features = acceleration_structure_features,
-        .instance_buffer                 = instance_buffer,
-        .scratch_buffer                  = scratch_buffer
+        .instance_buffers                = instance_buffers,
+        .scratch_buffers                 = scratch_buffers
     };
 
     return scene;
@@ -360,6 +371,7 @@ void rebuild_tlas(
     VkDevice                         device,
     VmaAllocator                     allocator,
     VkCommandBuffer                  command_buffer,
+    uint32_t                         frame_index,
     const std::vector<Mesh>&         meshes,
     const std::vector<MeshInstance>& mesh_instances
 ) {
@@ -396,9 +408,11 @@ void rebuild_tlas(
         tlas_instances.push_back(instance);
     }
 
-    VkDeviceAddress instance_buffer_address = get_buffer_device_address(scene.instance_buffer, device);
+    Buffer instance_buffer = scene.instance_buffers[frame_index];
+
+    VkDeviceAddress instance_buffer_address = get_buffer_device_address(instance_buffer, device);
     void*           instance_buffer_ptr     = nullptr;
-    VK_CHECK(vmaMapMemory(allocator, scene.instance_buffer.allocation, &instance_buffer_ptr));
+    VK_CHECK(vmaMapMemory(allocator, instance_buffer.allocation, &instance_buffer_ptr));
     memcpy(
         instance_buffer_ptr, tlas_instances.data(), tlas_instances.size() * sizeof(VkAccelerationStructureInstanceKHR)
     );
@@ -448,7 +462,7 @@ void rebuild_tlas(
         .type   = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
     };
 
-    VkDeviceAddress scratch_buffer_address = get_buffer_device_address(scene.scratch_buffer, device);
+    VkDeviceAddress scratch_buffer_address = get_buffer_device_address(scene.scratch_buffers[frame_index], device);
 
     VkAccelerationStructureBuildGeometryInfoKHR acceleration_build_geometry_info = {
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
@@ -496,6 +510,11 @@ void destroy_rt_scene(const RTScene& scene, VkDevice device, VmaAllocator alloca
     vkDestroyAccelerationStructureKHR(device, scene.tlas.handle, nullptr);
     destroy_buffer(scene.tlas.buffer, device, allocator);
 
-    destroy_buffer(scene.instance_buffer, device, allocator);
-    destroy_buffer(scene.scratch_buffer, device, allocator);
+    for (const auto& buffer : scene.instance_buffers) {
+        destroy_buffer(buffer, device, allocator);
+    }
+
+    for (const auto& buffer : scene.scratch_buffers) {
+        destroy_buffer(buffer, device, allocator);
+    }
 }

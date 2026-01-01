@@ -2725,6 +2725,7 @@ int main(int argc, char* argv[]) {
             vma_allocator,
             command_buffers[0],
             graphics_queue,
+            FRAMES_IN_FLIGHT,
             meshes,
             mesh_instances,
             get_buffer_device_address(global_vertex_buffer, device),
@@ -6302,7 +6303,7 @@ int main(int argc, char* argv[]) {
 
         vkCmdResetQueryPool(command_buffer, statistics_pools[frame_index], 0, 1);
 
-        rebuild_tlas(rt_scene, device, vma_allocator, command_buffer, meshes, mesh_instances);
+        rebuild_tlas(rt_scene, device, vma_allocator, command_buffer, frame_index, meshes, mesh_instances);
 
         VkViewport viewport = {
             .x        = 0,
