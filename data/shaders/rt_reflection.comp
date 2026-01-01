@@ -241,7 +241,7 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
 
         result = vec4(Lo + diffuse_ibl + emissive, hit_distance);
     } else {
-        result = vec4(getSkyColor(direction, -lighting.light_direction.xyz), t_max);
+        result = vec4(get_sky_color(direction, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom), t_max);
     }
 
     return result;

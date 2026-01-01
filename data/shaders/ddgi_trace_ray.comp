@@ -154,7 +154,7 @@ void main() {
 
         vec3 kD = (1.0 - metallic) * albedo.rgb;
 
-        vec3 indirect = sample_ddgi(lighting, hit_pos, world_normal, lighting.invert_multibounce_view_dir == 1 ? ray_dir : -ray_dir, ddgi_atlas, ddgi_depth);
+        vec3 indirect = sample_ddgi(lighting, hit_pos, world_normal, -ray_dir, ddgi_atlas, ddgi_depth);
         indirect *= min(albedo.rgb, 0.97f);
 
         if (lighting.multibounce == 0) {
@@ -167,7 +167,7 @@ void main() {
 
         radiance = Lo + indirect + emissive;
     } else {
-        radiance = getSkyColor(ray_dir, -lighting.light_direction.xyz);
+        radiance = get_sky_color(ray_dir, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom);
     }
 
     ray_buffer.rays[global_ray_idx].ray_data = vec4(radiance, hit_distance);
