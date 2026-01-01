@@ -27,8 +27,8 @@ struct RTScene {
     VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features;
 
     // TODO: Dunno about this one
-    Buffer instance_buffer;
-    Buffer scratch_buffer;
+    std::vector<Buffer> instance_buffers;
+    std::vector<Buffer> scratch_buffers;
 };
 
 bool is_mesh_same(const Mesh& m1, const Mesh& m2);
@@ -41,6 +41,7 @@ RTScene create_rt_scene(
     VmaAllocator                     allocator,
     VkCommandBuffer                  command_buffer,
     VkQueue                          queue,
+    uint32_t                         frames_in_flight,
     const std::vector<Mesh>&         meshes,
     const std::vector<MeshInstance>& mesh_instances,
     VkDeviceAddress                  global_vertex_buffer_address,
@@ -53,6 +54,7 @@ void rebuild_tlas(
     VkDevice                         device,
     VmaAllocator                     allocator,
     VkCommandBuffer                  command_buffer,
+    uint32_t                         frame_index,
     const std::vector<Mesh>&         meshes,
     const std::vector<MeshInstance>& mesh_instances
 );
