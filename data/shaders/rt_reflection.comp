@@ -122,10 +122,6 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
     float t_min = 0.001;
     float t_max = 1000.0;
 
-    if (any(isnan(origin)) || any(isnan(direction))) {
-        return vec4(0.0);
-    }
-
     rayQueryEXT ray_query;
     rayQueryInitializeEXT(
         ray_query,

@@ -90,7 +90,7 @@ void main() {
 
         for (int r = 0; r < lighting.rays_per_probe; r++) {
             vec3 ray_dir = shared_ray_dir[r];
-            float ray_dist = shared_ray_hit_data[r].w;
+            float ray_dist = min(shared_ray_hit_data[r].w, lighting.probe_spacing * 1.5);
 
             float weight = pow(max(0.0, dot(probe_dir, ray_dir)), 64.0);
 
