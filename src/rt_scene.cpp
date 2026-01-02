@@ -6,6 +6,7 @@ RTScene create_rt_scene(
     VmaAllocator                     allocator,
     VkCommandBuffer                  command_buffer,
     VkQueue                          queue,
+    uint32_t                         max_tlas_instance_count,
     uint32_t                         frames_in_flight,
     const std::vector<Mesh>&         meshes,
     const std::vector<MeshInstance>& mesh_instances,
@@ -110,10 +111,9 @@ RTScene create_rt_scene(
         VkDeviceAddress scratch_buffer_address = get_buffer_device_address(scratch_buffer, device);
 
         VkAccelerationStructureBuildGeometryInfoKHR acceleration_build_geometry_info = {
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-            .type  = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-            .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
-                     VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
+            .sType                    = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+            .type                     = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+            .flags                    = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
             .mode                     = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
             .dstAccelerationStructure = bottom_level_acceleration_structure,
             .geometryCount            = 1,
@@ -204,7 +204,7 @@ RTScene create_rt_scene(
     std::vector<Buffer> instance_buffers(frames_in_flight);
     for (int i = 0; i < frames_in_flight; i++) {
         instance_buffers[i] = create_buffer(
-            tlas_instances.size() * sizeof(VkAccelerationStructureInstanceKHR),
+            max_tlas_instance_count * sizeof(VkAccelerationStructureInstanceKHR) * 2,
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
             allocator,
@@ -249,17 +249,16 @@ RTScene create_rt_scene(
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR
     };
 
-    uint32_t instance_count = static_cast<uint32_t>(tlas_instances.size());
     vkGetAccelerationStructureBuildSizesKHR(
         device,
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
         &tlas_build_info,
-        &instance_count,
+        &max_tlas_instance_count,
         &acceleration_structure_build_sizes_info
     );
 
     Buffer top_level_acceleration_structure_buffer = create_buffer(
-        acceleration_structure_build_sizes_info.accelerationStructureSize,
+        acceleration_structure_build_sizes_info.accelerationStructureSize * 2,
         VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         allocator,
         VMA_MEMORY_USAGE_GPU_ONLY
@@ -268,7 +267,7 @@ RTScene create_rt_scene(
     VkAccelerationStructureCreateInfoKHR acceleration_structure_create_info = {
         .sType  = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
         .buffer = top_level_acceleration_structure_buffer.handle,
-        .size   = acceleration_structure_build_sizes_info.accelerationStructureSize,
+        .size   = acceleration_structure_build_sizes_info.accelerationStructureSize * 2,
         .type   = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
     };
 
@@ -281,7 +280,7 @@ RTScene create_rt_scene(
 
     for (int i = 0; i < frames_in_flight; i++) {
         scratch_buffers[i] = create_buffer(
-            acceleration_structure_build_sizes_info.buildScratchSize,
+            acceleration_structure_build_sizes_info.buildScratchSize * 2,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
             allocator,
             VMA_MEMORY_USAGE_GPU_ONLY
@@ -292,10 +291,9 @@ RTScene create_rt_scene(
     VkDeviceAddress scratch_buffer_address = get_buffer_device_address(scratch_buffer, device);
 
     VkAccelerationStructureBuildGeometryInfoKHR acceleration_build_geometry_info = {
-        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-        .type  = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
-                 VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
+        .sType                    = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+        .type                     = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+        .flags                    = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
         .mode                     = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
         .dstAccelerationStructure = top_level_acceleration_structure.handle,
         .geometryCount            = 1,
@@ -360,14 +358,15 @@ RTScene create_rt_scene(
         .rt_properties                   = ray_tracing_properties,
         .acceleration_structure_features = acceleration_structure_features,
         .instance_buffers                = instance_buffers,
-        .scratch_buffers                 = scratch_buffers
+        .scratch_buffers                 = scratch_buffers,
+        .max_tlas_instance_count         = max_tlas_instance_count,
     };
 
     return scene;
 }
 
 void rebuild_tlas(
-    const RTScene&                   scene,
+    RTScene&                         scene,
     VkDevice                         device,
     VmaAllocator                     allocator,
     VkCommandBuffer                  command_buffer,
@@ -375,6 +374,11 @@ void rebuild_tlas(
     const std::vector<Mesh>&         meshes,
     const std::vector<MeshInstance>& mesh_instances
 ) {
+    if (mesh_instances.size() >= scene.max_tlas_instance_count) {
+        spdlog::critical("Requested object count is larger than the TLAS currently suppports!");
+        exit(1);
+    }
+
     memory_pipeline_barrier(
         command_buffer,
         VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_2_TRANSFER_BIT |
@@ -437,7 +441,7 @@ void rebuild_tlas(
         .sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
         .type          = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
         .flags         = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
-        .mode          = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR,
+        .mode          = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
         .geometryCount = 1,
         .pGeometries   = &tlas_geometry
     };
@@ -446,31 +450,74 @@ void rebuild_tlas(
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR
     };
 
-    uint32_t instance_count = static_cast<uint32_t>(tlas_instances.size());
     vkGetAccelerationStructureBuildSizesKHR(
         device,
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
         &tlas_build_info,
-        &instance_count,
+        &scene.max_tlas_instance_count,
         &acceleration_structure_build_sizes_info
     );
 
-    VkAccelerationStructureCreateInfoKHR acceleration_structure_create_info = {
-        .sType  = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
-        .buffer = scene.tlas.buffer.handle,
-        .size   = acceleration_structure_build_sizes_info.accelerationStructureSize,
-        .type   = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-    };
+    if (acceleration_structure_build_sizes_info.buildScratchSize > scene.scratch_buffers[frame_index].size) {
+        spdlog::info("want to rebuild scratch");
+
+        vkDeviceWaitIdle(device);
+
+        destroy_buffer(scene.scratch_buffers[frame_index], device, allocator);
+
+        scene.scratch_buffers[frame_index] = create_buffer(
+            acceleration_structure_build_sizes_info.buildScratchSize * 2,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            allocator,
+            VMA_MEMORY_USAGE_GPU_ONLY
+        );
+    }
+
+    if (acceleration_structure_build_sizes_info.accelerationStructureSize > scene.tlas.buffer.size) {
+        spdlog::info("want to rebuild TLAS");
+
+        spdlog::critical("TLAS needs to grow, this is not supported for now!");
+        exit(1);
+
+        vkDeviceWaitIdle(device);
+
+        vkDestroyAccelerationStructureKHR(device, scene.tlas.handle, nullptr);
+
+        VkDeviceSize new_size =
+            acceleration_structure_build_sizes_info.accelerationStructureSize * 2; // Give headroom for future updates
+        destroy_buffer(scene.tlas.buffer, device, allocator);
+
+        Buffer top_level_acceleration_structure_buffer = create_buffer(
+            new_size,
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            allocator,
+            VMA_MEMORY_USAGE_GPU_ONLY
+        );
+
+        VkAccelerationStructureCreateInfoKHR acceleration_structure_create_info = {
+            .sType  = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
+            .buffer = top_level_acceleration_structure_buffer.handle,
+            .size   = new_size,
+            .type   = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+        };
+
+        TLAS top_level_acceleration_structure;
+        vkCreateAccelerationStructureKHR(
+            device, &acceleration_structure_create_info, nullptr, &top_level_acceleration_structure.handle
+        );
+
+        scene.tlas        = top_level_acceleration_structure;
+        scene.tlas.buffer = top_level_acceleration_structure_buffer;
+    }
 
     VkDeviceAddress scratch_buffer_address = get_buffer_device_address(scene.scratch_buffers[frame_index], device);
 
     VkAccelerationStructureBuildGeometryInfoKHR acceleration_build_geometry_info = {
-        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-        .type  = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
-                 VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
-        .mode                     = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR,
-        .srcAccelerationStructure = scene.tlas.handle,
+        .sType                    = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+        .type                     = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+        .flags                    = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+        .mode                     = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+        .srcAccelerationStructure = VK_NULL_HANDLE,
         .dstAccelerationStructure = scene.tlas.handle,
         .geometryCount            = 1,
         .pGeometries              = &tlas_geometry,
