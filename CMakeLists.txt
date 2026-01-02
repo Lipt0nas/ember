@@ -89,6 +89,34 @@ add_compile_options("-DTRACY_VK_USE_SYMBOL_TABLE")
 add_compile_options("-DTRACY_NO_BROADCAST")
 add_compile_options("-DTRACY_CALLSTACK")
 
+# https://github.com/jrouwe/JoltPhysicsHelloWorld/blob/main/Build/CMakeLists.txt
+set(DOUBLE_PRECISION OFF)
+set(GENERATE_DEBUG_SYMBOLS ON)
+set(CROSS_PLATFORM_DETERMINISTIC OFF)
+set(INTERPROCEDURAL_OPTIMIZATION ON)
+set(FLOATING_POINT_EXCEPTIONS_ENABLED OFF)
+set(CPP_EXCEPTIONS_ENABLED OFF)
+set(CPP_RTTI_ENABLED OFF)
+set(OBJECT_LAYER_BITS 16)
+
+set(USE_SSE4_1 ON)
+set(USE_SSE4_2 ON)
+set(USE_AVX ON)
+set(USE_AVX2 ON)
+set(USE_AVX512 OFF)
+set(USE_LZCNT ON)
+set(USE_TZCNT ON)
+set(USE_F16C ON)
+set(USE_FMADD ON)
+
+FetchContent_Declare(
+        JoltPhysics
+        GIT_REPOSITORY "https://github.com/jrouwe/JoltPhysics"
+        GIT_TAG "v5.5.0"
+		SOURCE_SUBDIR "Build"
+)
+FetchContent_MakeAvailable(JoltPhysics)
+
 FetchContent_MakeAvailable(
     glm
     sdl
@@ -102,6 +130,7 @@ FetchContent_MakeAvailable(
     imguizmo
     implot
     tracy
+    JoltPhysics
 )
 
 add_library(imgui STATIC
@@ -139,6 +168,8 @@ add_library(imguizmo STATIC
 target_link_libraries(imguizmo PUBLIC imgui)
 target_include_directories(imguizmo INTERFACE ${imguizmo_SOURCE_DIR})
 
+SET_INTERPROCEDURAL_OPTIMIZATION()
+
 set(SOURCES
     "src/main.cpp"
     "src/ember.cpp"
@@ -168,6 +199,7 @@ target_link_libraries(Ember PRIVATE
     implot
     imguizmo
     TracyClient
+    Jolt
 )
 
 # TODO: temporary convenience
