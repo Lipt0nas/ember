@@ -26,9 +26,10 @@ struct RTScene {
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR  rt_properties;
     VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features;
 
-    // TODO: Dunno about this one
     std::vector<Buffer> instance_buffers;
     std::vector<Buffer> scratch_buffers;
+
+    uint32_t max_tlas_instance_count;
 };
 
 bool is_mesh_same(const Mesh& m1, const Mesh& m2);
@@ -41,6 +42,7 @@ RTScene create_rt_scene(
     VmaAllocator                     allocator,
     VkCommandBuffer                  command_buffer,
     VkQueue                          queue,
+    uint32_t                         max_tlas_instance_count,
     uint32_t                         frames_in_flight,
     const std::vector<Mesh>&         meshes,
     const std::vector<MeshInstance>& mesh_instances,
@@ -50,7 +52,7 @@ RTScene create_rt_scene(
 
 // NOTE: does not handle updates to BLAS, and is probably horribly inneficient
 void rebuild_tlas(
-    const RTScene&                   scene,
+    RTScene&                         scene,
     VkDevice                         device,
     VmaAllocator                     allocator,
     VkCommandBuffer                  command_buffer,
