@@ -4,6 +4,7 @@
 #include "device.hpp"
 #include "framegraph.hpp"
 #include "geometry.hpp"
+#include "physics.hpp"
 #include "pipeline.hpp"
 #include "resources.hpp"
 #include "rt_scene.hpp"
@@ -444,6 +445,8 @@ void load_scene(
     VkDeviceSize&                        meshlet_bounds_buffer_offset,
     std::unordered_map<uint32_t, Image>& global_texture_cache,
     std::vector<Image>&                  loaded_images,
+    JPH::PhysicsSystem*                  physics_system,
+    std::vector<JPH::BodyID>&            static_bodies,
     VmaAllocator                         allocator,
     VkCommandBuffer                      command_buffer,
     VkQueue                              queue,
@@ -564,8 +567,10 @@ void load_scene(
         materials[i].normal_scale = mat.normalTexture.scale;
     }
 
-    int              current_entry = 0;
-    std::vector<int> mesh_primitive_offsets(model.meshes.size());
+    int                         current_entry = 0;
+    std::vector<int>            mesh_primitive_offsets(model.meshes.size());
+    std::vector<JPH::ShapeRefC> mesh_collision_shapes;
+
     spdlog::info("Loading {} meshes", model.meshes.size());
     for (int m = 0; m < model.meshes.size(); m++) {
         ZoneScopedN("Load Mesh");
@@ -616,7 +621,9 @@ void load_scene(
                 &texcoord_buffer.data[texcoord_view.byteOffset + texcoord_accessor.byteOffset]
             );
 
-            glm::vec3 center = glm::vec3(0);
+            glm::vec3 center     = glm::vec3(0);
+            glm::vec3 bounds_min = glm::vec3(std::numeric_limits<float>::max());
+            glm::vec3 bounds_max = glm::vec3(std::numeric_limits<float>::lowest());
 
             for (size_t i = 0; i < vertex_count; i++) {
                 glm::vec3 position = {
@@ -626,6 +633,8 @@ void load_scene(
                 };
 
                 center += position;
+                bounds_min = glm::min(bounds_min, position);
+                bounds_max = glm::max(bounds_max, position);
 
                 vertices.emplace_back(
                     Vertex{
@@ -646,21 +655,9 @@ void load_scene(
 
             center /= float(vertex_count);
 
-            glm::vec3 bounds_min = glm::vec3(std::numeric_limits<float>::max());
-            glm::vec3 bounds_max = glm::vec3(std::numeric_limits<float>::min());
-            float     radius     = 0.0f;
-
-            for (size_t i = 0; i < vertex_count; i++) {
-                glm::vec3 position = {
-                    positions[i * 3 + 0],
-                    positions[i * 3 + 1],
-                    positions[i * 3 + 2],
-                };
-
-                bounds_min = glm::min(bounds_min, position);
-                bounds_max = glm::max(bounds_max, position);
-
-                radius = std::max(radius, distance(center, position));
+            float radius = 0.0f;
+            for (const auto& vertex : vertices) {
+                radius = std::max(radius, glm::distance(center, vertex.position));
             }
 
             if (primitive.indices >= 0) {
@@ -701,6 +698,25 @@ void load_scene(
                 }
                 }
             }
+
+            JPH::TriangleList triangles;
+            for (size_t i = 0; i < indices.size(); i += 3) {
+                const Vertex& v0 = vertices[indices[i + 0]];
+                const Vertex& v1 = vertices[indices[i + 1]];
+                const Vertex& v2 = vertices[indices[i + 2]];
+
+                triangles.push_back(
+                    JPH::Triangle(
+                        JPH::Float3(v0.position.x, v0.position.y, v0.position.z),
+                        JPH::Float3(v1.position.x, v1.position.y, v1.position.z),
+                        JPH::Float3(v2.position.x, v2.position.y, v2.position.z)
+                    )
+                );
+            }
+
+            JPH::MeshShapeSettings mesh_settings(triangles);
+            JPH::ShapeRefC         collision_shape = mesh_settings.Create().Get();
+            mesh_collision_shapes.push_back(collision_shape);
 
             VkDeviceSize mesh_vertex_offset = indirect_vertex_buffer_offset;
             VkDeviceSize mesh_index_offset  = indirect_index_buffer_offset;
@@ -964,6 +980,30 @@ void load_scene(
                 .rotation    = rotation,
             };
             instances.push_back(instance);
+
+            JPH::ShapeRefC final_shape;
+            if (scale != 1.0f) {
+                JPH::ScaledShapeSettings scaled(mesh_collision_shapes[mesh_id], JPH::Vec3::sReplicate(scale));
+                final_shape = scaled.Create().Get();
+            } else {
+                final_shape = mesh_collision_shapes[mesh_id];
+            }
+
+            JPH::BodyInterface& body_interface = physics_system->GetBodyInterface();
+
+            JPH::BodyCreationSettings body_settings(
+                final_shape,
+                JPH::RVec3(position.x, position.y, position.z),
+                JPH::Quat(rotation.x, rotation.y, rotation.z, rotation.w),
+                JPH::EMotionType::Static,
+                Layers::NON_MOVING
+            );
+
+            JPH::Body* body = body_interface.CreateBody(body_settings);
+            if (body) {
+                body_interface.AddBody(body->GetID(), JPH::EActivation::DontActivate);
+                static_bodies.push_back(body->GetID());
+            }
         }
     }
 
@@ -2674,6 +2714,56 @@ int main(int argc, char* argv[]) {
     std::vector<Material>     materials;
     std::vector<MeshInstance> mesh_instances;
 
+    spdlog::info("Initializing physics engine");
+    JPH::RegisterDefaultAllocator();
+    JPH::Factory::sInstance = new JPH::Factory();
+    JPH::RegisterTypes();
+
+    JPH::TempAllocatorImpl   physics_temp_allocator(10 * 1024 * 1024);
+    JPH::JobSystemThreadPool physics_job_system(
+        JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, std::thread::hardware_concurrency() - 1
+    );
+    const uint32_t physics_max_bodies             = UINT16_MAX;
+    const uint32_t physics_num_body_mutexes       = 0;
+    const uint32_t physica_max_body_pairs         = UINT16_MAX;
+    const uint32_t physics_max_contact_contraints = 10240;
+
+    BPLayerInterfaceImpl              physics_broad_phase_layer_interface;
+    ObjectVsBroadPhaseLayerFilterImpl physics_object_vs_broad_phase_layer_filter;
+    ObjectLayerPairFilterImpl         physics_object_vs_object_layer_filter;
+
+    JPH::PhysicsSystem physics_system;
+    physics_system.Init(
+        physics_max_bodies,
+        physics_num_body_mutexes,
+        physica_max_body_pairs,
+        physics_max_contact_contraints,
+        physics_broad_phase_layer_interface,
+        physics_object_vs_broad_phase_layer_filter,
+        physics_object_vs_object_layer_filter
+    );
+
+    MyBodyActivationListener physics_body_activation_listener;
+    physics_system.SetBodyActivationListener(&physics_body_activation_listener);
+
+    MyContactListener physics_contact_listener;
+    physics_system.SetContactListener(&physics_contact_listener);
+
+    JPH::BodyInterface& physics_body_interface = physics_system.GetBodyInterface();
+
+    struct PhysicsSphere {
+        JPH::BodyID body_id;
+        uint32_t    drawcall_id;
+    };
+    std::vector<PhysicsSphere> spheres;
+
+    const float physics_delta_time       = 1.0f / 60.0f;
+    float       physics_time_accumulator = 0.0f;
+
+    physics_system.OptimizeBroadPhase();
+
+    std::vector<JPH::BodyID> static_bodies;
+
     std::string load_path = argc > 1 ? argv[1] : "data/models/room2.glb";
 
     load_scene(
@@ -2696,6 +2786,8 @@ int main(int argc, char* argv[]) {
         meshlet_bounds_buffer_offset,
         texture_cache,
         loaded_images,
+        &physics_system,
+        static_bodies,
         vma_allocator,
         command_buffers[0],
         graphics_queue,
@@ -2725,6 +2817,7 @@ int main(int argc, char* argv[]) {
             vma_allocator,
             command_buffers[0],
             graphics_queue,
+            10000,
             FRAMES_IN_FLIGHT,
             meshes,
             mesh_instances,
@@ -2776,10 +2869,10 @@ int main(int argc, char* argv[]) {
 
     ImGuizmo::OPERATION tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
 
-    bool          enable_transform_snap = true;
-    glm::vec3     transform_snap        = glm::vec3(1.0f);
-    MeshInstance* grabbed_mesh          = nullptr;
-    glm::vec2     grab_origin           = {};
+    bool      enable_transform_snap = true;
+    glm::vec3 transform_snap        = glm::vec3(1.0f);
+    int       grabbed_mesh          = -1;
+    glm::vec2 grab_origin           = {};
 
     uint32_t frame_count = 0;
     uint32_t frame_index = 0;
@@ -3275,8 +3368,8 @@ int main(int argc, char* argv[]) {
     std::vector<uint32_t> dynamic_offsets;
     dynamic_offsets.resize(static_cast<uint32_t>(DynamicOffset::COUNT));
 
+    spdlog::info("Creating framegraph");
     Framegraph framegraph(device, graphics_queue, command_buffers[0], FRAMES_IN_FLIGHT, supports_timestamp_queries);
-
     framegraph.import_image(depth_hiz, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(depth_buffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_albedo, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -5764,6 +5857,7 @@ int main(int argc, char* argv[]) {
 
         accumulated_fps++;
         time_passed += delta_time;
+        physics_time_accumulator += delta_time;
 
         if (time_passed >= 1.0f) {
             fps = accumulated_fps;
@@ -5880,6 +5974,29 @@ int main(int argc, char* argv[]) {
 
         update_camera(camera);
 
+        while (physics_time_accumulator >= physics_delta_time) {
+            for (const auto& obj : spheres) {
+                JPH::Vec3 p;
+                JPH::Quat r;
+                physics_body_interface.GetPositionAndRotation(obj.body_id, p, r);
+
+                glm::vec3 new_pos = glm::vec3(p.GetX(), p.GetY(), p.GetZ());
+                glm::quat new_rot = glm::quat(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
+
+                MeshInstance& instance = mesh_instances[obj.drawcall_id];
+                Mesh          mesh     = meshes[instance.mesh_id];
+
+                glm::vec3 center = (mesh.bounds_max + mesh.bounds_min) * 0.5f;
+                glm::vec3 offset = new_rot * (center * instance.scale);
+
+                instance.position = new_pos - offset;
+                instance.rotation = new_rot;
+            }
+
+            physics_system.Update(physics_delta_time, 1, &physics_temp_allocator, &physics_job_system);
+            physics_time_accumulator -= physics_delta_time;
+        }
+
         auto transposed_projection = glm::transpose(camera.projection_matrix);
 
         glm::vec4 frustum_x = normalize_plane(transposed_projection[3] + transposed_projection[0]);
@@ -5899,8 +6016,8 @@ int main(int argc, char* argv[]) {
         }
 
         if (ImGui::TreeNode("Mesh Material")) {
-            if (grabbed_mesh != nullptr) {
-                auto& material = materials[grabbed_mesh->material_id];
+            if (grabbed_mesh != -1) {
+                auto& material = materials[mesh_instances[grabbed_mesh].material_id];
 
                 std::vector<uint32_t*> material_indices = {
                     &material.albedo_index, &material.normals_index, &material.material_index, &material.emissive_index
@@ -6049,13 +6166,13 @@ int main(int argc, char* argv[]) {
         }
         ImGui::End();
 
-        if (grabbed_mesh != nullptr) {
-            auto inst = grabbed_mesh;
-            auto mesh = meshes[inst->mesh_id];
+        if (grabbed_mesh != -1) {
+            auto& inst = mesh_instances[grabbed_mesh];
+            auto  mesh = meshes[inst.mesh_id];
 
-            glm::mat4 transform = glm::translate(glm::mat4(1.0f), inst->position);
-            transform           = transform * glm::mat4_cast(inst->rotation);
-            transform           = glm::scale(transform, glm::vec3(inst->scale));
+            glm::mat4 transform = glm::translate(glm::mat4(1.0f), inst.position);
+            transform           = transform * glm::mat4_cast(inst.rotation);
+            transform           = glm::scale(transform, glm::vec3(inst.scale));
 
             auto      angle      = glm::normalize(glm::eulerAngles(camera.orientation));
             glm::mat4 view       = glm::mat4_cast(camera.orientation);
@@ -6086,20 +6203,20 @@ int main(int argc, char* argv[]) {
                 ImGuizmo::DecomposeMatrixToComponents(&delta_mat[0].x, &position.x, &rotation.x, &scale.x);
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
-                    inst->position += position;
+                    inst.position += position;
                 }
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
-                    inst->rotation = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.x), glm::vec3(1, 0, 0)) *
-                                     inst->rotation;
-                    inst->rotation = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.y), glm::vec3(0, 1, 0)) *
-                                     inst->rotation;
-                    inst->rotation = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.z), glm::vec3(0, 0, 1)) *
-                                     inst->rotation;
+                    inst.rotation = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.x), glm::vec3(1, 0, 0)) *
+                                    inst.rotation;
+                    inst.rotation = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.y), glm::vec3(0, 1, 0)) *
+                                    inst.rotation;
+                    inst.rotation = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.z), glm::vec3(0, 0, 1)) *
+                                    inst.rotation;
                 }
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
-                    inst->scale *= scale.x;
+                    inst.scale *= scale.x;
                 }
             }
         }
@@ -6203,6 +6320,57 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        static bool press_guard = false;
+        if (pressed_keys[SDL_SCANCODE_SPACE] && !capturing_mouse) {
+            if (pressed_buttons[SDL_BUTTON_LEFT]) {
+                if (grabbed_mesh != -1 && !press_guard) {
+                    int w;
+                    int h;
+                    SDL_GetWindowSizeInPixels(window, &w, &h);
+
+                    glm::vec4 mouse_near = {(mouse_pos / glm::vec2(w, h)) * 2.0f - 1.0f, 1, 1.0};
+                    mouse_near.y *= -1;
+                    mouse_near = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_near;
+                    glm::vec3 near = glm::vec3(mouse_near) / mouse_near.w;
+
+                    glm::vec4 mouse_far = {(mouse_pos / glm::vec2(w, h)) * 2.0f - 1.0f, 0.01, 1.0};
+                    mouse_far.y *= -1;
+                    mouse_far = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_far;
+                    glm::vec3 far = glm::vec3(mouse_far) / mouse_far.w;
+
+                    glm::vec3 origin  = camera.position;
+                    glm::vec3 ray_dir = glm::normalize(far - near);
+
+                    MeshInstance new_instance = mesh_instances[grabbed_mesh];
+                    Mesh         mesh         = meshes[new_instance.mesh_id];
+
+                    glm::vec3 half_extent = (mesh.bounds_max - mesh.bounds_min) * 0.5f;
+                    half_extent *= new_instance.scale;
+
+                    float radius = glm::max(half_extent.x, glm::max(half_extent.y, half_extent.z));
+
+                    glm::vec3                 spawn_point = origin + ray_dir * radius * 2.0f;
+                    JPH::BodyCreationSettings sphere_settings(
+                        new JPH::SphereShape(radius),
+                        JPH::RVec3(spawn_point.x, spawn_point.y, spawn_point.z),
+                        JPH::Quat::sIdentity(),
+                        JPH::EMotionType::Dynamic,
+                        Layers::MOVING
+                    );
+                    JPH::BodyID body_id =
+                        physics_body_interface.CreateAndAddBody(sphere_settings, JPH::EActivation::Activate);
+                    physics_body_interface.SetLinearVelocity(body_id, JPH::Vec3(ray_dir.x, ray_dir.y, ray_dir.z) * 10);
+
+                    mesh_instances.push_back(new_instance);
+                    spheres.push_back(PhysicsSphere{body_id, static_cast<uint32_t>(mesh_instances.size() - 1)});
+
+                    press_guard = true;
+                }
+            } else {
+                press_guard = false;
+            }
+        }
+
         if (pressed_keys[SDL_SCANCODE_LSHIFT] && !capturing_mouse) {
             if (pressed_buttons[SDL_BUTTON_LEFT]) {
                 auto transform_point =
@@ -6234,6 +6402,7 @@ int main(int argc, char* argv[]) {
                 glm::vec3 ray_dir = glm::normalize(far - near);
 
                 float closest_t = std::numeric_limits<float>::max();
+                int   index     = 0;
                 for (auto& i : mesh_instances) {
                     auto& m = meshes[i.mesh_id];
 
@@ -6252,10 +6421,12 @@ int main(int argc, char* argv[]) {
                         float t = result.x;
 
                         if (t < closest_t) {
-                            grabbed_mesh = &i;
+                            grabbed_mesh = index;
                             grab_origin  = mouse_pos;
                         }
                     }
+
+                    index++;
                 }
             }
         }
