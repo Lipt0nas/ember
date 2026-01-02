@@ -122,6 +122,10 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
     float t_min = 0.001;
     float t_max = 1000.0;
 
+    if (any(isnan(origin)) || any(isnan(direction))) {
+        return vec4(0.0);
+    }
+
     rayQueryEXT ray_query;
     rayQueryInitializeEXT(
         ray_query,
@@ -220,10 +224,9 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         vec3 kD = vec3(1.0) - kS;
         kD *= 1.0 - metallic;
 
-        vec3 F_ibl = F_Schlick_Roughness(max(dot(world_normal, -direction), 0.0), F0, roughness);
+        vec3 F_ibl = F_Schlick_Roughness(NoV, F0, roughness);
         vec3 kS_ibl = F_ibl;
-        vec3 kD_ibl = vec3(1.0) - kS_ibl;
-        kD_ibl *= 1.0 - metallic;
+        vec3 kD_ibl = (vec3(1.0) - kS_ibl) * (1.0 - metallic);
 
         vec3 direct_radiance = lighting.light_color.xyz * lighting.light_color.a;
 
@@ -236,8 +239,8 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
 
         vec3 Lo = (kD * diffuse + specular) * direct_radiance * NdotL * shadow;
 
-        vec3 indirect = sample_ddgi(lighting, hit_pos, world_normal, -direction, ddgi_atlas, ddgi_depth);
-        vec3 diffuse_ibl = kD_ibl * indirect * albedo.rgb;
+        vec3 indirect = sample_ddgi(lighting, hit_pos, world_normal, V, ddgi_atlas, ddgi_depth);
+        vec3 diffuse_ibl = kD_ibl * (indirect * PI) * albedo.rgb;
 
         result = vec4(Lo + diffuse_ibl + emissive, hit_distance);
     } else {
