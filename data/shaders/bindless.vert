@@ -6,7 +6,9 @@
 layout(location = 0) out vec3 out_normal;
 layout(location = 1) out vec2 out_uv;
 layout(location = 2) out vec3 out_world_pos;
-layout(location = 3) flat out uint out_material_index;
+layout(location = 3) out vec4 out_clip_pos;
+layout(location = 4) out vec4 out_last_clip_pos;
+layout(location = 5) flat out uint out_material_index;
 
 #include "common.glsl"
 
@@ -54,13 +56,16 @@ void main() {
     Vertex vertex = vertices[base];
 
     vec3 world_pos = rotate_quat(vertex.position, draw.rotation) * draw.scale + draw.position;
+    vec3 last_world_pos = rotate_quat(vertex.position, draw.last_rotation) * draw.last_scale + draw.last_position;
 
     vec4 clip_pos = scene.view_proj * vec4(world_pos, 1.0);
-    vec3 meshlet_color = vec3(1.0);
+    vec4 last_clip_pos = scene.last_frame_view_proj * vec4(last_world_pos, 1.0);
 
     gl_Position = clip_pos;
     out_normal = rotate_quat(vertex.normal, draw.rotation);
     out_uv = vertex.uv;
     out_world_pos = world_pos.xyz;
+    out_clip_pos = clip_pos;
+    out_last_clip_pos = last_clip_pos;
     out_material_index = draw.material_id;
 }
