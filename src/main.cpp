@@ -1465,8 +1465,8 @@ int main(int argc, char* argv[]) {
     lighting_data.compensate_specular      = 1;
     lighting_data.multibounce              = 1;
     lighting_data.remove_visibility_checks = 0;
-    lighting_data.sky_hemisphere_top       = {0.6, 0.7, 0.9, 1.0};
-    lighting_data.sky_hemisphere_bottom    = {0.3, 0.5, 0.8, 1.0};
+    lighting_data.sky_hemisphere_top       = {0.3, 0.5, 0.8, 1.0};
+    lighting_data.sky_hemisphere_bottom    = {0.6, 0.7, 0.9, 1.0};
 
     lighting_data.depth_texels_per_probe = 14;
     lighting_data.rays_per_probe         = 256;
