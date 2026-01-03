@@ -14,7 +14,9 @@ layout(triangles, max_vertices = 64, max_primitives = 124) out;
 layout(location = 0) out vec3 out_normal[];
 layout(location = 1) out vec2 out_uv[];
 layout(location = 2) out vec3 out_world_pos[];
-layout(location = 3) flat out uint out_material_index[];
+layout(location = 3) out vec4 out_clip_pos[];
+layout(location = 4) out vec4 out_last_clip_pos[];
+layout(location = 5) flat out uint out_material_index[];
 
 taskPayloadSharedEXT MeshletTaskPayload payload;
 
@@ -95,12 +97,17 @@ void main() {
         Vertex vertex = vertices[base];
 
         vec3 world_pos = rotate_quat(vertex.position, draw.rotation) * draw.scale + draw.position;
-        vec4 clip = scene.proj * (scene.view * vec4(world_pos, 1.0));
+        vec3 last_world_pos = rotate_quat(vertex.position, draw.last_rotation) * draw.last_scale + draw.last_position;
+
+        vec4 clip = scene.view_proj * vec4(world_pos, 1.0);
+        vec4 last_clip = scene.last_frame_view_proj * vec4(last_world_pos, 1.0);
 
         gl_MeshVerticesEXT[thread_id].gl_Position = scene.view_proj * vec4(world_pos, 1.0);
         out_normal[thread_id] = rotate_quat(vertex.normal, draw.rotation);
         out_uv[thread_id] = vertex.uv;
         out_world_pos[thread_id] = world_pos;
+        out_clip_pos[thread_id] = clip;
+        out_last_clip_pos[thread_id] = last_clip;
         out_material_index[thread_id] = draw.material_id;
 
         vertex_clip[thread_id] = vec3((clip.xy / clip.w * 0.5 + vec2(0.5)) * screen_size, clip.w);

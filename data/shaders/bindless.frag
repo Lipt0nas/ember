@@ -7,7 +7,9 @@
 layout(location = 0) in vec3 in_normal;
 layout(location = 1) in vec2 in_uv;
 layout(location = 2) in vec3 in_world_pos;
-layout(location = 3) flat in int in_material_index;
+layout(location = 3) in vec4 in_clip_pos;
+layout(location = 4) in vec4 in_last_clip_pos;
+layout(location = 5) flat in int in_material_index;
 
 layout(scalar, set = 1, binding = 3) readonly buffer Materials {
     Material materials[];
@@ -18,6 +20,7 @@ layout(set = 4, binding = 0) uniform sampler2D textures[];
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_emission;
+layout(location = 3) out vec2 out_velocity;
 
 vec3 world_normal(vec3 normal_map, vec3 vertex_normal, vec3 world_pos, vec2 uv) {
     vec3 dp1 = dFdx(world_pos);
@@ -50,7 +53,11 @@ void main() {
     vec3 normal = material_get_normal(material, textures[nonuniformEXT(material.normals_index)], in_uv);
     vec2 rougness_metallic = material_get_roughness_metallic(material, textures[nonuniformEXT(material.material_index)], in_uv);
 
+    vec2 screen = (in_clip_pos.xy / in_clip_pos.w) * 0.5 + 0.5;
+    vec2 last_screen = (in_last_clip_pos.xy / in_last_clip_pos.w) * 0.5 + 0.5;
+
     out_color = vec4(albedo.rgb, rougness_metallic.x);
     out_normal = vec4(world_normal(normal, in_normal, in_world_pos, in_uv), rougness_metallic.y);
     out_emission = vec4(emissive, 1.0);
+    out_velocity = screen - last_screen;
 }

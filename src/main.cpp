@@ -174,6 +174,7 @@ struct alignas(16) SceneUBO {
 
     float near_plane;
     float far_plane;
+    float pad[2];
 
     glm::mat4 last_frame_view_proj;
 };
@@ -1448,6 +1449,24 @@ int main(int argc, char* argv[]) {
         device
     );
 
+    Image gbuffer_velocity = create_image(
+        VK_FORMAT_R16G16_SFLOAT,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    std::vector<std::reference_wrapper<Image>> gbuffer_images = {
+        gbuffer_albedo,
+        gbuffer_normals,
+        gbuffer_emissive,
+        gbuffer_velocity,
+    };
+
     bool        visualize_probes = false;
     LightingUBO lighting_data    = {
            .light_direction  = glm::vec4(-0.2f, -0.7f, -1.0f, 0.0f),
@@ -1808,12 +1827,6 @@ int main(int argc, char* argv[]) {
         vma_allocator,
         device
     );
-
-    std::vector<std::reference_wrapper<Image>> gbuffer_images = {
-        gbuffer_albedo,
-        gbuffer_normals,
-        gbuffer_emissive,
-    };
 
     {
         VkCommandBufferBeginInfo begin_info = {
@@ -3049,6 +3062,7 @@ int main(int argc, char* argv[]) {
             gbuffer_albedo.format,
             gbuffer_normals.format,
             gbuffer_emissive.format,
+            gbuffer_velocity.format,
         },
         depth_buffer.format,
         sizeof(GeometryPushConstants),
@@ -3280,7 +3294,7 @@ int main(int argc, char* argv[]) {
                             )
                         },
                         DescriptorBinding{
-                            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
                             .write_info =
                                 DescriptorInfo(ddgi_probe_buffer.handle, 0, ddgi_probe_buffer.size / FRAMES_IN_FLIGHT)
                         },
@@ -3554,6 +3568,18 @@ int main(int argc, char* argv[]) {
                         .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                         .pNext              = nullptr,
                         .imageView          = gbuffer_emissive.view,
+                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .resolveMode        = VK_RESOLVE_MODE_NONE,
+                        .resolveImageView   = VK_NULL_HANDLE,
+                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                    },
+                    {
+                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                        .pNext              = nullptr,
+                        .imageView          = gbuffer_velocity.view,
                         .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                         .resolveMode        = VK_RESOLVE_MODE_NONE,
                         .resolveImageView   = VK_NULL_HANDLE,
@@ -4469,7 +4495,7 @@ int main(int argc, char* argv[]) {
                             )
                         },
                         DescriptorBinding{
-                            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
                             .write_info =
                                 DescriptorInfo(ddgi_probe_buffer.handle, 0, ddgi_probe_buffer.size / FRAMES_IN_FLIGHT)
                         },
@@ -6779,7 +6805,13 @@ int main(int argc, char* argv[]) {
             );
         }
 
-        last_frame_view_proj = scene_ubo.view_proj;
+        last_frame_view_proj = camera.combined_matrix;
+
+        for (auto& draw : mesh_instances) {
+            draw.last_position = draw.position;
+            draw.last_scale    = draw.scale;
+            draw.last_rotation = draw.rotation;
+        }
     }
 
     VK_CHECK(vkDeviceWaitIdle(device));
@@ -6814,6 +6846,7 @@ int main(int argc, char* argv[]) {
     destroy_image(composite_output, device, vma_allocator);
     destroy_image(gbuffer_albedo, device, vma_allocator);
     destroy_image(gbuffer_normals, device, vma_allocator);
+    destroy_image(gbuffer_velocity, device, vma_allocator);
     destroy_image(depth_hiz, device, vma_allocator);
     destroy_image(bloom_buffer, device, vma_allocator);
     destroy_image(fxaa_output, device, vma_allocator);

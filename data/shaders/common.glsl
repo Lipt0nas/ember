@@ -83,6 +83,11 @@ struct MeshInstance {
     float scale;
 
     vec4 rotation;
+
+    vec3 last_position;
+    float last_scale;
+
+    vec4 last_rotation;
 };
 
 struct LightingUBO {
@@ -158,6 +163,7 @@ struct SceneUBO {
 
     float near_plane;
     float far_plane;
+    vec2 _pad;
 
     mat4 last_frame_view_proj;
 };

@@ -15,7 +15,7 @@ layout(location = 0) out vec4 out_color;
 layout(set = 0, binding = 0) uniform sampler2D ddgi_irradiance;
 layout(set = 0, binding = 1) uniform sampler2D ddgi_depth;
 
-layout(set = 0, binding = 3, std430) buffer ProbeBuffer {
+layout(set = 0, binding = 3, std430) readonly buffer ProbeBuffer {
     DDGIProbe probes[];
 };
 

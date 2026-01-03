@@ -40,6 +40,11 @@ struct MeshInstance {
     float     scale    = 1.0f;
 
     glm::quat rotation = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    glm::vec3 last_position = {};
+    float     last_scale    = 1.0f;
+
+    glm::quat last_rotation = {0.0f, 0.0f, 0.0f, 1.0f};
 };
 
 struct Vertex {
