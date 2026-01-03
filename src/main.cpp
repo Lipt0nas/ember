@@ -2783,11 +2783,11 @@ int main(int argc, char* argv[]) {
 
     JPH::BodyInterface& physics_body_interface = physics_system.GetBodyInterface();
 
-    struct PhysicsSphere {
+    struct PhysicsObject {
         JPH::BodyID body_id;
         uint32_t    drawcall_id;
     };
-    std::vector<PhysicsSphere> spheres;
+    std::vector<PhysicsObject> dynamic_bodies;
 
     const float physics_delta_time       = 1.0f / 60.0f;
     float       physics_time_accumulator = 0.0f;
@@ -5916,15 +5916,15 @@ int main(int argc, char* argv[]) {
         update_camera(camera);
 
         while (physics_time_accumulator >= physics_delta_time) {
-            for (const auto& obj : spheres) {
+            for (const auto& body : dynamic_bodies) {
                 JPH::Vec3 p;
                 JPH::Quat r;
-                physics_body_interface.GetPositionAndRotation(obj.body_id, p, r);
+                physics_body_interface.GetPositionAndRotation(body.body_id, p, r);
 
                 glm::vec3 new_pos = glm::vec3(p.GetX(), p.GetY(), p.GetZ());
                 glm::quat new_rot = glm::quat(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
 
-                MeshInstance& instance = mesh_instances[obj.drawcall_id];
+                MeshInstance& instance = mesh_instances[body.drawcall_id];
                 Mesh          mesh     = meshes[instance.mesh_id];
 
                 glm::vec3 center = (mesh.bounds_max + mesh.bounds_min) * 0.5f;
@@ -6290,20 +6290,108 @@ int main(int argc, char* argv[]) {
 
                     float radius = glm::max(half_extent.x, glm::max(half_extent.y, half_extent.z));
 
-                    glm::vec3                 spawn_point = origin + ray_dir * radius * 2.0f;
-                    JPH::BodyCreationSettings sphere_settings(
-                        new JPH::SphereShape(radius),
-                        JPH::RVec3(spawn_point.x, spawn_point.y, spawn_point.z),
-                        JPH::Quat::sIdentity(),
-                        JPH::EMotionType::Dynamic,
-                        Layers::MOVING
-                    );
+                    float ratios[3];
+                    for (int i = 0; i < 3; i++) {
+                        ratios[i] = half_extent[i] / radius;
+                    }
+
+                    enum class Shape {
+                        SPHERE,
+                        BOX,
+                        CAPSULE,
+                    };
+
+                    Shape shape = Shape::SPHERE;
+
+                    const float capsule_ratio     = 0.6;
+                    const float similar_threshold = 1.3;
+                    int         capsule_axis      = -1;
+
+                    bool is_capsule = false;
+                    for (int dominant = 0; dominant < 3; dominant++) {
+                        int other1 = (dominant + 1) % 3;
+                        int other2 = (dominant + 2) % 3;
+
+                        if (ratios[dominant] > capsule_ratio && ratios[dominant] * capsule_ratio > ratios[other1] &&
+                            ratios[dominant] * capsule_ratio > ratios[other2] &&
+                            glm::max(ratios[other1], ratios[other2]) / glm::min(ratios[other1], ratios[other2]) <
+                                similar_threshold) {
+                            is_capsule   = true;
+                            capsule_axis = dominant;
+                            break;
+                        }
+                    }
+
+                    if (is_capsule) {
+                        shape = Shape::CAPSULE;
+                    } else {
+                        for (int i = 0; i < 3; i++) {
+                            if (ratios[i] < 0.85) {
+                                shape = Shape::BOX;
+                                break;
+                            }
+                        }
+                    }
+
+                    glm::vec3 spawn_point = origin + ray_dir * radius * 2.0f;
+
+                    auto physics_spawn_point = JPH::RVec3(spawn_point.x, spawn_point.y, spawn_point.z);
+                    auto physics_rotation    = JPH::Quat::sIdentity();
+
+                    JPH::BodyCreationSettings body_settings;
+                    switch (shape) {
+                    case Shape::SPHERE:
+                        body_settings = JPH::BodyCreationSettings(
+                            new JPH::SphereShape(radius),
+                            physics_spawn_point,
+                            physics_rotation,
+                            JPH::EMotionType::Dynamic,
+                            Layers::MOVING
+                        );
+                        break;
+                    case Shape::BOX:
+                        body_settings = JPH::BodyCreationSettings(
+                            new JPH::BoxShape(JPH::RVec3(half_extent.x, half_extent.y, half_extent.z)),
+                            physics_spawn_point,
+                            physics_rotation,
+                            JPH::EMotionType::Dynamic,
+                            Layers::MOVING
+                        );
+                        break;
+                    case Shape::CAPSULE:
+                        float height = half_extent[capsule_axis];
+
+                        int   other1     = (capsule_axis + 1) % 3;
+                        int   other2     = (capsule_axis + 2) % 3;
+                        float cap_radius = glm::max(half_extent[other1], half_extent[other2]);
+
+                        JPH::Quat rotation = JPH::Quat::sIdentity();
+                        if (capsule_axis == 0) {
+                            rotation = JPH::Quat::sRotation(JPH::Vec3::sAxisZ(), JPH::DegreesToRadians(90));
+                        } else if (capsule_axis == 2) {
+                            rotation = JPH::Quat::sRotation(JPH::Vec3::sAxisX(), JPH::DegreesToRadians(90));
+                        }
+                        JPH::CapsuleShape*           capsule = new JPH::CapsuleShape(height, cap_radius);
+                        JPH::RotatedTranslatedShape* rotated_capsule =
+                            new JPH::RotatedTranslatedShape(JPH::Vec3::sZero(), rotation, capsule);
+
+                        body_settings = JPH::BodyCreationSettings(
+                            rotated_capsule,
+                            physics_spawn_point,
+                            physics_rotation,
+                            JPH::EMotionType::Dynamic,
+                            Layers::MOVING
+                        );
+                        break;
+                    }
+
                     JPH::BodyID body_id =
-                        physics_body_interface.CreateAndAddBody(sphere_settings, JPH::EActivation::Activate);
+                        physics_body_interface.CreateAndAddBody(body_settings, JPH::EActivation::Activate);
                     physics_body_interface.SetLinearVelocity(body_id, JPH::Vec3(ray_dir.x, ray_dir.y, ray_dir.z) * 10);
+                    physics_body_interface.SetFriction(body_id, 1.0f);
 
                     mesh_instances.push_back(new_instance);
-                    spheres.push_back(PhysicsSphere{body_id, static_cast<uint32_t>(mesh_instances.size() - 1)});
+                    dynamic_bodies.push_back(PhysicsObject{body_id, static_cast<uint32_t>(mesh_instances.size() - 1)});
 
                     press_guard = true;
                 }
