@@ -2812,35 +2812,23 @@ int main(int argc, char* argv[]) {
     std::vector<PhysicsObject> dynamic_bodies;
     std::vector<JPH::BodyID>   static_bodies;
 
-    uint32_t    player_object_id;
-    const float player_height          = 1.8f;
-    const float player_radius          = 0.3f;
-    const float player_speed           = 10.0f;
-    const float player_sprint_modifier = 2.0f;
-    const float player_jump_velocity   = 10.0f;
-    {
-        JPH::BodyCreationSettings body_settings = JPH::BodyCreationSettings(
-            new JPH::CapsuleShape(player_height / 2.0f - player_radius, player_radius),
-            JPH::RVec3(0.0, 0.0, 0.0),
-            JPH::Quat::sIdentity(),
-            JPH::EMotionType::Dynamic,
-            Layers::MOVING
-        );
-        body_settings.mAllowedDOFs =
-            JPH::EAllowedDOFs::TranslationX | JPH::EAllowedDOFs::TranslationY | JPH::EAllowedDOFs::TranslationZ;
-        body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
-        body_settings.mMassPropertiesOverride.mMass = 180.0f;
-        body_settings.mLinearDamping                = 0.5f;
-        body_settings.mAllowSleeping                = false;
+    const float                             player_height          = 1.8f;
+    const float                             player_radius          = 0.3f;
+    const float                             player_speed           = 10.0f;
+    const float                             player_sprint_modifier = 2.0f;
+    const float                             player_jump_velocity   = 10.0f;
+    JPH::Ref<JPH::CharacterVirtualSettings> character_settings     = new JPH::CharacterVirtualSettings();
+    character_settings->mShape            = new JPH::CapsuleShape(player_height / 2.0f - player_radius, player_radius);
+    character_settings->mMass             = 180.0f;
+    character_settings->mMaxSlopeAngle    = JPH::DegreesToRadians(35.0f);
+    character_settings->mMaxStrength      = 100.0f;
+    character_settings->mCharacterPadding = 0.02f;
+    character_settings->mPenetrationRecoverySpeed  = 1.0f;
+    character_settings->mPredictiveContactDistance = 0.1f;
 
-        JPH::BodyID player_body_id = physics_body_interface.CreateAndAddBody(body_settings, JPH::EActivation::Activate);
-        physics_body_interface.SetFriction(player_body_id, 0.0f);
-        physics_body_interface.SetRestitution(player_body_id, 0.0f);
-        physics_body_interface.SetMaxAngularVelocity(player_body_id, 0);
-
-        dynamic_bodies.push_back({player_body_id, -1});
-        player_object_id = dynamic_bodies.size() - 1;
-    }
+    JPH::CharacterVirtual* player_character = new JPH::CharacterVirtual(
+        character_settings, JPH::RVec3(0.0, 0.0, 0.0), JPH::Quat::sIdentity(), 0, &physics_system
+    );
     bool player_physics = false;
 
     const float physics_delta_time       = 1.0f / 60.0f;
@@ -6035,35 +6023,55 @@ int main(int argc, char* argv[]) {
         if (!player_physics) {
             move_camera(camera, velocity, camera_speed * delta_time);
         } else {
-            PhysicsObject& player_body = dynamic_bodies[player_object_id];
+            glm::vec3 oriented_velocity =
+                camera.orientation * glm::vec3(velocity.y, 0, -velocity.x) * current_player_speed;
+            JPH::Vec3 desired_velocity(oriented_velocity.x, 0, oriented_velocity.z);
 
-            JPH::RVec3 current_velocity = physics_body_interface.GetLinearVelocity(player_body.body_id);
+            static bool                         jumped       = false;
+            JPH::CharacterVirtual::EGroundState ground_state = player_character->GetGroundState();
 
-            static bool jumped = false;
-            if (pressed_keys[SDL_SCANCODE_SPACE]) {
+            if (pressed_keys[SDL_SCANCODE_SPACE] && ground_state == JPH::CharacterVirtual::EGroundState::OnGround) {
                 if (!jumped) {
-                    current_velocity.SetY(player_jump_velocity);
+                    desired_velocity.SetY(player_jump_velocity);
                     jumped = true;
                 }
             } else {
+                if (ground_state != JPH::CharacterVirtual::EGroundState::OnGround) {
+                    JPH::Vec3 current_vel = player_character->GetLinearVelocity();
+
+                    if (current_vel.GetY() > 1.0f && current_vel.GetY() < desired_velocity.GetY()) {
+                        current_vel.SetY(0.0f);
+                    }
+
+                    desired_velocity.SetY(current_vel.GetY() + physics_system.GetGravity().GetY() * delta_time);
+                }
                 jumped = false;
             }
 
-            glm::vec3 oriented_velocity =
-                camera.orientation * glm::vec3(velocity.y, 0, -velocity.x) * current_player_speed;
+            if (player_character->GetLinearVelocity().GetY() > 0 &&
+                player_character->GetGroundNormal().GetY() < -0.75) {
+                desired_velocity.SetY(0.0);
+            }
 
-            physics_body_interface.SetLinearVelocity(
-                player_body.body_id, JPH::RVec3(oriented_velocity.x, current_velocity.GetY(), oriented_velocity.z)
+            JPH::CharacterVirtual::ExtendedUpdateSettings update_settings;
+            update_settings.mStickToFloorStepDown = JPH::Vec3(0, -0.5f, 0);
+            update_settings.mWalkStairsStepUp     = JPH::Vec3(0, 0.4f, 0);
+
+            player_character->SetLinearVelocity(desired_velocity);
+            player_character->ExtendedUpdate(
+                delta_time,
+                physics_system.GetGravity(),
+                update_settings,
+                physics_system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
+                physics_system.GetDefaultLayerFilter(Layers::MOVING),
+                {},
+                {},
+                physics_temp_allocator
             );
 
-            JPH::Vec3 p = physics_body_interface.GetPosition(player_body.body_id);
-
-            glm::vec3 new_pos = glm::vec3(p.GetX(), p.GetY(), p.GetZ());
-            glm::vec3 old_pos = glm::vec3(
-                player_body.last_position.GetX(), player_body.last_position.GetY(), player_body.last_position.GetZ()
-            );
-
-            camera.position = glm::mix(old_pos, new_pos, physics_alpha) + glm::vec3(0, player_height * 0.4f, 0);
+            JPH::RVec3 char_pos = player_character->GetPosition();
+            camera.position =
+                glm::vec3(char_pos.GetX(), char_pos.GetY(), char_pos.GetZ()) + glm::vec3(0, player_height * 0.4f, 0);
         }
 
         if (frame_count == pick_frame) {
@@ -6171,11 +6179,7 @@ int main(int argc, char* argv[]) {
 
         if (ImGui::Checkbox("Player Physics", &player_physics)) {
             if (player_physics) {
-                physics_body_interface.SetPosition(
-                    dynamic_bodies[player_object_id].body_id,
-                    JPH::RVec3(camera.position.x, camera.position.y, camera.position.z),
-                    JPH::EActivation::Activate
-                );
+                player_character->SetPosition(JPH::RVec3(camera.position.x, camera.position.y, camera.position.z));
             }
         }
 
@@ -6416,7 +6420,7 @@ int main(int argc, char* argv[]) {
         }
 
         static bool press_guard = false;
-        if (pressed_keys[SDL_SCANCODE_SPACE] && !capturing_mouse) {
+        if (pressed_keys[SDL_SCANCODE_GRAVE] && !capturing_mouse) {
             if (pressed_buttons[SDL_BUTTON_LEFT]) {
                 if (grabbed_mesh != -1 && !press_guard) {
                     int w;
@@ -6538,6 +6542,9 @@ int main(int argc, char* argv[]) {
                         );
                         break;
                     }
+
+                    body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
+                    body_settings.mMassPropertiesOverride.mMass = 0.2f;
 
                     JPH::BodyID body_id =
                         physics_body_interface.CreateAndAddBody(body_settings, JPH::EActivation::Activate);
