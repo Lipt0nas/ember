@@ -1232,7 +1232,7 @@ int main(int argc, char* argv[]) {
     std::vector<VkDescriptorPoolSize> descriptor_pool_sizes = {
         {
             .type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 10000,
+            .descriptorCount = 10100,
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -5594,6 +5594,10 @@ int main(int argc, char* argv[]) {
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Debug Pass");
                 ZoneScopedN("Debug Pass");
+
+                if (debug_renderer.instance_count == 0) {
+                    return;
+                }
 
                 debug_renderer_upload_data(debug_renderer, vma_allocator, frame_index);
 

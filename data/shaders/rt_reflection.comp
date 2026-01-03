@@ -125,6 +125,10 @@ vec2 getBlueNoise(ivec2 pixel, int sample_index) {
 }
 
 vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
+    if (any(isnan(direction)) || any(isinf(direction))) {
+        return vec4(0.0);
+    }
+
     float t_min = 0.001;
     float t_max = 1000.0;
 
