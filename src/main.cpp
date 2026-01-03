@@ -28,8 +28,9 @@ enum class DynamicOffset : uint32_t {
     MESH_BUFFER,
     MATERIAL_BUFFER,
     DRAWCALL_BUFFER,
+    DDGI_PROBE_BUFFER,
 
-    COUNT = DRAWCALL_BUFFER + 1
+    COUNT = DDGI_PROBE_BUFFER + 1
 };
 
 void draw_pass_timings_lines(const std::vector<std::pair<std::string, PassTiming>>& passes) {
@@ -198,7 +199,7 @@ struct alignas(16) LightingUBO {
     glm::vec3 camera_pos;
     int       frame_index;
 
-    int ignore_backface_hits;
+    int use_probe_state;
     int use_bent_normals;
     int compensate_specular;
     int disney_diffuse;
@@ -233,6 +234,11 @@ struct DepthReduceConstants {
 
 struct DDGIRay {
     glm::vec4 direction;
+};
+
+struct DDGIProbe {
+    glm::vec3 offset;
+    int       active;
 };
 
 struct XeGTAOConstants {
@@ -313,6 +319,7 @@ DebugRenderer create_debug_renderer(
     const VkSampler& sampler,
     const Image&     ddgi_irradiance,
     const Image&     ddgi_depth,
+    const Buffer&    ddgi_probe_buffer,
     VkDevice         device,
     VmaAllocator     vma_allocator,
     uint32_t         frames_in_flight,
@@ -386,6 +393,11 @@ DebugRenderer create_debug_renderer(
                             .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
                             .write_info =
                                 DescriptorInfo(instance_buffer.handle, 0, instance_buffer.size / frames_in_flight),
+                        },
+                        DescriptorBinding{
+                            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                            .write_info =
+                                DescriptorInfo(ddgi_probe_buffer.handle, 0, ddgi_probe_buffer.size / frames_in_flight),
                         },
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
@@ -1449,6 +1461,7 @@ int main(int argc, char* argv[]) {
     };
 
     lighting_data.use_bent_normals         = 1;
+    lighting_data.use_probe_state          = 1;
     lighting_data.compensate_specular      = 1;
     lighting_data.multibounce              = 1;
     lighting_data.remove_visibility_checks = 0;
@@ -2585,6 +2598,11 @@ int main(int argc, char* argv[]) {
     );
     spdlog::info("DDGI Ray buffer size: {}MB", ddgi_ray_buffer.size / 1024 / 1024);
 
+    Buffer ddgi_probe_buffer = create_buffer(
+        sizeof(DDGIProbe) * probe_count * FRAMES_IN_FLIGHT, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vma_allocator
+    );
+    spdlog::info("DDGI Probe buffer size: {}MB", ddgi_probe_buffer.size / 1024 / 1024);
+
     Buffer indirect_command_buffer = create_buffer(
         1024 * 1024 * 12 * FRAMES_IN_FLIGHT,
         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -2650,6 +2668,7 @@ int main(int argc, char* argv[]) {
         linear_sampler_clamped,
         ddgi_irradiance,
         ddgi_depth_atlas,
+        ddgi_probe_buffer,
         device,
         vma_allocator,
         FRAMES_IN_FLIGHT,
@@ -3259,6 +3278,11 @@ int main(int argc, char* argv[]) {
                             .write_info = DescriptorInfo(
                                 lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
                             )
+                        },
+                        DescriptorBinding{
+                            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                            .write_info =
+                                DescriptorInfo(ddgi_probe_buffer.handle, 0, ddgi_probe_buffer.size / FRAMES_IN_FLIGHT)
                         },
                     }
             },
@@ -3968,6 +3992,11 @@ int main(int argc, char* argv[]) {
                                 DescriptorInfo(ddgi_ray_buffer.handle, 0, ddgi_ray_buffer.size / FRAMES_IN_FLIGHT)
                         },
                         DescriptorBinding{
+                            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                            .write_info =
+                                DescriptorInfo(ddgi_probe_buffer.handle, 0, ddgi_probe_buffer.size / FRAMES_IN_FLIGHT)
+                        },
+                        DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
                                 linear_sampler_clamped, ddgi_irradiance_history.view, VK_IMAGE_LAYOUT_GENERAL
@@ -4005,6 +4034,12 @@ int main(int argc, char* argv[]) {
                 ddgi_ray_buffer.size / FRAMES_IN_FLIGHT
             )
             .reads_buffer_dynamic(
+                ddgi_probe_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                ddgi_probe_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
                 drawcall_buffer,
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_SHADER_READ_BIT,
@@ -4038,9 +4073,10 @@ int main(int argc, char* argv[]) {
                     global_texture_descriptor_set,
                 };
 
-                std::array<uint32_t, 6> offsets = {
+                std::array<uint32_t, 7> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_PROBE_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
@@ -4073,6 +4109,11 @@ int main(int argc, char* argv[]) {
                     DescriptorBinding{
                         .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
                         .write_info = DescriptorInfo(ddgi_ray_buffer.handle, 0, ddgi_ray_buffer.size / FRAMES_IN_FLIGHT)
+                    },
+                    DescriptorBinding{
+                        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                        .write_info =
+                            DescriptorInfo(ddgi_probe_buffer.handle, 0, ddgi_probe_buffer.size / FRAMES_IN_FLIGHT)
                     },
                     DescriptorBinding{
                         .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
@@ -4110,6 +4151,12 @@ int main(int argc, char* argv[]) {
                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
                 ddgi_ray_buffer.size / FRAMES_IN_FLIGHT
             )
+            .writes_buffer_dynamic(
+                ddgi_probe_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                ddgi_probe_buffer.size / FRAMES_IN_FLIGHT
+            )
             .reads_buffer_dynamic(
                 lighting_ubo_buffer,
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -4124,8 +4171,9 @@ int main(int argc, char* argv[]) {
 
                 const Pipeline& pipeline = ddgi_ray_conv_pipeline;
 
-                std::array<uint32_t, 2> offsets = {
+                std::array<uint32_t, 3> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_PROBE_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]
                 };
 
@@ -4420,6 +4468,11 @@ int main(int argc, char* argv[]) {
                                 lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
                             )
                         },
+                        DescriptorBinding{
+                            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                            .write_info =
+                                DescriptorInfo(ddgi_probe_buffer.handle, 0, ddgi_probe_buffer.size / FRAMES_IN_FLIGHT)
+                        },
                     }
             },
             scene_data_layout,
@@ -4453,6 +4506,12 @@ int main(int argc, char* argv[]) {
                 drawcall_buffer.size / FRAMES_IN_FLIGHT
             )
             .reads_buffer_dynamic(
+                ddgi_probe_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                ddgi_probe_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
                 mesh_buffer,
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_SHADER_READ_BIT,
@@ -4484,8 +4543,9 @@ int main(int argc, char* argv[]) {
                     global_texture_descriptor_set,
                 };
 
-                std::array<uint32_t, 6> offsets = {
+                std::array<uint32_t, 7> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_PROBE_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
@@ -5191,6 +5251,12 @@ int main(int argc, char* argv[]) {
                 VK_ACCESS_2_UNIFORM_READ_BIT,
                 lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
             )
+            .reads_buffer_dynamic(
+                ddgi_probe_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                ddgi_probe_buffer.size / FRAMES_IN_FLIGHT
+            )
             .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
@@ -5205,8 +5271,9 @@ int main(int argc, char* argv[]) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Light Pass");
                 ZoneScopedN("Light Pass");
 
-                std::array<uint32_t, 2> offsets = {
+                std::array<uint32_t, 3> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_PROBE_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)]
                 };
 
@@ -5715,8 +5782,10 @@ int main(int argc, char* argv[]) {
 
                 uint32_t instance_offset =
                     (debug_renderer.instance_buffer.size / debug_renderer.frames_in_flight) * frame_index;
-                std::array<uint32_t, 2> offsets = {
-                    instance_offset, dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]
+                std::array<uint32_t, 3> offsets = {
+                    instance_offset,
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_PROBE_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
                 };
 
                 vkCmdBindDescriptorSets(
@@ -6149,7 +6218,7 @@ int main(int argc, char* argv[]) {
             ImGui::DragFloat3("Grid Origin", &lighting_data.grid_origin.x, 0.03, -100.0, 100.0);
             ImGui::Checkbox("Visualize Probes", (bool*)&visualize_probes);
             ImGui::Checkbox("Multibounce Diffuse", (bool*)&lighting_data.multibounce);
-            ImGui::Checkbox("Ignore backface hits", (bool*)&lighting_data.ignore_backface_hits);
+            ImGui::Checkbox("Use Probe State", (bool*)&lighting_data.use_probe_state);
             ImGui::Checkbox("Use Bent Normals", (bool*)&lighting_data.use_bent_normals);
             ImGui::Checkbox("Remove Visibility Checks", (bool*)&lighting_data.remove_visibility_checks);
             ImGui::Checkbox("Compensate Specular", (bool*)&lighting_data.compensate_specular);
@@ -6736,6 +6805,7 @@ int main(int argc, char* argv[]) {
     destroy_buffer(scene_ubo_buffer, device, vma_allocator);
     destroy_buffer(lighting_ubo_buffer, device, vma_allocator);
     destroy_buffer(ddgi_ray_buffer, device, vma_allocator);
+    destroy_buffer(ddgi_probe_buffer, device, vma_allocator);
     destroy_buffer(material_buffer, device, vma_allocator);
     destroy_buffer(drawcall_buffer, device, vma_allocator);
     destroy_buffer(mesh_buffer, device, vma_allocator);

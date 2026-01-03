@@ -104,7 +104,7 @@ struct LightingUBO {
     vec3 camera_pos;
     int frame_index;
 
-    int ignore_backface_hits;
+    int use_probe_state;
     int use_bent_normals;
     int compensate_specular;
     int disney_diffuse;
@@ -405,6 +405,16 @@ float D_Oren_Nayar(float roughness, vec3 N, vec3 V, vec3 L) {
     float t = mix(1.0, max(NdotL, NdotV), step(0.0, s));
 
     return (A + B * max(0.0, s) / t) / PI;
+}
+
+float component_max(vec3 values) {
+    return max(values.x, max(values.y, values.z));
+}
+
+float linear_rgb_to_luminance(vec3 rgb) {
+    const vec3 weights = vec3(0.2126, 0.7152, 0.0722);
+
+    return dot(rgb, weights);
 }
 
 #endif

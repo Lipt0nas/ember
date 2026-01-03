@@ -15,7 +15,11 @@ layout(location = 0) out vec4 out_color;
 layout(set = 0, binding = 0) uniform sampler2D ddgi_irradiance;
 layout(set = 0, binding = 1) uniform sampler2D ddgi_depth;
 
-layout(set = 0, binding = 3, std430) readonly uniform LightingData {
+layout(set = 0, binding = 3, std430) buffer ProbeBuffer {
+    DDGIProbe probes[];
+};
+
+layout(set = 0, binding = 4, std430) readonly uniform LightingData {
     LightingUBO lighting;
 };
 
@@ -23,6 +27,8 @@ layout(push_constant, std430) uniform pc {
     mat4 combined_matrix;
     vec3 camera_pos;
 } push;
+
+#include "ddgi_sample.glsl"
 
 void main() {
     vec3 V = normalize(push.camera_pos - in_pos);
