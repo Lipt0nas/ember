@@ -1719,7 +1719,7 @@ int main(int argc, char* argv[]) {
         device
     );
 
-    Image rt_reflection_chain = create_image(
+    Image rt_reflection_buffer = create_image(
         VK_FORMAT_R16G16B16A16_SFLOAT,
         swapchain.width,
         swapchain.height,
@@ -1741,17 +1741,17 @@ int main(int argc, char* argv[]) {
         device
     );
 
-    std::vector<VkImageView> rt_reflection_views(rt_reflection_chain.levels);
-    for (int i = 0; i < rt_reflection_views.size(); i++) {
+    std::vector<VkImageView> rt_reflection_views(rt_reflection_buffer.levels);
+    for (int i = 0; i < 2; i++) {
         VkImageViewCreateInfo mip_view_info = {
             .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .pNext            = nullptr,
             .flags            = 0,
-            .image            = rt_reflection_chain.handle,
+            .image            = rt_reflection_buffer.handle,
             .viewType         = VK_IMAGE_VIEW_TYPE_2D,
-            .format           = rt_reflection_chain.format,
+            .format           = rt_reflection_buffer.format,
             .subresourceRange = {
-                .aspectMask     = rt_reflection_chain.aspect,
+                .aspectMask     = rt_reflection_buffer.aspect,
                 .baseMipLevel   = static_cast<uint32_t>(i),
                 .levelCount     = 1,
                 .baseArrayLayer = 0,
@@ -2072,7 +2072,7 @@ int main(int argc, char* argv[]) {
         );
 
         image_pipeline_barrier(
-            rt_reflection_chain,
+            rt_reflection_buffer,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_GENERAL,
@@ -2117,7 +2117,7 @@ int main(int argc, char* argv[]) {
             rt_reflection_history,
             command_buffer,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_2_CLEAR_BIT,
             VK_ACCESS_2_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -3244,7 +3244,7 @@ int main(int argc, char* argv[]) {
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
-                                linear_sampler, ao_output_denoised.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                nearest_sampler, ao_output_denoised.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
                         DescriptorBinding{
@@ -3277,7 +3277,7 @@ int main(int argc, char* argv[]) {
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
                                 linear_sampler_clamped,
-                                rt_reflection_chain.view,
+                                rt_reflection_buffer.view,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
@@ -3413,6 +3413,7 @@ int main(int argc, char* argv[]) {
     framegraph.import_image(gbuffer_albedo, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_normals, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_emissive, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    framegraph.import_image(gbuffer_velocity, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(fxaa_output, VK_IMAGE_LAYOUT_GENERAL);
@@ -3427,7 +3428,10 @@ int main(int argc, char* argv[]) {
     framegraph.import_image(smaa_edges, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(smaa_weights, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(smaa_output, VK_IMAGE_LAYOUT_GENERAL);
-    framegraph.import_image(rt_reflection_chain, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(ddgi_irradiance, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(ddgi_irradiance_history, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(ddgi_depth_atlas, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(ddgi_depth_atlas_history, VK_IMAGE_LAYOUT_GENERAL);
 
     auto cull_early_pass =
         framegraph.add_pass("cull early")
@@ -3499,6 +3503,7 @@ int main(int argc, char* argv[]) {
             .writes_color_attachment(gbuffer_albedo)
             .writes_color_attachment(gbuffer_normals)
             .writes_color_attachment(gbuffer_emissive)
+            .writes_color_attachment(gbuffer_velocity)
             .reads_buffer_dynamic(
                 indirect_command_buffer,
                 VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
@@ -3904,13 +3909,13 @@ int main(int argc, char* argv[]) {
                     xegtao_constants.final_pass = i == denoise_passes - 1;
 
                     VkDescriptorImageInfo image_read_info = {
-                        .sampler     = linear_sampler_clamped,
+                        .sampler     = nearest_sampler,
                         .imageView   = read_view,
                         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     };
 
                     VkDescriptorImageInfo edges_info = {
-                        .sampler     = linear_sampler_clamped,
+                        .sampler     = nearest_sampler,
                         .imageView   = ao_output_edges.view,
                         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     };
@@ -4025,13 +4030,17 @@ int main(int argc, char* argv[]) {
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
-                                linear_sampler_clamped, ddgi_irradiance_history.view, VK_IMAGE_LAYOUT_GENERAL
+                                linear_sampler_clamped,
+                                ddgi_irradiance_history.view,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
-                                linear_sampler_clamped, ddgi_depth_atlas_history.view, VK_IMAGE_LAYOUT_GENERAL
+                                linear_sampler_clamped,
+                                ddgi_depth_atlas_history.view,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
                     }
@@ -4083,7 +4092,8 @@ int main(int argc, char* argv[]) {
                 VK_ACCESS_2_SHADER_READ_BIT,
                 material_buffer.size / FRAMES_IN_FLIGHT
             )
-            // .samples_image(ddgi_irradiance_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(ddgi_irradiance_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(ddgi_depth_atlas_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
                 ZoneScopedN("DDGI Pass");
@@ -4191,6 +4201,8 @@ int main(int argc, char* argv[]) {
             )
             .writes_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .reads_storage_image(ddgi_depth_atlas_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .reads_storage_image(ddgi_irradiance_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
                 ZoneScopedN("DDGI Pass");
@@ -4552,7 +4564,9 @@ int main(int argc, char* argv[]) {
             .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .writes_storage_image(rt_reflection_chain, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(rt_reflection_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
                 ZoneScopedN("RT Shadows");
@@ -4592,8 +4606,8 @@ int main(int argc, char* argv[]) {
 
                 vkCmdDispatch(
                     command_buffer,
-                    ((rt_reflection_chain.width / 2) + 7) / 8,
-                    ((rt_reflection_chain.height / 2) + 7) / 8,
+                    ((rt_reflection_buffer.width / 2) + 7) / 8,
+                    ((rt_reflection_buffer.height / 2) + 7) / 8,
                     1
                 );
             });
@@ -4610,10 +4624,9 @@ int main(int argc, char* argv[]) {
                             .write_info = DescriptorInfo(rt_reflection_views[0], VK_IMAGE_LAYOUT_GENERAL)
                         },
                         DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            .write_info = DescriptorInfo(
-                                linear_sampler_clamped, rt_reflection_views[1], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                            )
+                            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info =
+                                DescriptorInfo(linear_sampler_clamped, rt_reflection_views[1], VK_IMAGE_LAYOUT_GENERAL)
                         },
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -4653,8 +4666,7 @@ int main(int argc, char* argv[]) {
                 scene_ubo_buffer.size / FRAMES_IN_FLIGHT
             )
             .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .samples_image(rt_reflection_chain, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .writes_storage_image(rt_reflection_chain, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_storage_image(rt_reflection_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
                 ZoneScopedN("RT Shadows");
@@ -4688,11 +4700,11 @@ int main(int argc, char* argv[]) {
                 );
 
                 vkCmdDispatch(
-                    command_buffer, (rt_reflection_chain.width + 7) / 8, (rt_reflection_chain.height + 7) / 8, 1
+                    command_buffer, (rt_reflection_buffer.width + 7) / 8, (rt_reflection_buffer.height + 7) / 8, 1
                 );
 
                 image_pipeline_barrier(
-                    rt_reflection_chain,
+                    rt_reflection_buffer,
                     command_buffer,
                     VK_IMAGE_LAYOUT_GENERAL,
                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -4705,7 +4717,7 @@ int main(int argc, char* argv[]) {
                 image_pipeline_barrier(
                     rt_reflection_history,
                     command_buffer,
-                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
@@ -4720,8 +4732,8 @@ int main(int argc, char* argv[]) {
                         {
                             {0, 0, 0},
                             {
-                                static_cast<int32_t>(rt_reflection_chain.width),
-                                static_cast<int32_t>(rt_reflection_chain.height),
+                                static_cast<int32_t>(rt_reflection_buffer.width),
+                                static_cast<int32_t>(rt_reflection_buffer.height),
                                 1,
                             },
                         },
@@ -4744,7 +4756,7 @@ int main(int argc, char* argv[]) {
 
                 vkCmdBlitImage(
                     command_buffer,
-                    rt_reflection_chain.handle,
+                    rt_reflection_buffer.handle,
                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     rt_reflection_history.handle,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -4754,7 +4766,7 @@ int main(int argc, char* argv[]) {
                 );
 
                 image_pipeline_barrier(
-                    rt_reflection_chain,
+                    rt_reflection_buffer,
                     command_buffer,
                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     VK_IMAGE_LAYOUT_GENERAL,
@@ -4768,183 +4780,13 @@ int main(int argc, char* argv[]) {
                     rt_reflection_history,
                     command_buffer,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT
                 );
             });
-
-    // Pipeline rt_reflection_downsample = create_compute_pipeline(
-    //     device,
-    //     shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/rt_downsample.comp.spv"),
-    //     {
-    //         DescriptorLayout{
-    //             .bindings =
-    //                 {
-    //                     DescriptorBinding{
-    //                         .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-    //                         .write_info = DescriptorInfo(
-    //                             linear_sampler_clamped, rt_reflection_views[0],
-    //                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-    //                         )
-    //                     },
-    //                     DescriptorBinding{
-    //                         .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-    //                         .write_info = DescriptorInfo(rt_reflection_views[1], VK_IMAGE_LAYOUT_GENERAL)
-    //                     },
-    //                     DescriptorBinding{
-    //                         .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-    //                         .write_info = DescriptorInfo(
-    //                             linear_sampler, gbuffer_normals.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-    //                         )
-    //                     },
-    //                 },
-    //             .is_push_set = true
-    //         },
-    //     },
-    //     sizeof(int) + sizeof(float)
-    // );
-    //
-    // auto& rt_downsample_pass = framegraph.add_pass("RT Downsample")
-    //                                .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-    //                                .writes_storage_image(rt_reflection_chain, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-    //                                .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-    //                                    TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
-    //                                    ZoneScopedN("RT Shadows");
-    //
-    //                                    const Pipeline& pipeline = rt_reflection_downsample;
-    //
-    //                                    vkCmdBindPipeline(command_buffer, pipeline.bind_point,
-    //                                    pipeline.pipeline_handle);
-    //
-    //                                    int   passes               = 3;
-    //                                    float rougnesses[]         = {0.25, 0.35, 0.5};
-    //                                    int   read_view_indices[]  = {1, 2, 3};
-    //                                    int   write_view_indices[] = {2, 3, 4};
-    //
-    //                                    for (int i = 0; i < passes; i++) {
-    //                                        int   read_index  = read_view_indices[i];
-    //                                        int   write_index = write_view_indices[i];
-    //                                        float roughness   = rougnesses[i];
-    //
-    //                                        VkDescriptorImageInfo image_read_info = {
-    //                                            .sampler     = linear_sampler_clamped,
-    //                                            .imageView   = rt_reflection_views[read_index],
-    //                                            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    //                                        };
-    //
-    //                                        VkDescriptorImageInfo image_write_info = {
-    //                                            .sampler     = VK_NULL_HANDLE,
-    //                                            .imageView   = rt_reflection_views[write_index],
-    //                                            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    //                                        };
-    //
-    //                                        VkDescriptorImageInfo normals_info = {
-    //                                            .sampler     = linear_sampler_clamped,
-    //                                            .imageView   = gbuffer_normals.view,
-    //                                            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-    //                                        };
-    //
-    //                                        std::vector<VkWriteDescriptorSet> write_sets = {
-    //                                            {
-    //                                                .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-    //                                                .pNext            = nullptr,
-    //                                                .dstBinding       = 0,
-    //                                                .dstArrayElement  = 0,
-    //                                                .descriptorCount  = 1,
-    //                                                .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-    //                                                .pImageInfo       = &image_read_info,
-    //                                                .pBufferInfo      = nullptr,
-    //                                                .pTexelBufferView = nullptr,
-    //                                            },
-    //                                            {
-    //                                                .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-    //                                                .pNext            = nullptr,
-    //                                                .dstBinding       = 1,
-    //                                                .dstArrayElement  = 0,
-    //                                                .descriptorCount  = 1,
-    //                                                .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-    //                                                .pImageInfo       = &image_write_info,
-    //                                                .pBufferInfo      = nullptr,
-    //                                                .pTexelBufferView = nullptr,
-    //                                            },
-    //                                            {
-    //                                                .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-    //                                                .pNext            = nullptr,
-    //                                                .dstBinding       = 2,
-    //                                                .dstArrayElement  = 0,
-    //                                                .descriptorCount  = 1,
-    //                                                .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-    //                                                .pImageInfo       = &normals_info,
-    //                                                .pBufferInfo      = nullptr,
-    //                                                .pTexelBufferView = nullptr,
-    //                                            },
-    //                                        };
-    //
-    //                                        vkCmdPushDescriptorSet(
-    //                                            command_buffer,
-    //                                            VK_PIPELINE_BIND_POINT_COMPUTE,
-    //                                            pipeline.pipeline_layout,
-    //                                            0,
-    //                                            static_cast<uint32_t>(write_sets.size()),
-    //                                            write_sets.data()
-    //                                        );
-    //
-    //                                        struct {
-    //                                            int   mip_level;
-    //                                            float roughness;
-    //                                        } constants;
-    //
-    //                                        constants.mip_level = write_index;
-    //                                        constants.roughness = roughness;
-    //
-    //                                        vkCmdPushConstants(
-    //                                            command_buffer,
-    //                                            pipeline.pipeline_layout,
-    //                                            VK_SHADER_STAGE_COMPUTE_BIT,
-    //                                            0,
-    //                                            sizeof(int) + sizeof(float),
-    //                                            &constants
-    //                                        );
-    //
-    //                                        uint32_t mip_width = glm::max(1u, rt_reflection_chain.width >>
-    //                                        write_index); uint32_t mip_height =
-    //                                            glm::max(1u, rt_reflection_chain.height >> write_index);
-    //
-    //                                        vkCmdDispatch(command_buffer, (mip_width + 7) / 8, (mip_height + 7) / 8,
-    //                                        1);
-    //
-    //                                        if (i < passes - 1) {
-    //                                            VkImageMemoryBarrier2 barrier = {
-    //                                                .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-    //                                                .srcStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-    //                                                .srcAccessMask    = VK_ACCESS_2_SHADER_WRITE_BIT,
-    //                                                .dstStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-    //                                                .dstAccessMask    = VK_ACCESS_2_SHADER_READ_BIT,
-    //                                                .oldLayout        = VK_IMAGE_LAYOUT_GENERAL,
-    //                                                .newLayout        = VK_IMAGE_LAYOUT_GENERAL,
-    //                                                .image            = rt_reflection_chain.handle,
-    //                                                .subresourceRange = {
-    //                                                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-    //                                                    .baseMipLevel   = (uint32_t)write_index,
-    //                                                    .levelCount     = 1,
-    //                                                    .baseArrayLayer = 0,
-    //                                                    .layerCount     = 1
-    //                                                }
-    //                                            };
-    //
-    //                                            VkDependencyInfo dependency = {
-    //                                                .sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-    //                                                .imageMemoryBarrierCount = 1,
-    //                                                .pImageMemoryBarriers    = &barrier
-    //                                            };
-    //
-    //                                            vkCmdPipelineBarrier2(command_buffer, &dependency);
-    //                                        }
-    //                                    }
-    //                                });
 
     Pipeline shadow_pipeline = create_compute_pipeline(
         device,
@@ -5291,7 +5133,7 @@ int main(int argc, char* argv[]) {
             .samples_image(gbuffer_emissive, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .samples_image(rt_reflection_chain, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(rt_reflection_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Light Pass");
@@ -6621,7 +6463,7 @@ int main(int argc, char* argv[]) {
         image_pipeline_barrier(
             blit_source,
             command_buffer,
-            VK_IMAGE_LAYOUT_GENERAL,
+            use_fxaa ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -6846,6 +6688,7 @@ int main(int argc, char* argv[]) {
     destroy_image(composite_output, device, vma_allocator);
     destroy_image(gbuffer_albedo, device, vma_allocator);
     destroy_image(gbuffer_normals, device, vma_allocator);
+    destroy_image(gbuffer_emissive, device, vma_allocator);
     destroy_image(gbuffer_velocity, device, vma_allocator);
     destroy_image(depth_hiz, device, vma_allocator);
     destroy_image(bloom_buffer, device, vma_allocator);
@@ -6869,6 +6712,9 @@ int main(int argc, char* argv[]) {
     destroy_image(smaa_edges, device, vma_allocator);
     destroy_image(smaa_output, device, vma_allocator);
     destroy_image(smaa_weights, device, vma_allocator);
+    destroy_image(rt_reflection_buffer, device, vma_allocator);
+    destroy_image(rt_reflection_history, device, vma_allocator);
+    destroy_image(blue_noise_texure, device, vma_allocator);
 
     for (auto view : depth_mip_views) {
         vkDestroyImageView(device, view, nullptr);
@@ -6879,6 +6725,10 @@ int main(int argc, char* argv[]) {
     }
 
     for (auto view : bloom_mip_views) {
+        vkDestroyImageView(device, view, nullptr);
+    }
+
+    for (auto view : rt_reflection_views) {
         vkDestroyImageView(device, view, nullptr);
     }
 
@@ -6903,6 +6753,7 @@ int main(int argc, char* argv[]) {
     destroy_pipeline(device, shadow_fill_pipeline);
     destroy_pipeline(device, shadow_blur_pipeline);
     destroy_pipeline(device, rt_reflection_pipeline);
+    destroy_pipeline(device, rt_reflection_upsample);
 
     for (auto image : loaded_images) {
         destroy_image(image, device, vma_allocator);
@@ -6919,6 +6770,8 @@ int main(int argc, char* argv[]) {
     vkDestroyDescriptorSetLayout(device, global_texture_descriptor_layout, nullptr);
     vkDestroySampler(device, linear_sampler, nullptr);
     vkDestroySampler(device, linear_sampler_clamped, nullptr);
+    vkDestroySampler(device, linear_sampler_anisotropy, nullptr);
+    vkDestroySampler(device, nearest_sampler, nullptr);
     vkDestroySampler(device, depth_sampler, nullptr);
     vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
     vkDestroyDescriptorPool(device, imgui_descriptor_pool, nullptr);
