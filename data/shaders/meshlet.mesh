@@ -17,6 +17,7 @@ layout(location = 2) out vec3 out_world_pos[];
 layout(location = 3) out vec4 out_clip_pos[];
 layout(location = 4) out vec4 out_last_clip_pos[];
 layout(location = 5) flat out uint out_material_index[];
+layout(location = 6) flat out uint out_draw_index[];
 
 taskPayloadSharedEXT MeshletTaskPayload payload;
 
@@ -109,6 +110,7 @@ void main() {
         out_clip_pos[thread_id] = clip;
         out_last_clip_pos[thread_id] = last_clip;
         out_material_index[thread_id] = draw.material_id;
+        out_draw_index[thread_id] = payload.draw_id;
 
         vertex_clip[thread_id] = vec3((clip.xy / clip.w * 0.5 + vec2(0.5)) * screen_size, clip.w);
     }

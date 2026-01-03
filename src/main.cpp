@@ -1460,11 +1460,30 @@ int main(int argc, char* argv[]) {
         device
     );
 
+    Image gbuffer_id = create_image(
+        VK_FORMAT_R32_UINT,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Buffer pick_buffer = create_buffer(
+        sizeof(uint32_t) * 4,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+
     std::vector<std::reference_wrapper<Image>> gbuffer_images = {
         gbuffer_albedo,
         gbuffer_normals,
         gbuffer_emissive,
         gbuffer_velocity,
+        gbuffer_id,
     };
 
     bool        visualize_probes = false;
@@ -3096,6 +3115,7 @@ int main(int argc, char* argv[]) {
             gbuffer_normals.format,
             gbuffer_emissive.format,
             gbuffer_velocity.format,
+            gbuffer_id.format,
         },
         depth_buffer.format,
         sizeof(GeometryPushConstants),
@@ -3447,6 +3467,7 @@ int main(int argc, char* argv[]) {
     framegraph.import_image(gbuffer_normals, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_emissive, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_velocity, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    framegraph.import_image(gbuffer_id, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(fxaa_output, VK_IMAGE_LAYOUT_GENERAL);
@@ -3537,6 +3558,7 @@ int main(int argc, char* argv[]) {
             .writes_color_attachment(gbuffer_normals)
             .writes_color_attachment(gbuffer_emissive)
             .writes_color_attachment(gbuffer_velocity)
+            .writes_color_attachment(gbuffer_id)
             .reads_buffer_dynamic(
                 indirect_command_buffer,
                 VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
@@ -3625,6 +3647,18 @@ int main(int argc, char* argv[]) {
                         .loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR,
                         .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
                         .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                    },
+                    {
+                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                        .pNext              = nullptr,
+                        .imageView          = gbuffer_id.view,
+                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .resolveMode        = VK_RESOLVE_MODE_NONE,
+                        .resolveImageView   = VK_NULL_HANDLE,
+                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                        .clearValue         = {.color = {.uint32 = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX}}},
                     },
                 };
 
@@ -5822,6 +5856,8 @@ int main(int argc, char* argv[]) {
 
     framegraph.build();
 
+    int pick_frame = UINT32_MAX;
+
     while (running) {
         FrameMark;
 
@@ -6028,6 +6064,20 @@ int main(int argc, char* argv[]) {
             );
 
             camera.position = glm::mix(old_pos, new_pos, physics_alpha) + glm::vec3(0, player_height * 0.4f, 0);
+        }
+
+        if (frame_count == pick_frame) {
+            void* ptr;
+            VK_CHECK(vmaMapMemory(vma_allocator, pick_buffer.allocation, &ptr));
+            uint32_t mesh_id = *reinterpret_cast<uint32_t*>(ptr);
+            if (mesh_id == UINT32_MAX || mesh_id >= mesh_instances.size()) {
+                grabbed_mesh = -1;
+            } else {
+                grabbed_mesh = mesh_id;
+            }
+
+            vmaUnmapMemory(vma_allocator, pick_buffer.allocation);
+            pick_frame = UINT32_MAX;
         }
 
         update_camera(camera);
@@ -6504,66 +6554,6 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (pressed_keys[SDL_SCANCODE_LSHIFT] && !capturing_mouse) {
-            if (pressed_buttons[SDL_BUTTON_LEFT]) {
-                auto transform_point =
-                    [](glm::vec3 point, glm::vec3 position, glm::quat rotation, float scale) -> glm::vec3 {
-                    return (point + 2.0f * glm::cross(
-                                               glm::vec3(rotation.x, rotation.y, rotation.z),
-                                               glm::cross(glm::vec3(rotation.x, rotation.y, rotation.z), point) +
-                                                   rotation.w * point
-                                           )) *
-                               scale +
-                           position;
-                };
-
-                int w;
-                int h;
-                SDL_GetWindowSizeInPixels(window, &w, &h);
-
-                glm::vec4 mouse_near = {(mouse_pos / glm::vec2(w, h)) * 2.0f - 1.0f, 1, 1.0};
-                mouse_near.y *= -1;
-                mouse_near     = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_near;
-                glm::vec3 near = glm::vec3(mouse_near) / mouse_near.w;
-
-                glm::vec4 mouse_far = {(mouse_pos / glm::vec2(w, h)) * 2.0f - 1.0f, 0.01, 1.0};
-                mouse_far.y *= -1;
-                mouse_far     = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_far;
-                glm::vec3 far = glm::vec3(mouse_far) / mouse_far.w;
-
-                glm::vec3 origin  = camera.position;
-                glm::vec3 ray_dir = glm::normalize(far - near);
-
-                float closest_t = std::numeric_limits<float>::max();
-                int   index     = 0;
-                for (auto& i : mesh_instances) {
-                    auto& m = meshes[i.mesh_id];
-
-                    glm::vec3 boxMin = transform_point(m.bounds_min, i.position, i.rotation, i.scale);
-                    glm::vec3 boxMax = transform_point(m.bounds_max, i.position, i.rotation, i.scale);
-
-                    glm::vec3 tMin   = (boxMin - origin) / ray_dir;
-                    glm::vec3 tMax   = (boxMax - origin) / ray_dir;
-                    glm::vec3 t1     = glm::min(tMin, tMax);
-                    glm::vec3 t2     = glm::max(tMin, tMax);
-                    float     tNear  = glm::max(glm::max(t1.x, t1.y), t1.z);
-                    float     tFar   = glm::min(glm::min(t2.x, t2.y), t2.z);
-                    glm::vec2 result = glm::vec2(tNear, tFar);
-
-                    if (result.x < result.y) {
-                        float t = result.x;
-
-                        if (t < closest_t) {
-                            grabbed_mesh = index;
-                            grab_origin  = mouse_pos;
-                        }
-                    }
-
-                    index++;
-                }
-            }
-        }
-
         {
             void*  ptr          = nullptr;
             size_t frame_offset = (drawcall_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
@@ -6653,6 +6643,80 @@ int main(int argc, char* argv[]) {
             (drawcall_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
 
         framegraph.execute(command_buffer, frame_index);
+
+        static bool pick_guard = false;
+        if (pressed_keys[SDL_SCANCODE_LSHIFT] && !capturing_mouse) {
+            if (pressed_buttons[SDL_BUTTON_LEFT]) {
+                if (!pick_guard) {
+                    int w;
+                    int h;
+                    SDL_GetWindowSizeInPixels(window, &w, &h);
+
+                    int mouse_x = glm::clamp((int)mouse_pos.x, 0, w);
+                    int mouse_y = glm::clamp((int)mouse_pos.y, 0, h);
+
+                    VkBufferImageCopy region = {
+                        .bufferOffset      = 0,
+                        .bufferRowLength   = 0,
+                        .bufferImageHeight = 0,
+                        .imageSubresource =
+                            {
+                                .aspectMask     = gbuffer_id.aspect,
+                                .mipLevel       = 0,
+                                .baseArrayLayer = 0,
+                                .layerCount     = 1,
+                            },
+                        .imageOffset =
+                            {
+                                .x = mouse_x,
+                                .y = mouse_y,
+                                .z = 0,
+                            },
+                        .imageExtent = {
+                            .width  = 1,
+                            .height = 1,
+                            .depth  = 1,
+                        }
+                    };
+
+                    image_pipeline_barrier(
+                        gbuffer_id,
+                        command_buffer,
+                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                        VK_ACCESS_2_TRANSFER_READ_BIT
+                    );
+
+                    vkCmdCopyImageToBuffer(
+                        command_buffer,
+                        gbuffer_id.handle,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        pick_buffer.handle,
+                        1,
+                        &region
+                    );
+
+                    image_pipeline_barrier(
+                        gbuffer_id,
+                        command_buffer,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                        VK_ACCESS_2_TRANSFER_READ_BIT,
+                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+                    );
+
+                    pick_frame = frame_count + FRAMES_IN_FLIGHT + 1;
+                    pick_guard = true;
+                }
+            } else {
+                pick_guard = false;
+            }
+        }
 
         auto& blit_source = use_fxaa ? fxaa_output : smaa_output;
 
@@ -6879,12 +6943,14 @@ int main(int argc, char* argv[]) {
     destroy_buffer(material_buffer, device, vma_allocator);
     destroy_buffer(drawcall_buffer, device, vma_allocator);
     destroy_buffer(mesh_buffer, device, vma_allocator);
+    destroy_buffer(pick_buffer, device, vma_allocator);
     destroy_image(depth_buffer, device, vma_allocator);
     destroy_image(lightpass_output, device, vma_allocator);
     destroy_image(composite_output, device, vma_allocator);
     destroy_image(gbuffer_albedo, device, vma_allocator);
     destroy_image(gbuffer_normals, device, vma_allocator);
     destroy_image(gbuffer_emissive, device, vma_allocator);
+    destroy_image(gbuffer_id, device, vma_allocator);
     destroy_image(gbuffer_velocity, device, vma_allocator);
     destroy_image(depth_hiz, device, vma_allocator);
     destroy_image(bloom_buffer, device, vma_allocator);
