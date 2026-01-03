@@ -9,6 +9,7 @@ layout(location = 2) out vec3 out_world_pos;
 layout(location = 3) out vec4 out_clip_pos;
 layout(location = 4) out vec4 out_last_clip_pos;
 layout(location = 5) flat out uint out_material_index;
+layout(location = 6) flat out uint out_draw_index;
 
 #include "common.glsl"
 
@@ -68,4 +69,5 @@ void main() {
     out_clip_pos = clip_pos;
     out_last_clip_pos = last_clip_pos;
     out_material_index = draw.material_id;
+    out_draw_index = gl_BaseInstance;
 }
