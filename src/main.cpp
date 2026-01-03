@@ -2785,16 +2785,49 @@ int main(int argc, char* argv[]) {
 
     struct PhysicsObject {
         JPH::BodyID body_id;
-        uint32_t    drawcall_id;
+        int         drawcall_id = -1;
+
+        JPH::Vec3 last_position;
+        JPH::Quat last_rotation;
     };
     std::vector<PhysicsObject> dynamic_bodies;
+    std::vector<JPH::BodyID>   static_bodies;
+
+    uint32_t    player_object_id;
+    const float player_height          = 1.8f;
+    const float player_radius          = 0.3f;
+    const float player_speed           = 10.0f;
+    const float player_sprint_modifier = 2.0f;
+    const float player_jump_velocity   = 10.0f;
+    {
+        JPH::BodyCreationSettings body_settings = JPH::BodyCreationSettings(
+            new JPH::CapsuleShape(player_height / 2.0f - player_radius, player_radius),
+            JPH::RVec3(0.0, 0.0, 0.0),
+            JPH::Quat::sIdentity(),
+            JPH::EMotionType::Dynamic,
+            Layers::MOVING
+        );
+        body_settings.mAllowedDOFs =
+            JPH::EAllowedDOFs::TranslationX | JPH::EAllowedDOFs::TranslationY | JPH::EAllowedDOFs::TranslationZ;
+        body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
+        body_settings.mMassPropertiesOverride.mMass = 180.0f;
+        body_settings.mLinearDamping                = 0.5f;
+        body_settings.mAllowSleeping                = false;
+
+        JPH::BodyID player_body_id = physics_body_interface.CreateAndAddBody(body_settings, JPH::EActivation::Activate);
+        physics_body_interface.SetFriction(player_body_id, 0.0f);
+        physics_body_interface.SetRestitution(player_body_id, 0.0f);
+        physics_body_interface.SetMaxAngularVelocity(player_body_id, 0);
+
+        dynamic_bodies.push_back({player_body_id, -1});
+        player_object_id = dynamic_bodies.size() - 1;
+    }
+    bool player_physics = false;
 
     const float physics_delta_time       = 1.0f / 60.0f;
     float       physics_time_accumulator = 0.0f;
 
     physics_system.OptimizeBroadPhase();
-
-    std::vector<JPH::BodyID> static_bodies;
 
     std::string load_path = argc > 1 ? argv[1] : "data/models/room2.glb";
 
@@ -5881,62 +5914,123 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        float current_player_speed = player_speed;
         if (pressed_keys[SDL_SCANCODE_LSHIFT] | pressed_keys[SDL_SCANCODE_LCTRL]) {
             if (pressed_keys[SDL_SCANCODE_LCTRL]) {
                 camera_speed = base_camera_speed / camera_speed_mod;
+                current_player_speed /= player_sprint_modifier;
             }
 
             if (pressed_keys[SDL_SCANCODE_LSHIFT]) {
                 camera_speed = base_camera_speed * camera_speed_mod;
+                current_player_speed *= player_sprint_modifier;
             }
         } else {
             camera_speed = base_camera_speed;
         }
 
+        glm::vec3 velocity = glm::vec3(0.0);
         if (pressed_keys[SDL_SCANCODE_W]) {
-            move_camera(camera, glm::vec2(1, 0), camera_speed * delta_time);
+            velocity.x = 1;
         }
 
         if (pressed_keys[SDL_SCANCODE_S]) {
-            move_camera(camera, glm::vec2(-1, 0), camera_speed * delta_time);
+            velocity.x = -1;
         }
 
         if (pressed_keys[SDL_SCANCODE_A]) {
-            move_camera(camera, glm::vec2(0, -1), camera_speed * delta_time);
+            velocity.y = -1;
         }
 
         if (pressed_keys[SDL_SCANCODE_D]) {
-            move_camera(camera, glm::vec2(0, 1), camera_speed * delta_time);
+            velocity.y = 1;
         }
 
         if (pressed_keys[SDL_SCANCODE_ESCAPE]) {
             running = false;
         }
 
-        update_camera(camera);
-
         while (physics_time_accumulator >= physics_delta_time) {
-            for (const auto& body : dynamic_bodies) {
+            for (auto& body : dynamic_bodies) {
                 JPH::Vec3 p;
                 JPH::Quat r;
                 physics_body_interface.GetPositionAndRotation(body.body_id, p, r);
 
-                glm::vec3 new_pos = glm::vec3(p.GetX(), p.GetY(), p.GetZ());
-                glm::quat new_rot = glm::quat(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
-
-                MeshInstance& instance = mesh_instances[body.drawcall_id];
-                Mesh          mesh     = meshes[instance.mesh_id];
-
-                glm::vec3 center = (mesh.bounds_max + mesh.bounds_min) * 0.5f;
-                glm::vec3 offset = new_rot * (center * instance.scale);
-
-                instance.position = new_pos - offset;
-                instance.rotation = new_rot;
+                body.last_position = p;
+                body.last_rotation = r;
             }
 
             physics_system.Update(physics_delta_time, 1, &physics_temp_allocator, &physics_job_system);
             physics_time_accumulator -= physics_delta_time;
         }
+
+        float physics_alpha = physics_time_accumulator / physics_delta_time;
+        for (const auto& body : dynamic_bodies) {
+            if (body.drawcall_id == -1) {
+                continue;
+            }
+
+            JPH::Vec3 p;
+            JPH::Quat r;
+            physics_body_interface.GetPositionAndRotation(body.body_id, p, r);
+
+            glm::vec3 new_pos = glm::vec3(p.GetX(), p.GetY(), p.GetZ());
+            glm::quat new_rot = glm::quat(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
+
+            glm::vec3 old_pos =
+                glm::vec3(body.last_position.GetX(), body.last_position.GetY(), body.last_position.GetZ());
+            glm::quat old_rot = glm::quat(
+                body.last_rotation.GetX(),
+                body.last_rotation.GetY(),
+                body.last_rotation.GetZ(),
+                body.last_rotation.GetW()
+            );
+
+            MeshInstance& instance = mesh_instances[body.drawcall_id];
+            Mesh          mesh     = meshes[instance.mesh_id];
+
+            glm::vec3 center = (mesh.bounds_max + mesh.bounds_min) * 0.5f;
+            glm::vec3 offset = new_rot * (center * instance.scale);
+
+            instance.position = glm::mix(old_pos, new_pos, physics_alpha) - offset;
+            instance.rotation = glm::slerp(old_rot, new_rot, physics_alpha);
+        }
+
+        if (!player_physics) {
+            move_camera(camera, velocity, camera_speed * delta_time);
+        } else {
+            PhysicsObject& player_body = dynamic_bodies[player_object_id];
+
+            JPH::RVec3 current_velocity = physics_body_interface.GetLinearVelocity(player_body.body_id);
+
+            static bool jumped = false;
+            if (pressed_keys[SDL_SCANCODE_SPACE]) {
+                if (!jumped) {
+                    current_velocity.SetY(player_jump_velocity);
+                    jumped = true;
+                }
+            } else {
+                jumped = false;
+            }
+
+            glm::vec3 oriented_velocity =
+                camera.orientation * glm::vec3(velocity.y, 0, -velocity.x) * current_player_speed;
+
+            physics_body_interface.SetLinearVelocity(
+                player_body.body_id, JPH::RVec3(oriented_velocity.x, current_velocity.GetY(), oriented_velocity.z)
+            );
+
+            JPH::Vec3 p = physics_body_interface.GetPosition(player_body.body_id);
+
+            glm::vec3 new_pos = glm::vec3(p.GetX(), p.GetY(), p.GetZ());
+            glm::vec3 old_pos = glm::vec3(
+                player_body.last_position.GetX(), player_body.last_position.GetY(), player_body.last_position.GetZ()
+            );
+
+            camera.position = glm::mix(old_pos, new_pos, physics_alpha) + glm::vec3(0, player_height * 0.4f, 0);
+        }
+
+        update_camera(camera);
 
         auto transposed_projection = glm::transpose(camera.projection_matrix);
 
@@ -6024,6 +6118,16 @@ int main(int argc, char* argv[]) {
         ImGui::Text("Triangles Rendered: %.3fM", (double(pipeline_stats[0]) / 1'000'000.0));
         ImGui::Text("Fragment shader invocations: %.3fM", (double(pipeline_stats[1]) / 1'000'000.0));
         ImGui::NewLine();
+
+        if (ImGui::Checkbox("Player Physics", &player_physics)) {
+            if (player_physics) {
+                physics_body_interface.SetPosition(
+                    dynamic_bodies[player_object_id].body_id,
+                    JPH::RVec3(camera.position.x, camera.position.y, camera.position.z),
+                    JPH::EActivation::Activate
+                );
+            }
+        }
 
         if (ImGui::TreeNode("Performance")) {
             std::vector<std::pair<std::string, PassTiming>> pass_timings = {};
@@ -6391,7 +6495,7 @@ int main(int argc, char* argv[]) {
                     physics_body_interface.SetFriction(body_id, 1.0f);
 
                     mesh_instances.push_back(new_instance);
-                    dynamic_bodies.push_back(PhysicsObject{body_id, static_cast<uint32_t>(mesh_instances.size() - 1)});
+                    dynamic_bodies.push_back(PhysicsObject{body_id, static_cast<int>(mesh_instances.size() - 1)});
 
                     press_guard = true;
                 }
