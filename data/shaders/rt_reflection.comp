@@ -272,7 +272,7 @@ void main() {
     vec4 albedo_rougness_data = texture(albedo_roughness, uv);
 
     float roughness = albedo_rougness_data.a;
-    if (roughness >= 0.4) {
+    if (roughness >= 0.3) {
         imageStore(out_reflection, pixel_coord, vec4(0.0, 0, 0, 0));
         return;
     }

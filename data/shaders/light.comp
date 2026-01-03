@@ -135,7 +135,7 @@ void main() {
         vec3 R = reflect(-V, normal);
         float specular_occlusion = max(dot(normal, bent_normal), 0.0);
 
-        const float RT_REFLECTION_MAX = 0.4;
+        const float RT_REFLECTION_MAX = 0.25;
         const float BLEND_RANGE = 0.1;
         float blend_to_ddgi = smoothstep(
                 RT_REFLECTION_MAX - BLEND_RANGE,
