@@ -26,6 +26,10 @@ layout(set = 0, binding = 8, std430) readonly uniform LightingData {
     LightingUBO lighting;
 };
 
+layout(set = 0, binding = 9, std430) readonly buffer ProbeBuffer {
+    DDGIProbe probes[];
+};
+
 layout(set = 1, binding = 0) uniform UBO {
     SceneUBO scene;
 };
@@ -51,6 +55,8 @@ layout(scalar, set = 3, binding = 1) readonly buffer VertexBuffer {
 } global_vertices;
 
 layout(set = 4, binding = 0) uniform sampler2D textures[];
+
+#include "ddgi_sample.glsl"
 
 // GGX importance sampling
 vec3 importanceSampleGGX(vec2 Xi, vec3 N, float roughness) {

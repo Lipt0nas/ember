@@ -16,15 +16,19 @@ layout(set = 0, binding = 0, std430) readonly buffer RayBuffer {
     DDGIRay rays[];
 } ray_buffer;
 
-layout(set = 0, binding = 1, std430) readonly uniform LightingData {
+layout(set = 0, binding = 1, std430) buffer ProbeBuffer {
+    DDGIProbe probes[];
+};
+
+layout(set = 0, binding = 2, std430) readonly uniform LightingData {
     LightingUBO lighting;
 };
 
-layout(set = 0, binding = 2, rgba16f) uniform image2D out_irradiance;
-layout(set = 0, binding = 3, rgba16f) uniform image2D irradiance_history;
+layout(set = 0, binding = 3, rgba16f) uniform image2D out_irradiance;
+layout(set = 0, binding = 4, rgba16f) uniform image2D irradiance_history;
 
-layout(set = 0, binding = 4, rg16f) uniform image2D out_depth;
-layout(set = 0, binding = 5, rg16f) uniform image2D depth_history;
+layout(set = 0, binding = 5, rg16f) uniform image2D out_depth;
+layout(set = 0, binding = 6, rg16f) uniform image2D depth_history;
 
 shared vec4 shared_ray_hit_data[256];
 shared vec3 shared_ray_dir[256];
@@ -46,6 +50,8 @@ void main() {
     int probe_x = int(probe_idx % (lighting.probe_counts.x * lighting.probe_counts.y));
     int probe_y = int(probe_idx / (lighting.probe_counts.x * lighting.probe_counts.y));
 
+    const float base_hysteresis = 0.97;
+
     if (gl_LocalInvocationID.x < lighting.texels_per_probe && gl_LocalInvocationID.y < lighting.texels_per_probe) {
         ivec2 texel_loc = ivec2(gl_LocalInvocationID.xy);
 
@@ -55,13 +61,32 @@ void main() {
         vec3 result_color = vec3(0.0);
         float total_weight = 0.0;
 
+        ivec2 global_pos = ivec2(probe_x * (lighting.texels_per_probe + 2) + 1, probe_y * (lighting.texels_per_probe + 2) + 1) + texel_loc;
+        vec3 prev_color = imageLoad(irradiance_history, global_pos).rgb;
+        float hysteresis = base_hysteresis;
+        if (dot(prev_color, prev_color) == 0) hysteresis = 0.0;
+
+        probes[probe_idx].state = 1;
+        int backface_hits = 0;
         for (int r = 0; r < lighting.rays_per_probe; r++) {
             vec3 ray_dir = shared_ray_dir[r];
-            vec3 ray_rad = shared_ray_hit_data[r].rgb;
+            vec4 ray_data = shared_ray_hit_data[r];
+
+            if (ray_data.w < 0.0) {
+                backface_hits++;
+
+                if (backface_hits >= lighting.rays_per_probe * 0.2) {
+                    probes[probe_idx].state = 0;
+
+                    return;
+                }
+
+                continue;
+            }
 
             float weight = max(0.0, dot(probe_dir, ray_dir));
 
-            result_color += vec3(ray_rad * weight);
+            result_color += vec3(ray_data.rgb * weight);
             total_weight += weight;
         }
 
@@ -70,12 +95,26 @@ void main() {
 
         result_color = pow(result_color, vec3(1.0 / 5.0));
 
-        ivec2 global_pos = ivec2(probe_x * (lighting.texels_per_probe + 2) + 1, probe_y * (lighting.texels_per_probe + 2) + 1) + texel_loc;
+        vec3 delta = (result_color - prev_color);
 
-        vec3 prev_color = imageLoad(irradiance_history, global_pos).rgb;
-        vec3 new_color = mix(result_color, prev_color, 0.97);
+        const float irradiance_threshold = 0.25;
+        if (component_max(prev_color - result_color) > irradiance_threshold) {
+            hysteresis = max(0.0, hysteresis - 0.75);
+        }
 
-        imageStore(out_irradiance, global_pos, vec4(new_color, 1.0));
+        const float brightness_threshold = 1.0;
+        if (linear_rgb_to_luminance(delta) > brightness_threshold) {
+            delta *= 0.25;
+        }
+
+        const float c_threshold = 1.0 / 1024.0;
+        vec3 lerp_delta = (1.0 - hysteresis) * delta;
+        if (component_max(result_color.rgb) < component_max(prev_color.rgb)) {
+            lerp_delta = min(max(vec3(c_threshold), abs(lerp_delta)), abs(delta)) * sign(lerp_delta);
+        }
+        result_color = prev_color + lerp_delta;
+
+        imageStore(out_irradiance, global_pos, vec4(result_color, 1.0));
     }
 
     if (gl_LocalInvocationID.x < lighting.depth_texels_per_probe && gl_LocalInvocationID.y < lighting.depth_texels_per_probe) {
@@ -88,11 +127,16 @@ void main() {
         float result_dist_sq = 0.0;
         float total_weight = 0.0;
 
+        ivec2 global_pos = ivec2(probe_x * (lighting.depth_texels_per_probe + 2) + 1, probe_y * (lighting.depth_texels_per_probe + 2) + 1) + texel_loc;
+        float hysteresis = base_hysteresis;
+        vec2 prev_dist = imageLoad(depth_history, global_pos).rg;
+        if (dot(prev_dist, prev_dist) == 0) hysteresis = 0.0;
+
         for (int r = 0; r < lighting.rays_per_probe; r++) {
             vec3 ray_dir = shared_ray_dir[r];
             float ray_dist = min(shared_ray_hit_data[r].w, lighting.probe_spacing * 1.5);
 
-            float weight = pow(max(0.0, dot(probe_dir, ray_dir)), 64.0);
+            float weight = pow(max(0.0, dot(probe_dir, ray_dir)), 50.0);
 
             result_dist += ray_dist * weight;
             result_dist_sq += (ray_dist * ray_dist) * weight;
@@ -104,11 +148,7 @@ void main() {
             result_dist_sq /= total_weight;
         }
 
-        ivec2 global_pos = ivec2(probe_x * (lighting.depth_texels_per_probe + 2) + 1, probe_y * (lighting.depth_texels_per_probe + 2) + 1) + texel_loc;
-
-        vec2 prev_dist = imageLoad(depth_history, global_pos).rg;
-        vec2 new_dist = mix(vec2(result_dist, result_dist_sq), prev_dist, 0.97);
-
+        vec2 new_dist = mix(vec2(result_dist, result_dist_sq), prev_dist, hysteresis);
         imageStore(out_depth, global_pos, vec4(new_dist, 0.0, 0.0));
     }
 }

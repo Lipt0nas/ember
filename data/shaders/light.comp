@@ -29,9 +29,15 @@ layout(set = 0, binding = 11, std430) readonly uniform LightingData {
     LightingUBO lighting;
 };
 
+layout(set = 0, binding = 12, std430) readonly buffer ProbeBuffer {
+    DDGIProbe probes[];
+};
+
 layout(set = 1, binding = 0) uniform UBO {
     SceneUBO scene;
 };
+
+#include "ddgi_sample.glsl"
 
 void main() {
     ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
