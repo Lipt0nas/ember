@@ -3480,6 +3480,12 @@ int main(int argc, char* argv[]) {
     framegraph.import_image(ddgi_depth_atlas, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(ddgi_depth_atlas_history, VK_IMAGE_LAYOUT_GENERAL);
 
+    auto tlas_rebuild_pass =
+        framegraph.add_pass("RT structure rebuild")
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                rebuild_tlas(rt_scene, device, vma_allocator, command_buffer, frame_index, meshes, mesh_instances);
+            });
+
     auto cull_early_pass =
         framegraph.add_pass("cull early")
             .reads_storage_image(depth_hiz, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
@@ -6610,8 +6616,6 @@ int main(int argc, char* argv[]) {
         vkBeginCommandBuffer(command_buffer, &begin_info);
 
         vkCmdResetQueryPool(command_buffer, statistics_pools[frame_index], 0, 1);
-
-        rebuild_tlas(rt_scene, device, vma_allocator, command_buffer, frame_index, meshes, mesh_instances);
 
         VkViewport viewport = {
             .x        = 0,

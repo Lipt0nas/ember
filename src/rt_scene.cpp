@@ -240,7 +240,7 @@ RTScene create_rt_scene(
     VkAccelerationStructureBuildGeometryInfoKHR tlas_build_info = {
         .sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
         .type          = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-        .flags         = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+        .flags         = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR,
         .mode          = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
         .geometryCount = 1,
         .pGeometries   = &tlas_geometry
@@ -294,7 +294,7 @@ RTScene create_rt_scene(
     VkAccelerationStructureBuildGeometryInfoKHR acceleration_build_geometry_info = {
         .sType                    = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
         .type                     = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-        .flags                    = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+        .flags                    = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR,
         .mode                     = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
         .dstAccelerationStructure = top_level_acceleration_structure.handle,
         .geometryCount            = 1,
@@ -442,7 +442,7 @@ void rebuild_tlas(
     VkAccelerationStructureBuildGeometryInfoKHR tlas_build_info = {
         .sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
         .type          = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-        .flags         = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+        .flags         = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR,
         .mode          = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
         .geometryCount = 1,
         .pGeometries   = &tlas_geometry
@@ -517,7 +517,7 @@ void rebuild_tlas(
     VkAccelerationStructureBuildGeometryInfoKHR acceleration_build_geometry_info = {
         .sType                    = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
         .type                     = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-        .flags                    = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+        .flags                    = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR,
         .mode                     = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
         .srcAccelerationStructure = VK_NULL_HANDLE,
         .dstAccelerationStructure = scene.tlas.handle,
