@@ -101,8 +101,8 @@ private:
     }
 
     glm::vec2 calculate_tex_coord(const glm::vec3& pos) {
-        float u = 0.5f + atan2f(pos.z, pos.x) / (2.0f * M_PI);
-        float v = 0.5f - asinf(pos.y) / M_PI;
+        float u = 0.5f + atan2f(pos.z, pos.x) / (2.0f * glm::pi<float>());
+        float v = 0.5f - asinf(pos.y) / glm::pi<float>();
 
         return glm::vec2(u, v);
     }

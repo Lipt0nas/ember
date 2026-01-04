@@ -163,7 +163,7 @@ struct alignas(16) SceneUBO {
     glm::mat4 view;
     float     frustum[4];
 
-    glm::mat4 frozen_view;
+    glm::mat4 frozen_view = glm::mat4(1.0f);
     float     frozen_frustum[4];
 
     uint32_t debug_frustum;
@@ -2964,7 +2964,7 @@ int main(int argc, char* argv[]) {
     uint32_t accumulated_fps = 0;
     uint32_t fps             = 0;
 
-    glm::mat4 frozen_view;
+    glm::mat4 frozen_view = glm::mat4(1.0f);
     float     frozen_frustum[4];
 
     bool debug_frustum   = false;

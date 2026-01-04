@@ -109,6 +109,40 @@ set(USE_TZCNT ON)
 set(USE_F16C ON)
 set(USE_FMADD ON)
 
+if (MSVC)
+	set(CMAKE_VS_PLATFORM_TOOLSET_HOST_ARCHITECTURE "x64")
+	if (USE_STATIC_MSVC_RUNTIME_LIBRARY)
+		set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+	endif()
+
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zc:__cplusplus /Gm- /MP /nologo /diagnostics:classic /FC /fp:except- /Zc:inline")
+	
+	if (NOT CPP_RTTI_ENABLED)
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /GR-")
+	endif()
+
+	if (NOT CPP_EXCEPTIONS_ENABLED)
+		string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4577")
+	endif()
+
+	if (OVERRIDE_CXX_FLAGS)
+		set(CMAKE_CXX_FLAGS_DEBUG "/GS /Od /Ob0 /RTC1")
+		set(CMAKE_CXX_FLAGS_RELEASE "/GS- /Gy /O2 /Oi /Ot")
+	endif()
+
+	if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+		if (CROSS_PLATFORM_DETERMINISTIC)
+			set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:precise")
+		else()
+			set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:fast")
+		endif()
+	elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /showFilenames")
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Qunused-arguments")
+	endif()
+endif()
+
 FetchContent_Declare(
         JoltPhysics
         GIT_REPOSITORY "https://github.com/jrouwe/JoltPhysics"
