@@ -113,13 +113,13 @@ Image load_image(
     int32_t channels;
 
     if (path.extension() != ".hdr") {
-        unsigned char* texture_data = stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+        unsigned char* texture_data = stbi_load(path.string().c_str(), &width, &height, &channels, STBI_rgb_alpha);
 
         memcpy(staging_buffer_ptr, texture_data, sizeof(unsigned char) * width * height * 4);
         stbi_image_free(texture_data);
     } else {
         spdlog::warn("FLOATING POINT TEXTURE {}", path.string());
-        float* texture_data = stbi_loadf(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+        float* texture_data = stbi_loadf(path.string().c_str(), &width, &height, &channels, STBI_rgb_alpha);
 
         memcpy(staging_buffer_ptr, texture_data, sizeof(float) * width * height * 4);
         stbi_image_free(texture_data);
@@ -144,14 +144,14 @@ Image load_image(
 }
 
 Image create_image(
-    VkFormat              format,
-    uint32_t              width,
-    uint32_t              height,
-    VkImageUsageFlags     usage,
-    VkImageAspectFlagBits aspect,
-    bool                  generate_mipmaps,
-    VmaAllocator          allocator,
-    VkDevice              device
+    VkFormat           format,
+    uint32_t           width,
+    uint32_t           height,
+    VkImageUsageFlags  usage,
+    VkImageAspectFlags aspect,
+    bool               generate_mipmaps,
+    VmaAllocator       allocator,
+    VkDevice           device
 ) {
     uint32_t mip_levels =
         generate_mipmaps ? static_cast<uint32_t>(glm::floor(glm::log2((float)glm::max(width, height))) + 1) : 1;
@@ -219,14 +219,14 @@ Image create_image(
 }
 
 Image create_cubemap_image(
-    VkFormat              format,
-    uint32_t              width,
-    uint32_t              height,
-    VkImageUsageFlags     usage,
-    VkImageAspectFlagBits aspect,
-    bool                  generate_mipmaps,
-    VmaAllocator          allocator,
-    VkDevice              device
+    VkFormat           format,
+    uint32_t           width,
+    uint32_t           height,
+    VkImageUsageFlags  usage,
+    VkImageAspectFlags aspect,
+    bool               generate_mipmaps,
+    VmaAllocator       allocator,
+    VkDevice           device
 ) {
     uint32_t mip_levels =
         generate_mipmaps ? static_cast<uint32_t>(glm::floor(glm::log2((float)glm::max(width, height))) + 1) : 1;

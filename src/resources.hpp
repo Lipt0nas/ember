@@ -77,25 +77,25 @@ Image load_image(
 );
 
 Image create_image(
-    VkFormat              format,
-    uint32_t              width,
-    uint32_t              height,
-    VkImageUsageFlags     usage,
-    VkImageAspectFlagBits aspect,
-    bool                  generate_mipmaps,
-    VmaAllocator          allocator,
-    VkDevice              device
+    VkFormat           format,
+    uint32_t           width,
+    uint32_t           height,
+    VkImageUsageFlags  usage,
+    VkImageAspectFlags aspect,
+    bool               generate_mipmaps,
+    VmaAllocator       allocator,
+    VkDevice           device
 );
 
 Image create_cubemap_image(
-    VkFormat              format,
-    uint32_t              width,
-    uint32_t              height,
-    VkImageUsageFlags     usage,
-    VkImageAspectFlagBits aspect,
-    bool                  generate_mipmaps,
-    VmaAllocator          allocator,
-    VkDevice              device
+    VkFormat           format,
+    uint32_t           width,
+    uint32_t           height,
+    VkImageUsageFlags  usage,
+    VkImageAspectFlags aspect,
+    bool               generate_mipmaps,
+    VmaAllocator       allocator,
+    VkDevice           device
 );
 void destroy_image(const Image& image, VkDevice device, VmaAllocator allocator);
 
