@@ -304,6 +304,7 @@ void debug_renderer_upload_data(DebugRenderer& renderer, VmaAllocator vma_alloca
     memcpy(
         reinterpret_cast<char*>(ptr) + ptr_offset, renderer.instances.data(), sizeof(Vertex) * renderer.instance_count
     );
+    vmaUnmapMemory(vma_allocator, renderer.instance_buffer.allocation);
     VK_CHECK(vmaFlushAllocation(
         vma_allocator, renderer.instance_buffer.allocation, ptr_offset, renderer.instance_buffer.size
     ));
@@ -346,6 +347,7 @@ DebugRenderer create_debug_renderer(
         void* ptr = nullptr;
         VK_CHECK(vmaMapMemory(vma_allocator, vertex_buffer.allocation, &ptr));
         memcpy(reinterpret_cast<char*>(ptr), vertices.data(), sizeof(Vertex) * vertices.size());
+        vmaUnmapMemory(vma_allocator, vertex_buffer.allocation);
         VK_CHECK(vmaFlushAllocation(vma_allocator, vertex_buffer.allocation, 0, vertex_buffer.size));
     }
 
@@ -360,6 +362,7 @@ DebugRenderer create_debug_renderer(
         void* ptr = nullptr;
         VK_CHECK(vmaMapMemory(vma_allocator, index_buffer.allocation, &ptr));
         memcpy(reinterpret_cast<char*>(ptr), indices.data(), sizeof(uint32_t) * indices.size());
+        vmaUnmapMemory(vma_allocator, index_buffer.allocation);
         VK_CHECK(vmaFlushAllocation(vma_allocator, index_buffer.allocation, 0, index_buffer.size));
     }
 
@@ -942,6 +945,8 @@ void load_scene(
             current_entry++;
         }
     }
+
+    vmaUnmapMemory(allocator, staging_buffer.allocation);
 
     spdlog::info("Scene count: {}", model.scenes.size());
     int scene_id = model.defaultScene >= 0 ? model.defaultScene : (model.scenes.size() >= 1 ? 0 : -1);
@@ -6383,6 +6388,7 @@ int main(int argc, char* argv[]) {
             size_t ubo_ptr_offset = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
             VK_CHECK(vmaMapMemory(vma_allocator, scene_ubo_buffer.allocation, &scene_ubo_ptr));
             memcpy(reinterpret_cast<char*>(scene_ubo_ptr) + ubo_ptr_offset, &scene_ubo, sizeof(SceneUBO));
+            vmaUnmapMemory(vma_allocator, scene_ubo_buffer.allocation);
             VK_CHECK(
                 vmaFlushAllocation(vma_allocator, scene_ubo_buffer.allocation, ubo_ptr_offset, scene_ubo_buffer.size)
             );
@@ -6395,6 +6401,7 @@ int main(int argc, char* argv[]) {
             memcpy(
                 reinterpret_cast<char*>(lighting_ubo_ptr) + lighting_ptr_offset, &lighting_data, sizeof(LightingUBO)
             );
+            vmaUnmapMemory(vma_allocator, lighting_ubo_buffer.allocation);
             VK_CHECK(vmaFlushAllocation(
                 vma_allocator, lighting_ubo_buffer.allocation, lighting_ptr_offset, lighting_ubo_buffer.size
             ));

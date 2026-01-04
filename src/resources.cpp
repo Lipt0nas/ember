@@ -138,6 +138,8 @@ Image load_image(
 
     copy_image(staging_buffer, image, generate_mipmaps, command_buffer, queue, device);
 
+    vmaUnmapMemory(allocator, staging_buffer.allocation);
+
     return image;
 }
 

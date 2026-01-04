@@ -219,6 +219,7 @@ RTScene create_rt_scene(
     memcpy(
         instance_buffer_ptr, tlas_instances.data(), tlas_instances.size() * sizeof(VkAccelerationStructureInstanceKHR)
     );
+    vmaUnmapMemory(allocator, instance_buffer.allocation);
 
     VkAccelerationStructureGeometryInstancesDataKHR instances_data = {
         .sType           = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
@@ -420,6 +421,7 @@ void rebuild_tlas(
     memcpy(
         instance_buffer_ptr, tlas_instances.data(), tlas_instances.size() * sizeof(VkAccelerationStructureInstanceKHR)
     );
+    vmaUnmapMemory(allocator, instance_buffer.allocation);
 
     VkAccelerationStructureGeometryInstancesDataKHR instances_data = {
         .sType           = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
