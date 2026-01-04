@@ -3,7 +3,7 @@
 
 #define MESHLETS_PER_TASK 32
 
-#define EFFECT_RADIUS 0.75
+#define EFFECT_RADIUS 0.5
 #define EFFECT_FALLOFF_RANGE 0.615
 
 #define XE_GTAO_DEFAULT_RADIUS_MULTIPLIER           1.457       // Allows us to use different value as compared to ground truth radius to counter inherent screen space biases
@@ -13,8 +13,25 @@
 #define XE_GTAO_DEFAULT_FINAL_VALUE_POWER           1.2         // Power curve for final AO value (for aesthetics)
 #define XE_GTAO_DEFAULT_DEPTH_MIP_SAMPLING_OFFSET   3.30        // Controls which MIP level to use based on sample distance
 
-#define XE_GTAO_DEFAULT_SLICE_COUNT                 6           // Number of slices around the hemisphere (2-9 typical, 3 is good balance)
-#define XE_GTAO_DEFAULT_STEPS_PER_SLICE             3           // Steps per slice (2-6 typical, 3 is good balance)
+// 0 - low
+// 1 - medium
+// 2 - high
+// 3 - ultra
+#define XEGTAO_QUALITY 2
+
+#if XEGTAO_QUALITY == 0
+#define XE_GTAO_DEFAULT_SLICE_COUNT                 1
+#define XE_GTAO_DEFAULT_STEPS_PER_SLICE             2
+#elif XEGTAO_QUALITY == 1
+#define XE_GTAO_DEFAULT_SLICE_COUNT                 2
+#define XE_GTAO_DEFAULT_STEPS_PER_SLICE             2
+#elif XEGTAO_QUALITY == 2
+#define XE_GTAO_DEFAULT_SLICE_COUNT                 3
+#define XE_GTAO_DEFAULT_STEPS_PER_SLICE             3
+#elif XEGTAO_QUALITY == 3
+#define XE_GTAO_DEFAULT_SLICE_COUNT                 9
+#define XE_GTAO_DEFAULT_STEPS_PER_SLICE             3
+#endif
 
 #define XE_GTAO_DEPTH_MIP_LEVELS 5
 #define XE_GTAO_MIP_SAMPLING_OFFSET 3.3
