@@ -278,6 +278,7 @@ void main() {
         float horizon_cos_0 = low_horizon_cos_0;
         float horizon_cos_1 = low_horizon_cos_1;
 
+        #pragma unroll
         for (float step = 0; step < XE_GTAO_DEFAULT_STEPS_PER_SLICE; step++) {
             const float step_base_noise = float(slice + step * XE_GTAO_DEFAULT_STEPS_PER_SLICE) * 0.6180339887498948482;
             float step_noise = fract(noise_sample + step_base_noise);
