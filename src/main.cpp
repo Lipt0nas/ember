@@ -716,17 +716,14 @@ void load_scene(
             const tinygltf::Accessor& pos_accessor      = model.accessors[primitive.attributes.at("POSITION")];
             const tinygltf::Accessor& normal_accessor   = model.accessors[primitive.attributes.at("NORMAL")];
             const tinygltf::Accessor& texcoord_accessor = model.accessors[primitive.attributes.at("TEXCOORD_0")];
-            const tinygltf::Accessor& tangent_accessor  = model.accessors[primitive.attributes.at("TANGENT")];
 
             const tinygltf::BufferView& pos_view      = model.bufferViews[pos_accessor.bufferView];
             const tinygltf::BufferView& normal_view   = model.bufferViews[normal_accessor.bufferView];
             const tinygltf::BufferView& texcoord_view = model.bufferViews[texcoord_accessor.bufferView];
-            const tinygltf::BufferView& tangent_view  = model.bufferViews[tangent_accessor.bufferView];
 
             const tinygltf::Buffer& pos_buffer      = model.buffers[pos_view.buffer];
             const tinygltf::Buffer& normal_buffer   = model.buffers[normal_view.buffer];
             const tinygltf::Buffer& texcoord_buffer = model.buffers[texcoord_view.buffer];
-            const tinygltf::Buffer& tangent_buffer  = model.buffers[tangent_view.buffer];
 
             size_t vertex_count = pos_accessor.count;
 
@@ -741,9 +738,17 @@ void load_scene(
                 &texcoord_buffer.data[texcoord_view.byteOffset + texcoord_accessor.byteOffset]
             );
 
-            auto* tangents = reinterpret_cast<const float*>(
-                &tangent_buffer.data[tangent_view.byteOffset + tangent_accessor.byteOffset]
-            );
+            const float* tangents = nullptr;
+
+            if (has_tangents) {
+                const tinygltf::Accessor&   tangent_accessor = model.accessors[primitive.attributes.at("TANGENT")];
+                const tinygltf::BufferView& tangent_view     = model.bufferViews[tangent_accessor.bufferView];
+                const tinygltf::Buffer&     tangent_buffer   = model.buffers[tangent_view.buffer];
+
+                tangents = reinterpret_cast<const float*>(
+                    &tangent_buffer.data[tangent_view.byteOffset + tangent_accessor.byteOffset]
+                );
+            }
 
             glm::vec3 center     = glm::vec3(0);
             glm::vec3 bounds_min = glm::vec3(std::numeric_limits<float>::max());
@@ -759,10 +764,10 @@ void load_scene(
                 glm::vec4 tangent_sign = glm::vec4(0.0);
                 if (has_tangents) {
                     tangent_sign = {
-                        tangents[i * 3 + 0],
-                        tangents[i * 3 + 1],
-                        tangents[i * 3 + 2],
-                        tangents[i * 3 + 3],
+                        tangents[i * 4 + 0],
+                        tangents[i * 4 + 1],
+                        tangents[i * 4 + 2],
+                        tangents[i * 4 + 3],
                     };
                 }
 
