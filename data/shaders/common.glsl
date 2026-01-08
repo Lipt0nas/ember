@@ -133,6 +133,8 @@ struct LightingUBO {
 
     vec4 sky_hemisphere_top;
     vec4 sky_hemisphere_bottom;
+
+    vec4 ddgi_probe_ray_rotation;
 };
 
 struct Meshlet {
@@ -224,6 +226,10 @@ vec2 material_get_roughness_metallic(const Material material, sampler2D material
     // roughness_metallic = vec2(1.0, 0.0);
 
     return roughness_metallic;
+}
+
+vec4 conjugate_quat(vec4 q) {
+    return vec4(-q.xyz, q.w);
 }
 
 vec3 rotate_quat(vec3 v, vec4 q) {

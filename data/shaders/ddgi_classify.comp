@@ -1,0 +1,94 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_ray_query: require
+
+#include "common.glsl"
+#include "ddgi_common.glsl"
+
+layout(local_size_x = 32) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer RayBuffer {
+    DDGIRay rays[];
+} ray_buffer;
+
+layout(set = 0, binding = 1, std430) buffer ProbeBuffer {
+    DDGIProbe probes[];
+};
+
+layout(set = 0, binding = 2, std430) readonly uniform LightingData {
+    LightingUBO lighting;
+};
+
+void main() {
+    uint probe_index = gl_GlobalInvocationID.x;
+
+    uint probe_count = lighting.probe_counts.x * lighting.probe_counts.y * lighting.probe_counts.z;
+
+    if (probe_index >= probe_count) return;
+
+    int ray_count = DDGI_NUM_FIXED_RAYS;
+    int backface_count = 0;
+    float distances[DDGI_NUM_FIXED_RAYS];
+
+    for (int i = 0; i < ray_count; i++) {
+        uint global_ray_idx = probe_index * lighting.rays_per_probe + i;
+
+        distances[i] = ray_buffer.rays[global_ray_idx].ray_data.w;
+        backface_count += (distances[i] < 0.0) ? 1 : 0;
+    }
+
+    if (float(backface_count) / float(DDGI_NUM_FIXED_RAYS) > DDGI_PROBE_FIXED_RAY_BACKFACE_THRESHOLD) {
+        probes[probe_index].state = 0;
+        return;
+    }
+
+    vec3 probe_position = ddgi_get_probe_position(int(probe_index), lighting.probe_counts, lighting.grid_origin, vec3(lighting.probe_spacing), probes[probe_index].offset);
+
+    for (int i = 0; i < ray_count; i++) {
+        uint global_ray_idx = probe_index * lighting.rays_per_probe + i;
+
+        if (distances[i] < 0) continue;
+
+        vec3 direction = ddgi_get_probe_ray_direction(i, int(lighting.rays_per_probe), lighting.ddgi_probe_ray_rotation);
+
+        vec3 x_norm = vec3(direction.x / max(abs(direction.x), 0.000001), 0.0, 0.0);
+        vec3 y_norm = vec3(0.0, direction.y / max(abs(direction.y), 0.000001), 0.0);
+        vec3 z_norm = vec3(0.0, 0.0, direction.z / max(abs(direction.z), 0.000001));
+
+        vec3 p_x = probe_position + (lighting.probe_spacing * x_norm);
+        vec3 p_y = probe_position + (lighting.probe_spacing * y_norm);
+        vec3 p_z = probe_position + (lighting.probe_spacing * z_norm);
+
+        vec3 plane_distances = vec3(
+                dot((p_x - probe_position), x_norm) / max(dot(direction, x_norm), 0.000001),
+                dot((p_y - probe_position), y_norm) / max(dot(direction, y_norm), 0.000001),
+                dot((p_z - probe_position), z_norm) / max(dot(direction, z_norm), 0.000001)
+            );
+
+        if (plane_distances.x == 0.0) {
+            plane_distances.x = 1e27;
+        }
+
+        if (plane_distances.y == 0.0) {
+            plane_distances.y = 1e27;
+        }
+
+        if (plane_distances.z == 0.0) {
+            plane_distances.z = 1e27;
+        }
+
+        float max_dist = min(plane_distances.x, min(plane_distances.y, plane_distances.z));
+
+        if (distances[i] <= max_dist) {
+            probes[probe_index].state = 1;
+            return;
+        }
+    }
+
+    probes[probe_index].state = 0;
+}

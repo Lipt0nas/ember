@@ -2,13 +2,11 @@
 #define DDGI_SAMPLE_GLSL
 
 vec3 sample_ddgi(LightingUBO lighting, vec3 surface_pos, vec3 surface_normal, vec3 view_dir, sampler2D ddgi_atlas, sampler2D ddgi_depth) {
-    float normal_bias = 0.2;
-    float view_bias = 0.8;
-    float axial_bias = 0.75;
+    vec3 biased_pos = surface_pos + ((surface_normal * DDGI_PROBE_NORMAL_BIAS) + (view_dir * DDGI_PROBE_VIEW_BIAS));
 
-    vec3 biased_pos = surface_pos + ((surface_normal * normal_bias + view_dir * view_bias) * axial_bias * lighting.probe_spacing * 0.2);
+    vec3 grid_shift = vec3(lighting.probe_counts - ivec3(1)) * 0.5;
+    vec3 grid_pos_float = ((biased_pos - lighting.grid_origin) / lighting.probe_spacing) + grid_shift;
 
-    vec3 grid_pos_float = (biased_pos - lighting.grid_origin) / lighting.probe_spacing;
     ivec3 base_grid_coord = ivec3(floor(grid_pos_float));
     vec3 alpha = clamp(grid_pos_float - vec3(base_grid_coord), vec3(0.0), vec3(1.0));
 
@@ -28,8 +26,7 @@ vec3 sample_ddgi(LightingUBO lighting, vec3 surface_pos, vec3 surface_normal, ve
         if (probe.state == 0 && lighting.use_probe_state == 1) {
             continue;
         }
-
-        vec3 probe_pos = lighting.grid_origin + vec3(probe_grid_coord) * lighting.probe_spacing;
+        vec3 probe_pos = ddgi_get_probe_position(probe_idx, lighting.probe_counts, lighting.grid_origin, vec3(lighting.probe_spacing), probe.offset);
 
         // Direction from surface to probe (for directional weight)
         vec3 surface_to_probe = normalize(probe_pos - surface_pos);
@@ -78,7 +75,7 @@ vec3 sample_ddgi(LightingUBO lighting, vec3 surface_pos, vec3 surface_normal, ve
         // Sample irradiance at surface normal direction
         vec3 probe_irradiance = texture(ddgi_atlas, ddgi_probe_uv(lighting.probe_counts, probe_idx, surface_normal, lighting.texels_per_probe)).rgb;
 
-        vec3 exponent = vec3(5.0 * 0.5);
+        vec3 exponent = vec3(DDGI_PROBE_IRRADIANCE_ENCODING_GAMMA * 0.5);
         probe_irradiance = pow(probe_irradiance, exponent);
 
         total_irradiance += weight * probe_irradiance;
@@ -88,8 +85,8 @@ vec3 sample_ddgi(LightingUBO lighting, vec3 surface_pos, vec3 surface_normal, ve
     if (total_weight == 0.0) return vec3(0.0);
 
     total_irradiance /= total_weight;
-    total_irradiance *= total_irradiance; // Square back to linear
-    // total_irradiance *= 2.0 * 3.14159265; // 2π for hemisphere integration
+    total_irradiance *= total_irradiance;
+    // total_irradiance *= 2.0 * 3.14159265;
 
     return total_irradiance;
 }

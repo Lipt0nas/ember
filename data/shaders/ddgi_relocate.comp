@@ -1,0 +1,102 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_ray_query: require
+#extension GL_EXT_debug_printf : require
+
+#include "common.glsl"
+#include "ddgi_common.glsl"
+
+layout(local_size_x = 32) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer RayBuffer {
+    DDGIRay rays[];
+} ray_buffer;
+
+layout(set = 0, binding = 1, std430) buffer ProbeBuffer {
+    DDGIProbe probes[];
+};
+
+layout(set = 0, binding = 2, std430) readonly uniform LightingData {
+    LightingUBO lighting;
+};
+
+void main() {
+    uint probe_index = gl_GlobalInvocationID.x;
+
+    uint probe_count = lighting.probe_counts.x * lighting.probe_counts.y * lighting.probe_counts.z;
+
+    if (probe_index >= probe_count) return;
+
+    vec3 current_offset = probes[probe_index].offset;
+
+    // debugPrintfEXT("index: %d, offset: %v3f\n", probe_index, current_offset);
+
+    int closest_backface_index = -1;
+    int closest_frontface_index = -1;
+    int farthest_frontface_index = -1;
+
+    float closest_backface_distance = 1e27;
+    float closest_frontface_distance = 1e27;
+    float farthest_frontface_distance = 0.0;
+    float backface_count = 0.0;
+
+    int ray_count = DDGI_NUM_FIXED_RAYS;
+
+    for (int i = 0; i < ray_count; i++) {
+        uint global_ray_idx = probe_index * lighting.rays_per_probe + i;
+
+        float hit_distance = ray_buffer.rays[global_ray_idx].ray_data.w;
+        if (hit_distance < 0.0) {
+            backface_count++;
+
+            hit_distance = hit_distance * -5.0;
+            if (hit_distance < closest_backface_distance) {
+                closest_backface_distance = hit_distance;
+                closest_backface_index = i;
+            }
+        } else {
+            if (hit_distance < closest_frontface_distance) {
+                closest_frontface_distance = hit_distance;
+                closest_frontface_index = i;
+            } else if (hit_distance > farthest_frontface_distance) {
+                farthest_frontface_distance = hit_distance;
+                farthest_frontface_index = i;
+            }
+        }
+    }
+
+    vec3 full_offset = vec3(1e27);
+
+    const float min_frontface_distance = DDGI_PROBE_MIN_FRONTFACE_DISTANCE;
+    if (closest_backface_index != -1 && (float(backface_count) / float(ray_count)) > DDGI_PROBE_FIXED_RAY_BACKFACE_THRESHOLD) {
+        vec3 closest_backface_direction = closest_backface_distance * normalize(ddgi_get_probe_ray_direction(closest_backface_index, int(lighting.rays_per_probe), lighting.ddgi_probe_ray_rotation));
+
+        full_offset = current_offset + closest_backface_direction * (DDGI_PROBE_DISTANCE_SCALE + 1.0);
+    } else if (closest_frontface_distance < min_frontface_distance) {
+        vec3 closest_frontface_direction = normalize(ddgi_get_probe_ray_direction(closest_frontface_index, int(lighting.rays_per_probe), lighting.ddgi_probe_ray_rotation));
+        vec3 farthest_frontface_direction = normalize(ddgi_get_probe_ray_direction(farthest_frontface_index, int(lighting.rays_per_probe), lighting.ddgi_probe_ray_rotation));
+
+        if (!(dot(farthest_frontface_direction, closest_frontface_direction) > 0.5)) {
+            farthest_frontface_direction *= min(farthest_frontface_distance, 1.0);
+
+            full_offset = current_offset + farthest_frontface_direction * DDGI_PROBE_DISTANCE_SCALE;
+        }
+    } else if (closest_frontface_distance > min_frontface_distance + DDGI_PROBE_DISTANCE_SCALE) {
+        float margin = min(closest_frontface_distance - min_frontface_distance, length(current_offset));
+        vec3 direction = normalize(-current_offset);
+
+        full_offset = current_offset + (margin * direction);
+    }
+
+    vec3 normalized_offset = full_offset / lighting.probe_spacing;
+    if (dot(normalized_offset, normalized_offset) < 0.2025) {
+        current_offset = full_offset;
+    }
+
+    probes[probe_index].offset = current_offset;
+}
