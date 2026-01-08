@@ -26,11 +26,12 @@ layout(set = 0, binding = 3, std430) readonly buffer ProbeBuffer {
 layout(push_constant, std430) uniform pc {
     mat4 combined_matrix;
     vec3 camera_pos;
+    int cull_innactive_probes;
 } push;
 
 void main() {
     // NOTE: Poor mans vertex culling, may or may not work everywhere
-    if (probes[gl_InstanceIndex].state == 0) {
+    if (probes[gl_InstanceIndex].state == 0 && push.cull_innactive_probes == 1) {
         gl_Position = vec4(0.0 / 0.0);
         return;
     }

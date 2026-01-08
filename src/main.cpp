@@ -322,6 +322,7 @@ struct GeometryPushConstants {
 struct DebugRendererConstants {
     glm::mat4 combined_matrix;
     glm::vec3 camera_pos;
+    int       cull_innactive_probes;
 };
 
 struct DebugRenderer {
@@ -6590,6 +6591,8 @@ int main(int argc, char* argv[]) {
             ImGui::DragFloat("Probe Spacing", &lighting_data.probe_spacing, 0.01, 0.1, 10.0);
             ImGui::DragFloat3("Grid Origin", &lighting_data.grid_origin.x, 0.03, -100.0, 100.0);
             ImGui::Checkbox("Visualize Probes", (bool*)&visualize_probes);
+            ImGui::SameLine();
+            ImGui::Checkbox("Cull Innactive Probes", (bool*)&debug_renderer_constants.cull_innactive_probes);
             ImGui::Checkbox("Multibounce Diffuse", (bool*)&lighting_data.multibounce);
             ImGui::Checkbox("Use Probe State", (bool*)&lighting_data.use_probe_state);
             ImGui::Checkbox("Use Bent Normals", (bool*)&lighting_data.use_bent_normals);
