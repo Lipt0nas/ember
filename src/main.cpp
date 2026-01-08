@@ -706,6 +706,7 @@ void load_scene(
             auto has_position  = primitive.attributes.count("POSITION");
             auto has_normals   = primitive.attributes.count("NORMAL");
             auto has_texcoords = primitive.attributes.count("TEXCOORD_0");
+            auto has_tangents  = primitive.attributes.count("TANGENT");
 
             if (!(has_position & has_normals & has_texcoords)) {
                 spdlog::warn("Mesh {} primitive {} is missing required attributes", m, p);
@@ -715,14 +716,17 @@ void load_scene(
             const tinygltf::Accessor& pos_accessor      = model.accessors[primitive.attributes.at("POSITION")];
             const tinygltf::Accessor& normal_accessor   = model.accessors[primitive.attributes.at("NORMAL")];
             const tinygltf::Accessor& texcoord_accessor = model.accessors[primitive.attributes.at("TEXCOORD_0")];
+            const tinygltf::Accessor& tangent_accessor  = model.accessors[primitive.attributes.at("TANGENT")];
 
             const tinygltf::BufferView& pos_view      = model.bufferViews[pos_accessor.bufferView];
             const tinygltf::BufferView& normal_view   = model.bufferViews[normal_accessor.bufferView];
             const tinygltf::BufferView& texcoord_view = model.bufferViews[texcoord_accessor.bufferView];
+            const tinygltf::BufferView& tangent_view  = model.bufferViews[tangent_accessor.bufferView];
 
             const tinygltf::Buffer& pos_buffer      = model.buffers[pos_view.buffer];
             const tinygltf::Buffer& normal_buffer   = model.buffers[normal_view.buffer];
             const tinygltf::Buffer& texcoord_buffer = model.buffers[texcoord_view.buffer];
+            const tinygltf::Buffer& tangent_buffer  = model.buffers[tangent_view.buffer];
 
             size_t vertex_count = pos_accessor.count;
 
@@ -737,6 +741,10 @@ void load_scene(
                 &texcoord_buffer.data[texcoord_view.byteOffset + texcoord_accessor.byteOffset]
             );
 
+            auto* tangents = reinterpret_cast<const float*>(
+                &tangent_buffer.data[tangent_view.byteOffset + tangent_accessor.byteOffset]
+            );
+
             glm::vec3 center     = glm::vec3(0);
             glm::vec3 bounds_min = glm::vec3(std::numeric_limits<float>::max());
             glm::vec3 bounds_max = glm::vec3(std::numeric_limits<float>::lowest());
@@ -747,6 +755,16 @@ void load_scene(
                     positions[i * 3 + 1],
                     positions[i * 3 + 2],
                 };
+
+                glm::vec4 tangent_sign = glm::vec4(0.0);
+                if (has_tangents) {
+                    tangent_sign = {
+                        tangents[i * 3 + 0],
+                        tangents[i * 3 + 1],
+                        tangents[i * 3 + 2],
+                        tangents[i * 3 + 3],
+                    };
+                }
 
                 center += position;
                 bounds_min = glm::min(bounds_min, position);
@@ -761,10 +779,12 @@ void load_scene(
                                 normals[i * 3 + 1],
                                 normals[i * 3 + 2],
                             },
-                        .uv = {
-                            texcoords[i * 2 + 0],
-                            texcoords[i * 2 + 1],
-                        },
+                        .uv =
+                            {
+                                texcoords[i * 2 + 0],
+                                texcoords[i * 2 + 1],
+                            },
+                        .tangent_sign = tangent_sign,
                     }
                 );
             }
@@ -815,7 +835,9 @@ void load_scene(
                 }
             }
 
-            generate_tangents(vertices, indices);
+            if (!has_tangents) {
+                generate_tangents(vertices, indices);
+            }
 
             JPH::TriangleList triangles;
             for (size_t i = 0; i < indices.size(); i += 3) {
