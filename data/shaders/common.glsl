@@ -309,10 +309,13 @@ vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisph
     return mix(hemisphere_bottom.rgb, hemisphere_top.rgb, sky);
 }
 
+vec2 pack_normals(vec3 normals) {
+    return oct_encode(normals);
+}
+
 // Assuming normals are stored in the xy and channel
 vec3 unpack_normals(vec4 data) {
-    // return oct_decode(data.xy);
-    return data.xyz;
+    return oct_decode(data.xy);
 }
 
 uint XEGTAO_pack(vec4 unpacked) {
