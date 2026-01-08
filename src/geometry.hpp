@@ -51,9 +51,11 @@ struct Vertex {
     glm::vec3 position;
     glm::vec3 normal;
     glm::vec2 uv;
+    glm::vec4 tangent_sign;
 
     bool operator==(const Vertex& other) const {
-        return position == other.position && normal == other.normal && uv == other.uv;
+        return position == other.position && normal == other.normal && uv == other.uv &&
+               tangent_sign == other.tangent_sign;
     }
 };
 
@@ -70,12 +72,13 @@ struct MeshletBounds {
 
 struct DebugVertex {
     glm::vec3 position;
-    glm::vec4 color;
+    glm::vec3 normal;
+    glm::vec2 uv;
 };
 
 class IcosphereGenerator {
 private:
-    std::vector<Vertex>                               vertices;
+    std::vector<DebugVertex>                          vertices;
     std::vector<uint32_t>                             indices;
     std::map<std::pair<uint32_t, uint32_t>, uint32_t> midpoint_cache;
 
@@ -184,7 +187,7 @@ public:
         }
     }
 
-    const std::vector<Vertex>& get_vertices() const {
+    const std::vector<DebugVertex>& get_vertices() const {
         return vertices;
     }
 

@@ -5,11 +5,12 @@
 
 layout(location = 0) out vec3 out_normal;
 layout(location = 1) out vec2 out_uv;
-layout(location = 2) out vec3 out_world_pos;
-layout(location = 3) out vec4 out_clip_pos;
-layout(location = 4) out vec4 out_last_clip_pos;
-layout(location = 5) flat out uint out_material_index;
-layout(location = 6) flat out uint out_draw_index;
+layout(location = 2) out vec4 out_tangent_sign;
+layout(location = 3) out vec3 out_world_pos;
+layout(location = 4) out vec4 out_clip_pos;
+layout(location = 5) out vec4 out_last_clip_pos;
+layout(location = 6) flat out uint out_material_index;
+layout(location = 7) flat out uint out_draw_index;
 
 #include "common.glsl"
 
@@ -65,6 +66,7 @@ void main() {
     gl_Position = clip_pos;
     out_normal = rotate_quat(vertex.normal, draw.rotation);
     out_uv = vertex.uv;
+    out_tangent_sign = vec4(rotate_quat(vertex.tangent_sign.xyz, draw.rotation), vertex.tangent_sign.w);
     out_world_pos = world_pos.xyz;
     out_clip_pos = clip_pos;
     out_last_clip_pos = last_clip_pos;
