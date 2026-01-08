@@ -30,27 +30,27 @@ layout(set = 0, binding = 4, rgba16f) uniform image2D irradiance_history;
 layout(set = 0, binding = 5, rg16f) uniform image2D out_depth;
 layout(set = 0, binding = 6, rg16f) uniform image2D depth_history;
 
-shared vec4 shared_ray_hit_data[256];
-shared vec3 shared_ray_dir[256];
+shared vec4 shared_ray_hit_data[DDGI_MAX_RAY_COUNT];
+shared vec3 shared_ray_dir[DDGI_MAX_RAY_COUNT];
 
 void main() {
     uint probe_idx = gl_WorkGroupID.y * (gl_NumWorkGroups.x) + gl_WorkGroupID.x;
 
-    uint tid = gl_LocalInvocationIndex;
+    if (probes[probe_idx].state == 0) {
+        return;
+    }
 
+    uint tid = gl_LocalInvocationIndex;
     if (tid < lighting.rays_per_probe) {
         uint global_ray_idx = probe_idx * lighting.rays_per_probe + tid;
 
         shared_ray_hit_data[tid] = ray_buffer.rays[global_ray_idx].ray_data;
-        shared_ray_dir[tid] = ddgi_generate_ray_direction(tid, lighting.rays_per_probe, probe_idx, lighting.frame_index);
+        shared_ray_dir[tid] = ddgi_get_probe_ray_direction(int(tid), int(lighting.rays_per_probe), lighting.ddgi_probe_ray_rotation);
     }
-
     barrier();
 
     int probe_x = int(probe_idx % (lighting.probe_counts.x * lighting.probe_counts.y));
     int probe_y = int(probe_idx / (lighting.probe_counts.x * lighting.probe_counts.y));
-
-    const float base_hysteresis = 0.97;
 
     if (gl_LocalInvocationID.x < lighting.texels_per_probe && gl_LocalInvocationID.y < lighting.texels_per_probe) {
         ivec2 texel_loc = ivec2(gl_LocalInvocationID.xy);
@@ -63,24 +63,21 @@ void main() {
 
         ivec2 global_pos = ivec2(probe_x * (lighting.texels_per_probe + 2) + 1, probe_y * (lighting.texels_per_probe + 2) + 1) + texel_loc;
         vec3 prev_color = imageLoad(irradiance_history, global_pos).rgb;
-        float hysteresis = base_hysteresis;
+        float hysteresis = DDGI_PROBE_HYSTERESIS;
         if (dot(prev_color, prev_color) == 0) hysteresis = 0.0;
 
-        probes[probe_idx].state = 1;
-        int backface_hits = 0;
-        for (int r = 0; r < lighting.rays_per_probe; r++) {
+        uint backface_count = 0;
+        uint max_backfaces = uint(float(lighting.rays_per_probe - DDGI_NUM_FIXED_RAYS) * DDGI_PROBE_RANDOM_RAY_BACKFACE_THRESHOLD);
+
+        for (int r = DDGI_NUM_FIXED_RAYS; r < lighting.rays_per_probe; r++) {
             vec3 ray_dir = shared_ray_dir[r];
             vec4 ray_data = shared_ray_hit_data[r];
 
             if (ray_data.w < 0.0) {
-                backface_hits++;
-
-                if (backface_hits >= lighting.rays_per_probe * 0.2) {
-                    probes[probe_idx].state = 0;
-
+                backface_count++;
+                if (backface_count >= max_backfaces) {
                     return;
                 }
-
                 continue;
             }
 
@@ -93,17 +90,15 @@ void main() {
         if (total_weight > 0.00001)
             result_color /= total_weight;
 
-        result_color = pow(result_color, vec3(1.0 / 5.0));
+        result_color = pow(result_color, vec3(1.0 / DDGI_PROBE_IRRADIANCE_ENCODING_GAMMA));
 
         vec3 delta = (result_color - prev_color);
 
-        const float irradiance_threshold = 0.25;
-        if (component_max(prev_color - result_color) > irradiance_threshold) {
+        if (component_max(prev_color - result_color) > DDGI_PROBE_IRRADIANCE_THRESHOLD) {
             hysteresis = max(0.0, hysteresis - 0.75);
         }
 
-        const float brightness_threshold = 1.0;
-        if (linear_rgb_to_luminance(delta) > brightness_threshold) {
+        if (linear_rgb_to_luminance(delta) > DDGI_PROBE_BRIGTHNESS_THRESHOLD) {
             delta *= 0.25;
         }
 
@@ -128,15 +123,15 @@ void main() {
         float total_weight = 0.0;
 
         ivec2 global_pos = ivec2(probe_x * (lighting.depth_texels_per_probe + 2) + 1, probe_y * (lighting.depth_texels_per_probe + 2) + 1) + texel_loc;
-        float hysteresis = base_hysteresis;
+        float hysteresis = DDGI_PROBE_HYSTERESIS;
         vec2 prev_dist = imageLoad(depth_history, global_pos).rg;
         if (dot(prev_dist, prev_dist) == 0) hysteresis = 0.0;
 
-        for (int r = 0; r < lighting.rays_per_probe; r++) {
+        for (int r = DDGI_NUM_FIXED_RAYS; r < lighting.rays_per_probe; r++) {
             vec3 ray_dir = shared_ray_dir[r];
-            float ray_dist = min(shared_ray_hit_data[r].w, lighting.probe_spacing * 1.5);
+            float ray_dist = min(abs(shared_ray_hit_data[r].w), lighting.probe_spacing * 1.5);
 
-            float weight = pow(max(0.0, dot(probe_dir, ray_dir)), 50.0);
+            float weight = pow(max(0.0, dot(probe_dir, ray_dir)), DDGI_PROBE_DISTANCE_EXPONENT);
 
             result_dist += ray_dist * weight;
             result_dist_sq += (ray_dist * ray_dist) * weight;

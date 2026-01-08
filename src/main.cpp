@@ -146,6 +146,49 @@ void draw_pass_profiler(const std::vector<std::pair<std::string, PassTiming>>& p
     }
 }
 
+static std::uniform_real_distribution<float> rng_distribution(0.f, 1.f);
+static std::mt19937                          rng;
+
+float get_random_float() {
+    return rng_distribution(rng);
+}
+
+glm::quat ddgi_random_rotation() {
+    // This approach is based on James Arvo's implementation from Graphics Gems 3 (pg 117-120).
+    // Also available at: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.53.1357&rep=rep1&type=pdf
+
+    float u1   = glm::two_pi<float>() * get_random_float();
+    float cos1 = glm::cos(u1);
+    float sin1 = glm::sin(u1);
+
+    float u2   = glm::two_pi<float>() * get_random_float();
+    float cos2 = glm::cos(u2);
+    float sin2 = glm::sin(u2);
+
+    float u3  = get_random_float();
+    float sq3 = 2.f * glm::sqrt(u3 * (1.f - u3));
+
+    float s2 = 2.f * u3 * sin2 * sin2 - 1.f;
+    float c2 = 2.f * u3 * cos2 * cos2 - 1.f;
+    float sc = 2.f * u3 * sin2 * cos2;
+
+    float _11 = cos1 * c2 - sin1 * sc;
+    float _12 = sin1 * c2 + cos1 * sc;
+    float _13 = sq3 * cos2;
+
+    float _21 = cos1 * sc - sin1 * s2;
+    float _22 = sin1 * sc + cos1 * s2;
+    float _23 = sq3 * sin2;
+
+    float _31 = cos1 * (sq3 * cos2) - sin1 * (sq3 * sin2);
+    float _32 = sin1 * (sq3 * cos2) + cos1 * (sq3 * sin2);
+    float _33 = 1.f - 2.f * u3;
+
+    glm::mat3 transform(glm::vec3(_11, _21, _31), glm::vec3(_12, _22, _32), glm::vec3(_13, _23, _33));
+
+    return glm::quat_cast(transform);
+}
+
 struct MeshIndirectDrawCommand {
     uint32_t group_count_x;
     uint32_t group_count_y;
@@ -179,8 +222,9 @@ struct alignas(16) SceneUBO {
     glm::mat4 last_frame_view_proj;
 };
 
-const int ray_per_probe_values[] = {16, 32, 64, 128, 256};
-#define MAX_RAYS_PER_PROBE 256
+#define DDGI_NUM_FIXED_RAYS 32
+#define MAX_RAYS_PER_PROBE  256
+const int ray_per_probe_values[] = {32, 64, 96, 128, 160, 192, 224, MAX_RAYS_PER_PROBE};
 struct alignas(16) LightingUBO {
     glm::vec4 light_direction;
     glm::vec4 light_color;
@@ -207,6 +251,8 @@ struct alignas(16) LightingUBO {
 
     glm::vec4 sky_hemisphere_top;
     glm::vec4 sky_hemisphere_bottom;
+
+    glm::quat ddgi_probe_ray_rotation;
 };
 
 struct ShadowBlurConstants {
@@ -289,7 +335,7 @@ struct DebugRenderer {
 
     uint32_t                     index_count;
     uint32_t                     instance_count;
-    std::vector<glm::vec3>       instances;
+    std::vector<glm::vec4>       instances;
     std::vector<VkDescriptorSet> descriptor_sets;
 };
 
@@ -302,7 +348,9 @@ void debug_renderer_upload_data(DebugRenderer& renderer, VmaAllocator vma_alloca
     size_t ptr_offset = (renderer.instance_buffer.size / renderer.frames_in_flight) * frame_index;
     VK_CHECK(vmaMapMemory(vma_allocator, renderer.instance_buffer.allocation, &ptr));
     memcpy(
-        reinterpret_cast<char*>(ptr) + ptr_offset, renderer.instances.data(), sizeof(Vertex) * renderer.instance_count
+        reinterpret_cast<char*>(ptr) + ptr_offset,
+        renderer.instances.data(),
+        sizeof(glm::vec4) * renderer.instance_count
     );
     vmaUnmapMemory(vma_allocator, renderer.instance_buffer.allocation);
     VK_CHECK(vmaFlushAllocation(
@@ -313,7 +361,7 @@ void debug_renderer_upload_data(DebugRenderer& renderer, VmaAllocator vma_alloca
 void debug_renderer_draw_sphere(
     DebugRenderer& renderer, const glm::vec3& center, float radius, const glm::vec4& color
 ) {
-    renderer.instances[renderer.instance_count++] = center;
+    renderer.instances[renderer.instance_count++] = glm::vec4(center, radius);
 }
 
 DebugRenderer create_debug_renderer(
@@ -329,7 +377,7 @@ DebugRenderer create_debug_renderer(
     VkDescriptorPool descriptor_pool
 ) {
     IcosphereGenerator generator;
-    generator.generate(0.45, 2);
+    generator.generate(0.45, 3);
 
     auto max_instances = 2048 * 5;
 
@@ -417,7 +465,7 @@ DebugRenderer create_debug_renderer(
 
     std::vector<VkDescriptorSet> descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, pipeline);
 
-    std::vector<glm::vec3> instances;
+    std::vector<glm::vec4> instances;
     instances.resize(max_instances);
 
     return DebugRenderer{
@@ -1079,6 +1127,9 @@ void populate_materials(
 }
 
 int main(int argc, char* argv[]) {
+    std::random_device rd;
+    rng.seed((int)rd());
+
     spdlog::set_level(spdlog::level::info);
     spdlog::info("Starting ember");
 
@@ -1491,11 +1542,11 @@ int main(int argc, char* argv[]) {
         gbuffer_id,
     };
 
-    bool        visualize_probes = false;
+    bool        visualize_probes = true;
     LightingUBO lighting_data    = {
            .light_direction  = glm::vec4(-0.2f, -0.7f, -1.0f, 0.0f),
            .light_color      = glm::vec4(1.0, 1.0, 1.0, 10.0f),
-           .grid_origin      = {-15, -15, -15},
+           .grid_origin      = {0, 15, 0},
            .probe_spacing    = 5.0f,
            .probe_counts     = {16, 8, 16},
            .texels_per_probe = 6,
@@ -1511,13 +1562,9 @@ int main(int argc, char* argv[]) {
     lighting_data.sky_hemisphere_top       = {0.3, 0.5, 0.8, 1.0};
     lighting_data.sky_hemisphere_bottom    = {0.6, 0.7, 0.9, 1.0};
 
-    lighting_data.depth_texels_per_probe = 14;
-    lighting_data.rays_per_probe         = 256;
-
-    lighting_data.grid_origin = {
-        (-lighting_data.probe_spacing * 0.5f) *
-        glm::vec3(lighting_data.probe_counts.x, 1.0, lighting_data.probe_counts.z)
-    };
+    lighting_data.depth_texels_per_probe  = 14;
+    lighting_data.rays_per_probe          = MAX_RAYS_PER_PROBE;
+    lighting_data.ddgi_probe_ray_rotation = ddgi_random_rotation();
 
     int probes_x = lighting_data.probe_counts.x * lighting_data.probe_counts.y;
     int probes_y = lighting_data.probe_counts.z;
@@ -4515,6 +4562,166 @@ int main(int argc, char* argv[]) {
                                      );
                                  });
 
+    Pipeline ddgi_probe_relocate_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ddgi_relocate.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings = {
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                        .write_info = DescriptorInfo(ddgi_ray_buffer.handle, 0, ddgi_ray_buffer.size / FRAMES_IN_FLIGHT)
+                    },
+                    DescriptorBinding{
+                        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                        .write_info =
+                            DescriptorInfo(ddgi_probe_buffer.handle, 0, ddgi_probe_buffer.size / FRAMES_IN_FLIGHT)
+                    },
+                    DescriptorBinding{
+                        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                        .write_info =
+                            DescriptorInfo(lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT)
+                    },
+                },
+            },
+        }
+    );
+    std::vector<VkDescriptorSet> ddgi_probe_relocate_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, ddgi_probe_relocate_pipeline);
+
+    auto& ddgi_probe_relocate_pass =
+        framegraph.add_pass("ddgi probe relocate")
+            .reads_buffer_dynamic(
+                ddgi_ray_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                ddgi_ray_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                ddgi_probe_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                ddgi_probe_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .writes_buffer_dynamic(
+                ddgi_probe_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                ddgi_probe_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                lighting_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
+                ZoneScopedN("DDGI Pass");
+
+                const Pipeline& pipeline = ddgi_probe_relocate_pipeline;
+
+                std::array<uint32_t, 3> offsets = {
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_PROBE_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]
+                };
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    ddgi_probe_relocate_descriptor_sets.size(),
+                    ddgi_probe_relocate_descriptor_sets.data(),
+                    offsets.size(),
+                    offsets.data()
+                );
+
+                uint32_t probe_count =
+                    lighting_data.probe_counts.x * lighting_data.probe_counts.y * lighting_data.probe_counts.z;
+
+                vkCmdDispatch(command_buffer, (probe_count + 31) / 32, 1, 1);
+            });
+
+    Pipeline ddgi_probe_classify_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ddgi_classify.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings = {
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                        .write_info = DescriptorInfo(ddgi_ray_buffer.handle, 0, ddgi_ray_buffer.size / FRAMES_IN_FLIGHT)
+                    },
+                    DescriptorBinding{
+                        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                        .write_info =
+                            DescriptorInfo(ddgi_probe_buffer.handle, 0, ddgi_probe_buffer.size / FRAMES_IN_FLIGHT)
+                    },
+                    DescriptorBinding{
+                        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                        .write_info =
+                            DescriptorInfo(lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT)
+                    },
+                },
+            },
+        }
+    );
+    std::vector<VkDescriptorSet> ddgi_probe_classify_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, ddgi_probe_classify_pipeline);
+
+    auto& ddgi_probe_classify_pass =
+        framegraph.add_pass("ddgi probe classify")
+            .reads_buffer_dynamic(
+                ddgi_ray_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                ddgi_ray_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .writes_buffer_dynamic(
+                ddgi_probe_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                ddgi_probe_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                lighting_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
+                ZoneScopedN("DDGI Pass");
+
+                const Pipeline& pipeline = ddgi_probe_classify_pipeline;
+
+                std::array<uint32_t, 3> offsets = {
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_PROBE_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]
+                };
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    ddgi_probe_classify_descriptor_sets.size(),
+                    ddgi_probe_classify_descriptor_sets.data(),
+                    offsets.size(),
+                    offsets.data()
+                );
+
+                uint32_t probe_count =
+                    lighting_data.probe_counts.x * lighting_data.probe_counts.y * lighting_data.probe_counts.z;
+
+                vkCmdDispatch(command_buffer, (probe_count + 31) / 32, 1, 1);
+            });
+
     Pipeline rt_reflection_pipeline = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/rt_reflection.comp.spv"),
@@ -4561,6 +4768,11 @@ int main(int argc, char* argv[]) {
                             .write_info = DescriptorInfo(
                                 linear_sampler, blue_noise_texure.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
+                        },
+                        DescriptorBinding{
+                            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info =
+                                DescriptorInfo(linear_sampler, brdf_lut.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                         },
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
@@ -5647,15 +5859,21 @@ int main(int argc, char* argv[]) {
             )
             .reads_buffer_dynamic(
                 debug_renderer.instance_buffer,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
                 VK_ACCESS_2_SHADER_READ_BIT,
                 debug_renderer.instance_buffer.size / debug_renderer.frames_in_flight
             )
             .reads_buffer_dynamic(
                 lighting_ubo_buffer,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_UNIFORM_READ_BIT,
                 lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                ddgi_probe_buffer,
+                VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                ddgi_probe_buffer.size / FRAMES_IN_FLIGHT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Debug Pass");
@@ -6357,7 +6575,8 @@ int main(int argc, char* argv[]) {
         xegtao_constants.camera_near_far = {camera.near_plane, 10000.0f};
 
         lighting_data.frame_index += 1;
-        lighting_data.camera_pos = camera.position;
+        lighting_data.camera_pos              = camera.position;
+        lighting_data.ddgi_probe_ray_rotation = ddgi_random_rotation();
 
         SceneUBO scene_ubo        = {};
         scene_ubo.proj            = camera.projection_matrix;
@@ -6417,16 +6636,26 @@ int main(int argc, char* argv[]) {
         debug_renderer_start_frame(debug_renderer, frame_index);
 
         if (visualize_probes) {
-            for (int x = 0; x < lighting_data.probe_counts.x; x++) {
-                for (int y = 0; y < lighting_data.probe_counts.y; y++) {
-                    for (int z = 0; z < lighting_data.probe_counts.z; z++) {
-                        glm::vec3 probe_pos = lighting_data.grid_origin + glm::vec3(
-                                                                              x * lighting_data.probe_spacing,
-                                                                              y * lighting_data.probe_spacing,
-                                                                              z * lighting_data.probe_spacing
-                                                                          );
+            glm::vec3 grid_shift =
+                glm::vec3(
+                    lighting_data.probe_counts.x - 1, lighting_data.probe_counts.y - 1, lighting_data.probe_counts.z - 1
+                ) *
+                lighting_data.probe_spacing * 0.5f;
 
-                        debug_renderer_draw_sphere(debug_renderer, probe_pos, 1.0, {1, 1, 0, 1});
+            for (int z = 0; z < lighting_data.probe_counts.z; z++) {
+                for (int y = 0; y < lighting_data.probe_counts.y; y++) {
+                    for (int x = 0; x < lighting_data.probe_counts.x; x++) {
+                        glm::vec3 probe_grid_pos = glm::vec3(
+                            x * lighting_data.probe_spacing,
+                            y * lighting_data.probe_spacing,
+                            z * lighting_data.probe_spacing
+                        );
+
+                        glm::vec3 probe_pos = lighting_data.grid_origin + probe_grid_pos - grid_shift;
+
+                        debug_renderer_draw_sphere(
+                            debug_renderer, probe_pos, lighting_data.probe_spacing / 20.0f, {1, 1, 1, 1}
+                        );
                     }
                 }
             }
@@ -6645,12 +6874,12 @@ int main(int argc, char* argv[]) {
             indirect_command_buffer.size / FRAMES_IN_FLIGHT
         );
 
+        // NOTE: Not buffering rays and probe data makes the relocation more stable, needs more investigation
         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)] =
             (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)] =
             (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)] =
-            (ddgi_ray_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)] = 0;
         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)] =
             (lighting_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)] =
@@ -6659,6 +6888,7 @@ int main(int argc, char* argv[]) {
             (material_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)] =
             (drawcall_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_PROBE_BUFFER)] = 0;
 
         framegraph.execute(command_buffer, frame_index);
 
@@ -7026,6 +7256,8 @@ int main(int argc, char* argv[]) {
     destroy_pipeline(device, ddgi_ray_pipeline);
     destroy_pipeline(device, ddgi_ray_conv_pipeline);
     destroy_pipeline(device, ddgi_border_pipeline);
+    destroy_pipeline(device, ddgi_probe_classify_pipeline);
+    destroy_pipeline(device, ddgi_probe_relocate_pipeline);
     destroy_pipeline(device, smaa_edge_pipeline);
     destroy_pipeline(device, smaa_blend_pipeline);
     destroy_pipeline(device, smaa_weights_pipeline);

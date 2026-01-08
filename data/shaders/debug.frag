@@ -9,6 +9,7 @@
 
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec3 in_normal;
+layout(location = 2) in flat int in_probe_index;
 
 layout(location = 0) out vec4 out_color;
 
@@ -31,12 +32,34 @@ layout(push_constant, std430) uniform pc {
 #include "ddgi_sample.glsl"
 
 void main() {
-    vec3 V = normalize(push.camera_pos - in_pos);
-    vec3 irradiance = sample_ddgi(lighting, in_pos, in_normal, V, ddgi_irradiance, ddgi_depth);
+    int probe_count = lighting.probe_counts.x * lighting.probe_counts.y * lighting.probe_counts.z;
 
-    irradiance.x = GranTurismoTonemapper(irradiance.x);
-    irradiance.y = GranTurismoTonemapper(irradiance.y);
-    irradiance.z = GranTurismoTonemapper(irradiance.z);
+    if (in_probe_index < probe_count) {
+        DDGIProbe probe = probes[in_probe_index];
 
-    out_color = vec4(irradiance, 1.0);
+        vec3 irradiance = vec3(0.0);
+        bool valid_probe = probe.state == 1;
+
+        if (lighting.use_probe_state == 0) {
+            valid_probe = true;
+        }
+
+        if (valid_probe) {
+            irradiance = texture(ddgi_irradiance, ddgi_probe_uv(lighting.probe_counts, in_probe_index, normalize(in_normal), lighting.texels_per_probe)).rgb;
+
+            vec3 exponent = vec3(5.0 * 0.5);
+            irradiance = pow(irradiance, exponent);
+            irradiance *= irradiance;
+
+            irradiance.x = GranTurismoTonemapper(irradiance.x);
+            irradiance.y = GranTurismoTonemapper(irradiance.y);
+            irradiance.z = GranTurismoTonemapper(irradiance.z);
+        } else {
+            irradiance = vec3(1.0, 0.0, 0.0);
+        }
+
+        out_color = vec4(irradiance, 1.0);
+    } else {
+        out_color = vec4(1.0, 0.0, 0.0, 0.0);
+    }
 }

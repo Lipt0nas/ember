@@ -3,6 +3,22 @@
 
 #include "common.glsl"
 
+#define DDGI_MAX_RAY_COUNT 256
+#define DDGI_NUM_FIXED_RAYS 32
+
+#define DDGI_PROBE_HYSTERESIS 0.97
+#define DDGI_PROBE_DISTANCE_EXPONENT 50.0
+#define DDGI_PROBE_IRRADIANCE_ENCODING_GAMMA 5.0
+#define DDGI_PROBE_IRRADIANCE_THRESHOLD 0.25
+#define DDGI_PROBE_BRIGTHNESS_THRESHOLD 0.1
+#define DDGI_PROBE_RANDOM_RAY_BACKFACE_THRESHOLD 0.1
+#define DDGI_PROBE_FIXED_RAY_BACKFACE_THRESHOLD 0.25
+
+#define DDGI_PROBE_VIEW_BIAS 0.8
+#define DDGI_PROBE_NORMAL_BIAS 0.2
+#define DDGI_PROBE_MIN_FRONTFACE_DISTANCE 1.0
+#define DDGI_PROBE_DISTANCE_SCALE 1.0
+
 struct DDGIRay {
     vec4 ray_data; // xyz - irradiance, w - distance
 };
@@ -12,48 +28,41 @@ struct DDGIProbe {
     int state;
 };
 
-vec3 ddgi_get_probe_position(int index, ivec3 grid_dims, vec3 origin, vec3 spacing) {
+vec3 ddgi_get_probe_position(int index, ivec3 grid_dims, vec3 origin, vec3 spacing, vec3 probe_offset) {
     ivec3 pos;
     pos.x = index % grid_dims.x;
     pos.y = (index / grid_dims.x) % grid_dims.y;
     pos.z = index / (grid_dims.x * grid_dims.y);
 
-    return origin + vec3(pos) * spacing;
+    vec3 probe_grid_position = vec3(pos) * spacing;
+
+    vec3 grid_shift = (spacing * vec3(grid_dims - ivec3(1))) * 0.5;
+    vec3 probe_world_position = probe_grid_position - grid_shift;
+
+    return origin + probe_world_position + probe_offset;
 }
 
-mat3 ddgi_random_rotation(uint probe_index, uint frame) {
-    uint hash = probe_index * 7919u + frame * 2137u;
+vec3 spherical_fibonacci(float sample_index, float num_samples) {
+    const float b = (sqrt(5.0) * 0.5 + 0.5) - 1.0;
+    float phi = (PI * 2) * fract(sample_index * b);
+    float cos_theta = 1.0 - (2.0 * sample_index + 1.0) * (1.0 / num_samples);
+    float sin_theta = sqrt(clamp(1.0 - (cos_theta * cos_theta), 0.0, 1.0));
 
-    float angle_y = float(hash & 0xFFFFu) / 65535.0 * 2.0 * 3.14159265;
-    float angle_x = float((hash >> 16) & 0xFFFFu) / 65535.0 * 2.0 * 3.14159265;
-
-    float cy = cos(angle_y), sy = sin(angle_y);
-    float cx = cos(angle_x), sx = sin(angle_x);
-
-    return transpose(mat3(
-            cy, sy * sx, sy * cx,
-            0, cx, -sx,
-            -sy, cy * sx, cy * cx
-        ));
+    return vec3((cos(phi) * sin_theta), (sin(phi) * sin_theta), cos_theta);
 }
 
-vec3 ddgi_generate_ray_direction(uint ray_index, uint total_rays, uint probe_index, uint frame) {
-    float golden_angle = 2.39996322972865;
+vec3 ddgi_get_probe_ray_direction(int ray_index, int ray_count, vec4 random_rotation) {
+    bool is_fixed_ray = (ray_index < DDGI_NUM_FIXED_RAYS);
+    int sample_index = is_fixed_ray ? ray_index : (ray_index - DDGI_NUM_FIXED_RAYS);
+    int num_rays = is_fixed_ray ? DDGI_NUM_FIXED_RAYS : (ray_count - DDGI_NUM_FIXED_RAYS);
 
-    float z = 1.0 - 2.0 * (float(ray_index) + 0.5) / float(total_rays);
+    vec3 direction = spherical_fibonacci(sample_index, num_rays);
 
-    float radius = sqrt(1.0 - z * z);
+    if (is_fixed_ray) {
+        return normalize(direction);
+    }
 
-    float phi = float(ray_index) * golden_angle;
-
-    vec3 base_dir = vec3(
-            radius * cos(phi),
-            radius * sin(phi),
-            z
-        );
-
-    mat3 rotation = ddgi_random_rotation(probe_index, frame);
-    return rotation * base_dir;
+    return normalize(rotate_quat(direction, conjugate_quat(random_rotation)));
 }
 
 vec2 ddgi_probe_uv(ivec3 probe_counts, int probe_index, vec3 dir, int texel_count) {

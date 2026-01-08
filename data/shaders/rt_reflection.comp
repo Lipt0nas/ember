@@ -20,13 +20,14 @@ layout(set = 0, binding = 3) uniform sampler2D depth_texture;
 layout(set = 0, binding = 4) uniform sampler2D ddgi_atlas;
 layout(set = 0, binding = 5) uniform sampler2D ddgi_depth;
 layout(set = 0, binding = 6) uniform sampler2D blue_noise_texture;
-layout(set = 0, binding = 7) uniform accelerationStructureEXT top_level_as;
+layout(set = 0, binding = 7) uniform sampler2D brdf_lut;
+layout(set = 0, binding = 8) uniform accelerationStructureEXT top_level_as;
 
-layout(set = 0, binding = 8, std430) readonly uniform LightingData {
+layout(set = 0, binding = 9, std430) readonly uniform LightingData {
     LightingUBO lighting;
 };
 
-layout(set = 0, binding = 9, std430) readonly buffer ProbeBuffer {
+layout(set = 0, binding = 10, std430) readonly buffer ProbeBuffer {
     DDGIProbe probes[];
 };
 
@@ -211,6 +212,7 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         vec3 V = normalize(lighting.camera_pos.xyz - hit_pos);
         vec3 L = normalize(sun_dir);
         vec3 H = normalize(V + L);
+        vec3 R = reflect(-V, world_normal);
 
         float NoV = max(dot(world_normal, V), 1e-5);
         float NoH = clamp(dot(world_normal, H), 0.0, 1.0);
@@ -248,7 +250,12 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         vec3 indirect = sample_ddgi(lighting, hit_pos, world_normal, V, ddgi_atlas, ddgi_depth);
         vec3 diffuse_ibl = kD_ibl * (indirect * PI) * albedo.rgb;
 
-        result = vec4(Lo + diffuse_ibl + emissive, hit_distance);
+        vec2 brdf = texture(brdf_lut, vec2(NoV, roughness)).rg;
+        vec3 ddgi_specular = sample_ddgi(lighting, hit_pos, R, V, ddgi_atlas, ddgi_depth);
+        float norm = (1.0 - a);
+        vec3 specular_ibl = ddgi_specular * (F_ibl * brdf.x + brdf.y) * norm;
+
+        result = vec4(Lo + diffuse_ibl + emissive + specular_ibl, hit_distance);
     } else {
         result = vec4(get_sky_color(direction, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom), t_max);
     }
