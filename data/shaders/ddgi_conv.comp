@@ -87,9 +87,10 @@ void main() {
             total_weight += weight;
         }
 
-        if (total_weight > 0.00001)
-            result_color /= total_weight;
+        float epsilon = float(lighting.rays_per_probe - DDGI_NUM_FIXED_RAYS);
+        epsilon *= 1e-9f;
 
+        result_color.rgb *= 1.0 / (2.0 * max(total_weight, epsilon));
         result_color = pow(result_color, vec3(1.0 / DDGI_PROBE_IRRADIANCE_ENCODING_GAMMA));
 
         vec3 delta = (result_color - prev_color);

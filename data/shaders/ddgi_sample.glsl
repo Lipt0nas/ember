@@ -86,7 +86,7 @@ vec3 sample_ddgi(LightingUBO lighting, vec3 surface_pos, vec3 surface_normal, ve
 
     total_irradiance /= total_weight;
     total_irradiance *= total_irradiance;
-    // total_irradiance *= 2.0 * 3.14159265;
+    total_irradiance *= PI2;
 
     return total_irradiance;
 }
