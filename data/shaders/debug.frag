@@ -50,6 +50,7 @@ void main() {
             vec3 exponent = vec3(5.0 * 0.5);
             irradiance = pow(irradiance, exponent);
             irradiance *= irradiance;
+            irradiance *= PI;
 
             irradiance.x = GranTurismoTonemapper(irradiance.x);
             irradiance.y = GranTurismoTonemapper(irradiance.y);

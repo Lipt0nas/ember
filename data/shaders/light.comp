@@ -130,7 +130,7 @@ void main() {
 
         vec3 irradiance = sample_ddgi(lighting, world_pos,
                 lighting.use_bent_normals == 1 ? bent_normal : normal, V, ddgi_atlas, ddgi_depth);
-        vec3 diffuse_ibl = kD_ibl * irradiance * albedo;
+        vec3 diffuse_ibl = kD_ibl * irradiance * albedo / PI;
 
         vec3 R = reflect(-V, normal);
         float specular_occlusion = max(dot(normal, bent_normal), 0.0);

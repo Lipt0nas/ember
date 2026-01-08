@@ -248,7 +248,7 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         vec3 Lo = (kD * diffuse + specular) * direct_radiance * NdotL * shadow;
 
         vec3 indirect = sample_ddgi(lighting, hit_pos, world_normal, V, ddgi_atlas, ddgi_depth);
-        vec3 diffuse_ibl = kD_ibl * (indirect * PI) * albedo.rgb;
+        vec3 diffuse_ibl = kD_ibl * indirect * albedo.rgb / PI;
 
         vec2 brdf = texture(brdf_lut, vec2(NoV, roughness)).rg;
         vec3 ddgi_specular = sample_ddgi(lighting, hit_pos, R, V, ddgi_atlas, ddgi_depth);

@@ -174,7 +174,7 @@ void main() {
         vec3 pos = world_pos;
 
         vec3 indirect = sample_ddgi(lighting, pos, world_normal, V, ddgi_atlas, ddgi_depth);
-        indirect *= min(albedo.rgb, 0.97f);
+        indirect *= (min(albedo.rgb, vec3(0.90f)) / PI);
 
         if (lighting.multibounce == 0) {
             indirect *= 0.0;
