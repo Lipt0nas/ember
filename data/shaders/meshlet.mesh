@@ -13,11 +13,12 @@ layout(triangles, max_vertices = 64, max_primitives = 124) out;
 
 layout(location = 0) out vec3 out_normal[];
 layout(location = 1) out vec2 out_uv[];
-layout(location = 2) out vec3 out_world_pos[];
-layout(location = 3) out vec4 out_clip_pos[];
-layout(location = 4) out vec4 out_last_clip_pos[];
-layout(location = 5) flat out uint out_material_index[];
-layout(location = 6) flat out uint out_draw_index[];
+layout(location = 2) out vec4 out_tangent_sign[];
+layout(location = 3) out vec3 out_world_pos[];
+layout(location = 4) out vec4 out_clip_pos[];
+layout(location = 5) out vec4 out_last_clip_pos[];
+layout(location = 6) flat out uint out_material_index[];
+layout(location = 7) flat out uint out_draw_index[];
 
 taskPayloadSharedEXT MeshletTaskPayload payload;
 
@@ -106,6 +107,7 @@ void main() {
         gl_MeshVerticesEXT[thread_id].gl_Position = scene.view_proj * vec4(world_pos, 1.0);
         out_normal[thread_id] = rotate_quat(vertex.normal, draw.rotation);
         out_uv[thread_id] = vertex.uv;
+        out_tangent_sign[thread_id] = vec4(rotate_quat(vertex.tangent_sign.xyz, draw.rotation), vertex.tangent_sign.w);
         out_world_pos[thread_id] = world_pos;
         out_clip_pos[thread_id] = clip;
         out_last_clip_pos[thread_id] = last_clip;

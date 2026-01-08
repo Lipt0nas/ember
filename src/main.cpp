@@ -385,7 +385,7 @@ DebugRenderer create_debug_renderer(
     auto indices  = generator.get_indices();
 
     Buffer vertex_buffer = create_buffer(
-        sizeof(Vertex) * vertices.size(),
+        sizeof(DebugVertex) * vertices.size(),
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
@@ -394,7 +394,7 @@ DebugRenderer create_debug_renderer(
     {
         void* ptr = nullptr;
         VK_CHECK(vmaMapMemory(vma_allocator, vertex_buffer.allocation, &ptr));
-        memcpy(reinterpret_cast<char*>(ptr), vertices.data(), sizeof(Vertex) * vertices.size());
+        memcpy(reinterpret_cast<char*>(ptr), vertices.data(), sizeof(DebugVertex) * vertices.size());
         vmaUnmapMemory(vma_allocator, vertex_buffer.allocation);
         VK_CHECK(vmaFlushAllocation(vma_allocator, vertex_buffer.allocation, 0, vertex_buffer.size));
     }
@@ -487,6 +487,58 @@ void destroy_debug_renderer(const DebugRenderer& renderer, VkDevice device, VmaA
     destroy_buffer(renderer.instance_buffer, device, vma_allocator);
 
     destroy_pipeline(device, renderer.pipeline);
+}
+
+void generate_tangents(std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
+    std::vector<glm::vec3> tangents(vertices.size(), glm::vec3(0));
+    std::vector<glm::vec3> bitangents(vertices.size(), glm::vec3(0));
+
+    for (size_t i = 0; i < indices.size(); i += 3) {
+        uint32_t i0 = indices[i + 0];
+        uint32_t i1 = indices[i + 1];
+        uint32_t i2 = indices[i + 2];
+
+        const Vertex& v0 = vertices[i0];
+        const Vertex& v1 = vertices[i1];
+        const Vertex& v2 = vertices[i2];
+
+        glm::vec3 edge1     = v1.position - v0.position;
+        glm::vec3 edge2     = v2.position - v0.position;
+        glm::vec2 delta_uv1 = v1.uv - v0.uv;
+        glm::vec2 delta_uv2 = v2.uv - v0.uv;
+
+        float f = 1.0f / (delta_uv1.x * delta_uv2.y - delta_uv2.x * delta_uv1.y);
+
+        glm::vec3 tangent;
+        tangent.x = f * (delta_uv2.y * edge1.x - delta_uv1.y * edge2.x);
+        tangent.y = f * (delta_uv2.y * edge1.y - delta_uv1.y * edge2.y);
+        tangent.z = f * (delta_uv2.y * edge1.z - delta_uv1.y * edge2.z);
+
+        glm::vec3 bitangent;
+        bitangent.x = f * (-delta_uv2.x * edge1.x + delta_uv1.x * edge2.x);
+        bitangent.y = f * (-delta_uv2.x * edge1.y + delta_uv1.x * edge2.y);
+        bitangent.z = f * (-delta_uv2.x * edge1.z + delta_uv1.x * edge2.z);
+
+        tangents[i0] += tangent;
+        tangents[i1] += tangent;
+        tangents[i2] += tangent;
+
+        bitangents[i0] += bitangent;
+        bitangents[i1] += bitangent;
+        bitangents[i2] += bitangent;
+    }
+
+    for (size_t i = 0; i < vertices.size(); ++i) {
+        const glm::vec3& n = vertices[i].normal;
+        const glm::vec3& t = tangents[i];
+        const glm::vec3& b = bitangents[i];
+
+        glm::vec3 tangent = glm::normalize(t - n * glm::dot(n, t));
+
+        float handedness = (glm::dot(glm::cross(n, tangent), b) < 0.0f) ? -1.0f : 1.0f;
+
+        vertices[i].tangent_sign = glm::vec4(tangent, handedness);
+    }
 }
 
 void load_scene(
@@ -762,6 +814,8 @@ void load_scene(
                 }
                 }
             }
+
+            generate_tangents(vertices, indices);
 
             JPH::TriangleList triangles;
             for (size_t i = 0; i < indices.size(); i += 3) {
@@ -2657,7 +2711,7 @@ int main(int argc, char* argv[]) {
     }
 
     Buffer global_vertex_buffer = create_buffer(
-        1024 * 1024 * 250,
+        1024 * 1024 * 364,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             (use_hardware_rt ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT

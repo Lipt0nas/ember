@@ -6,11 +6,12 @@
 
 layout(location = 0) in vec3 in_normal;
 layout(location = 1) in vec2 in_uv;
-layout(location = 2) in vec3 in_world_pos;
-layout(location = 3) in vec4 in_clip_pos;
-layout(location = 4) in vec4 in_last_clip_pos;
-layout(location = 5) flat in int in_material_index;
-layout(location = 6) flat in int in_draw_id;
+layout(location = 2) in vec4 in_tangent_sign;
+layout(location = 3) in vec3 in_world_pos;
+layout(location = 4) in vec4 in_clip_pos;
+layout(location = 5) in vec4 in_last_clip_pos;
+layout(location = 6) flat in int in_material_index;
+layout(location = 7) flat in int in_draw_id;
 
 layout(scalar, set = 1, binding = 3) readonly buffer Materials {
     Material materials[];
@@ -23,25 +24,6 @@ layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_emission;
 layout(location = 3) out vec2 out_velocity;
 layout(location = 4) out uint out_id;
-
-vec3 world_normal(vec3 normal_map, vec3 vertex_normal, vec3 world_pos, vec2 uv) {
-    vec3 dp1 = dFdx(world_pos);
-    vec3 dp2 = dFdy(world_pos);
-    vec2 duv1 = dFdx(uv);
-    vec2 duv2 = dFdy(uv);
-
-    vec3 N = normalize(vertex_normal);
-    vec3 dp2perp = cross(dp2, N);
-    vec3 dp1perp = cross(N, dp1);
-
-    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
-    vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-
-    float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
-    mat3 TBN = mat3(T * invmax, B * invmax, N);
-
-    return normalize(TBN * normal_map);
-}
 
 void main() {
     Material material = materials[in_material_index];
@@ -58,8 +40,14 @@ void main() {
     vec2 screen = (in_clip_pos.xy / in_clip_pos.w) * 0.5 + 0.5;
     vec2 last_screen = (in_last_clip_pos.xy / in_last_clip_pos.w) * 0.5 + 0.5;
 
+    vec3 N = normalize(in_normal);
+    vec3 T = normalize(in_tangent_sign.xyz);
+    vec3 B = cross(N, T) * in_tangent_sign.w;
+
+    vec3 w_normal = normalize(normal.r * in_tangent_sign.xyz + normal.g * B + normal.b * in_normal);
+
     out_color = vec4(albedo.rgb, rougness_metallic.x);
-    out_normal = vec4(world_normal(normal, in_normal, in_world_pos, in_uv), rougness_metallic.y);
+    out_normal = vec4(w_normal, rougness_metallic.y);
     out_emission = vec4(emissive, 1.0);
     out_velocity = screen - last_screen;
     out_id = in_draw_id;
