@@ -4303,9 +4303,182 @@ int main(int argc, char* argv[]) {
                 vkCmdDispatch(command_buffer, glm::ceil((probe_count * lighting_data.rays_per_probe) / 32.0f), 1, 1);
             });
 
-    Pipeline ddgi_ray_conv_pipeline = create_compute_pipeline(
+    Pipeline ddgi_probe_blend_depth_pipeline = create_compute_pipeline(
         device,
-        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ddgi_conv.comp.spv"),
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ddgi_blend_depth.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings = {
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                        .write_info = DescriptorInfo(ddgi_ray_buffer.handle, 0, ddgi_ray_buffer.size / FRAMES_IN_FLIGHT)
+                    },
+                    DescriptorBinding{
+                        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                        .write_info =
+                            DescriptorInfo(ddgi_probe_buffer.handle, 0, ddgi_probe_buffer.size / FRAMES_IN_FLIGHT)
+                    },
+                    DescriptorBinding{
+                        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                        .write_info =
+                            DescriptorInfo(lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT)
+                    },
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        .write_info = DescriptorInfo(ddgi_depth_atlas.view, VK_IMAGE_LAYOUT_GENERAL)
+                    },
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        .write_info = DescriptorInfo(ddgi_depth_atlas_history.view, VK_IMAGE_LAYOUT_GENERAL)
+                    },
+                },
+            },
+        }
+    );
+    std::vector<VkDescriptorSet> ddgi_probe_blend_depth_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, ddgi_probe_blend_depth_pipeline);
+
+    auto& ddgi_probe_blend_depth_pass =
+        framegraph.add_pass("ddgi blend depth")
+            .reads_buffer_dynamic(
+                ddgi_ray_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                ddgi_ray_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .writes_buffer_dynamic(
+                ddgi_probe_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                ddgi_probe_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                lighting_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .writes_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .reads_storage_image(ddgi_depth_atlas_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
+                ZoneScopedN("DDGI Pass");
+
+                const Pipeline& pipeline = ddgi_probe_blend_depth_pipeline;
+
+                std::array<uint32_t, 3> offsets = {
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_PROBE_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]
+                };
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    ddgi_probe_blend_depth_descriptor_sets.size(),
+                    ddgi_probe_blend_depth_descriptor_sets.data(),
+                    offsets.size(),
+                    offsets.data()
+                );
+
+                vkCmdDispatch(
+                    command_buffer,
+                    lighting_data.probe_counts.x,
+                    lighting_data.probe_counts.y,
+                    lighting_data.probe_counts.z
+                );
+
+                image_pipeline_barrier(
+                    ddgi_depth_atlas,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT
+                );
+
+                image_pipeline_barrier(
+                    ddgi_depth_atlas_history,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT
+                );
+
+                VkImageBlit blit_region = {
+                    .srcSubresource =
+                        {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
+                    .srcOffsets =
+                        {
+                            {0, 0, 0},
+                            {
+                                static_cast<int32_t>(ddgi_depth_atlas.width),
+                                static_cast<int32_t>(ddgi_depth_atlas.height),
+                                1,
+                            },
+                        },
+                    .dstSubresource =
+                        {
+                            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                            .mipLevel       = 0,
+                            .baseArrayLayer = 0,
+                            .layerCount     = 1,
+                        },
+                    .dstOffsets = {
+                        {0, 0, 0},
+                        {
+                            static_cast<int32_t>(ddgi_depth_atlas_history.width),
+                            static_cast<int32_t>(ddgi_depth_atlas_history.height),
+                            1,
+                        },
+                    },
+                };
+
+                vkCmdBlitImage(
+                    command_buffer,
+                    ddgi_depth_atlas.handle,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    ddgi_depth_atlas_history.handle,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1,
+                    &blit_region,
+                    VK_FILTER_LINEAR
+                );
+
+                image_pipeline_barrier(
+                    ddgi_depth_atlas,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                );
+
+                image_pipeline_barrier(
+                    ddgi_depth_atlas_history,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+                );
+            });
+
+    Pipeline ddgi_probe_blend_irradiance_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ddgi_blend_irradiance.comp.spv"),
         {
             DescriptorLayout{
                 .bindings = {
@@ -4331,23 +4504,15 @@ int main(int argc, char* argv[]) {
                         .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                         .write_info = DescriptorInfo(ddgi_irradiance_history.view, VK_IMAGE_LAYOUT_GENERAL)
                     },
-                    DescriptorBinding{
-                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                        .write_info = DescriptorInfo(ddgi_depth_atlas.view, VK_IMAGE_LAYOUT_GENERAL)
-                    },
-                    DescriptorBinding{
-                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                        .write_info = DescriptorInfo(ddgi_depth_atlas_history.view, VK_IMAGE_LAYOUT_GENERAL)
-                    },
                 },
             },
         }
     );
-    std::vector<VkDescriptorSet> ddgi_ray_conv_descriptor_sets =
-        allocate_descriptor_sets(device, descriptor_pool, ddgi_ray_conv_pipeline);
+    std::vector<VkDescriptorSet> ddgi_probe_blend_irradiance_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, ddgi_probe_blend_irradiance_pipeline);
 
-    auto& ddgi_ray_conv_pass =
-        framegraph.add_pass("ddgi ray conv")
+    auto& ddgi_probe_blend_irradiance_pass =
+        framegraph.add_pass("ddgi blend irradiance")
             .reads_buffer_dynamic(
                 ddgi_ray_buffer,
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -4367,14 +4532,12 @@ int main(int argc, char* argv[]) {
                 lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
             )
             .writes_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .writes_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .reads_storage_image(ddgi_depth_atlas_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .reads_storage_image(ddgi_irradiance_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
                 ZoneScopedN("DDGI Pass");
 
-                const Pipeline& pipeline = ddgi_ray_conv_pipeline;
+                const Pipeline& pipeline = ddgi_probe_blend_irradiance_pipeline;
 
                 std::array<uint32_t, 3> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DDGI_RAY_BUFFER)],
@@ -4388,17 +4551,17 @@ int main(int argc, char* argv[]) {
                     VK_PIPELINE_BIND_POINT_COMPUTE,
                     pipeline.pipeline_layout,
                     0,
-                    ddgi_ray_conv_descriptor_sets.size(),
-                    ddgi_ray_conv_descriptor_sets.data(),
+                    ddgi_probe_blend_irradiance_descriptor_sets.size(),
+                    ddgi_probe_blend_irradiance_descriptor_sets.data(),
                     offsets.size(),
                     offsets.data()
                 );
 
                 vkCmdDispatch(
                     command_buffer,
-                    lighting_data.probe_counts.x * lighting_data.probe_counts.y,
-                    lighting_data.probe_counts.z,
-                    1
+                    lighting_data.probe_counts.x,
+                    lighting_data.probe_counts.y,
+                    lighting_data.probe_counts.z
                 );
 
                 image_pipeline_barrier(
@@ -4414,28 +4577,6 @@ int main(int argc, char* argv[]) {
 
                 image_pipeline_barrier(
                     ddgi_irradiance_history,
-                    command_buffer,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                    VK_ACCESS_2_TRANSFER_WRITE_BIT
-                );
-
-                image_pipeline_barrier(
-                    ddgi_depth_atlas,
-                    command_buffer,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                    VK_ACCESS_2_TRANSFER_READ_BIT
-                );
-
-                image_pipeline_barrier(
-                    ddgi_depth_atlas_history,
                     command_buffer,
                     VK_IMAGE_LAYOUT_GENERAL,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -4485,28 +4626,6 @@ int main(int argc, char* argv[]) {
                     VK_FILTER_LINEAR
                 );
 
-                blit_region.srcOffsets[1] = {
-                    static_cast<int32_t>(ddgi_depth_atlas.width),
-                    static_cast<int32_t>(ddgi_depth_atlas.height),
-                    1,
-                };
-                blit_region.dstOffsets[1] = {
-                    static_cast<int32_t>(ddgi_depth_atlas_history.width),
-                    static_cast<int32_t>(ddgi_depth_atlas_history.height),
-                    1,
-                };
-
-                vkCmdBlitImage(
-                    command_buffer,
-                    ddgi_depth_atlas.handle,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    ddgi_depth_atlas_history.handle,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    1,
-                    &blit_region,
-                    VK_FILTER_LINEAR
-                );
-
                 image_pipeline_barrier(
                     ddgi_irradiance,
                     command_buffer,
@@ -4528,93 +4647,7 @@ int main(int argc, char* argv[]) {
                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT
                 );
-
-                image_pipeline_barrier(
-                    ddgi_depth_atlas,
-                    command_buffer,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                    VK_ACCESS_2_TRANSFER_READ_BIT,
-                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
-                );
-
-                image_pipeline_barrier(
-                    ddgi_depth_atlas_history,
-                    command_buffer,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-                );
             });
-
-    Pipeline ddgi_border_pipeline = create_compute_pipeline(
-        device,
-        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ddgi_border.comp.spv"),
-        {
-            DescriptorLayout{
-                .bindings = {
-                    DescriptorBinding{
-                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                        .write_info = DescriptorInfo(ddgi_irradiance.view, VK_IMAGE_LAYOUT_GENERAL)
-                    },
-                    DescriptorBinding{
-                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                        .write_info = DescriptorInfo(ddgi_depth_atlas.view, VK_IMAGE_LAYOUT_GENERAL)
-                    },
-                    DescriptorBinding{
-                        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-                        .write_info =
-                            DescriptorInfo(lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT)
-                    },
-                }
-            },
-        }
-    );
-    std::vector<VkDescriptorSet> ddgi_border_descriptor_sets =
-        allocate_descriptor_sets(device, descriptor_pool, ddgi_border_pipeline);
-
-    auto& ddgi_border_pass = framegraph.add_pass("ddgi border")
-                                 .reads_buffer_dynamic(
-                                     lighting_ubo_buffer,
-                                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                     VK_ACCESS_2_UNIFORM_READ_BIT,
-                                     lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
-                                 )
-                                 .reads_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                                 .writes_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                                 .reads_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                                 .writes_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                                 .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                                     TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
-                                     ZoneScopedN("DDGI Pass");
-
-                                     const Pipeline& pipeline = ddgi_border_pipeline;
-
-                                     vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
-
-                                     vkCmdBindDescriptorSets(
-                                         command_buffer,
-                                         VK_PIPELINE_BIND_POINT_COMPUTE,
-                                         pipeline.pipeline_layout,
-                                         0,
-                                         ddgi_border_descriptor_sets.size(),
-                                         ddgi_border_descriptor_sets.data(),
-                                         1,
-                                         &dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]
-                                     );
-
-                                     vkCmdDispatch(
-                                         command_buffer,
-                                         lighting_data.probe_counts.x * lighting_data.probe_counts.y,
-                                         lighting_data.probe_counts.z,
-                                         1
-                                     );
-                                 });
 
     Pipeline ddgi_probe_relocate_pipeline = create_compute_pipeline(
         device,
@@ -7308,8 +7341,8 @@ int main(int argc, char* argv[]) {
     destroy_pipeline(device, ao_pipeline);
     destroy_pipeline(device, ao_denoise_pipeline);
     destroy_pipeline(device, ddgi_ray_pipeline);
-    destroy_pipeline(device, ddgi_ray_conv_pipeline);
-    destroy_pipeline(device, ddgi_border_pipeline);
+    destroy_pipeline(device, ddgi_probe_blend_irradiance_pipeline);
+    destroy_pipeline(device, ddgi_probe_blend_depth_pipeline);
     destroy_pipeline(device, ddgi_probe_classify_pipeline);
     destroy_pipeline(device, ddgi_probe_relocate_pipeline);
     destroy_pipeline(device, smaa_edge_pipeline);
