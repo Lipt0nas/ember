@@ -48,15 +48,17 @@ struct MeshInstance {
 };
 
 struct Vertex {
-    glm::vec3 position;
-    glm::vec3 normal;
-    glm::vec2 uv;
-    glm::vec4 tangent_sign;
+    uint16_t px;
+    uint16_t py;
+    uint16_t pz;
 
-    bool operator==(const Vertex& other) const {
-        return position == other.position && normal == other.normal && uv == other.uv &&
-               tangent_sign == other.tangent_sign;
-    }
+    uint16_t ux;
+    uint16_t uy;
+
+    uint16_t tn;
+
+    // normal + tangent sign
+    uint32_t norm;
 };
 
 struct MeshletBounds {

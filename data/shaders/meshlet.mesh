@@ -98,16 +98,21 @@ void main() {
         uint base = global_vertex_index;
         Vertex vertex = vertices[base];
 
-        vec3 world_pos = rotate_quat(vertex.position, draw.rotation) * draw.scale + draw.position;
-        vec3 last_world_pos = rotate_quat(vertex.position, draw.last_rotation) * draw.last_scale + draw.last_position;
+        vec3 position = vec3(vertex.px, vertex.py, vertex.pz);
+        vec2 uv = vec2(vertex.ux, vertex.uy);
+        vec3 normal = unpack_vertex_normal(vertex.norm);
+        vec3 tangent = unpack_tangent(vertex.tn);
+
+        vec3 world_pos = rotate_quat(position, draw.rotation) * draw.scale + draw.position;
+        vec3 last_world_pos = rotate_quat(position, draw.last_rotation) * draw.last_scale + draw.last_position;
 
         vec4 clip = scene.view_proj * vec4(world_pos, 1.0);
         vec4 last_clip = scene.last_frame_view_proj * vec4(last_world_pos, 1.0);
 
         gl_MeshVerticesEXT[thread_id].gl_Position = scene.view_proj * vec4(world_pos, 1.0);
-        out_normal[thread_id] = rotate_quat(vertex.normal, draw.rotation);
-        out_uv[thread_id] = vertex.uv;
-        out_tangent_sign[thread_id] = vec4(rotate_quat(vertex.tangent_sign.xyz, draw.rotation), vertex.tangent_sign.w);
+        out_normal[thread_id] = rotate_quat(normal, draw.rotation);
+        out_uv[thread_id] = uv;
+        out_tangent_sign[thread_id] = vec4(rotate_quat(tangent, draw.rotation), unpack_tangent_sign(vertex.norm));
         out_world_pos[thread_id] = world_pos;
         out_clip_pos[thread_id] = clip;
         out_last_clip_pos[thread_id] = last_clip;
