@@ -57,16 +57,21 @@ void main() {
     uint base = gl_VertexIndex;
     Vertex vertex = vertices[base];
 
-    vec3 world_pos = rotate_quat(vertex.position, draw.rotation) * draw.scale + draw.position;
-    vec3 last_world_pos = rotate_quat(vertex.position, draw.last_rotation) * draw.last_scale + draw.last_position;
+    vec3 position = vec3(vertex.px, vertex.py, vertex.pz);
+    vec2 uv = vec2(vertex.ux, vertex.uy);
+    vec3 normal = unpack_vertex_normal(vertex.norm);
+    vec3 tangent = unpack_tangent(vertex.tn);
+
+    vec3 world_pos = rotate_quat(position, draw.rotation) * draw.scale + draw.position;
+    vec3 last_world_pos = rotate_quat(position, draw.last_rotation) * draw.last_scale + draw.last_position;
 
     vec4 clip_pos = scene.view_proj * vec4(world_pos, 1.0);
     vec4 last_clip_pos = scene.last_frame_view_proj * vec4(last_world_pos, 1.0);
 
     gl_Position = clip_pos;
-    out_normal = rotate_quat(vertex.normal, draw.rotation);
-    out_uv = vertex.uv;
-    out_tangent_sign = vec4(rotate_quat(vertex.tangent_sign.xyz, draw.rotation), vertex.tangent_sign.w);
+    out_normal = rotate_quat(normal, draw.rotation);
+    out_uv = uv;
+    out_tangent_sign = vec4(rotate_quat(tangent, draw.rotation), unpack_tangent_sign(vertex.norm));
     out_world_pos = world_pos.xyz;
     out_clip_pos = clip_pos;
     out_last_clip_pos = last_clip_pos;

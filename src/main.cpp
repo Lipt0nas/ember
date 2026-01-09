@@ -189,6 +189,14 @@ glm::quat ddgi_random_rotation() {
     return glm::quat_cast(transform);
 }
 
+uint16_t pack_tangent(glm::vec3 tangent) {
+    float sum = glm::abs(tangent.x) + glm::abs(tangent.y) + glm::abs(tangent.z);
+    float tu  = tangent.z >= 0 ? tangent.x / sum : (1 - glm::abs(tangent.y / sum)) * (tangent.x >= 0 ? 1 : -1);
+    float tv  = tangent.z >= 0 ? tangent.y / sum : (1 - glm::abs(tangent.x / sum)) * (tangent.y >= 0 ? 1 : -1);
+
+    return (meshopt_quantizeSnorm(tu, 8) + 127) | (meshopt_quantizeSnorm(tv, 8) + 127) << 8;
+}
+
 struct MeshIndirectDrawCommand {
     uint32_t group_count_x;
     uint32_t group_count_y;
@@ -503,10 +511,21 @@ void generate_tangents(std::vector<Vertex>& vertices, const std::vector<uint32_t
         const Vertex& v1 = vertices[i1];
         const Vertex& v2 = vertices[i2];
 
-        glm::vec3 edge1     = v1.position - v0.position;
-        glm::vec3 edge2     = v2.position - v0.position;
-        glm::vec2 delta_uv1 = v1.uv - v0.uv;
-        glm::vec2 delta_uv2 = v2.uv - v0.uv;
+        const glm::vec3 v0_pos =
+            glm::vec3(meshopt_dequantizeHalf(v0.px), meshopt_dequantizeHalf(v0.py), meshopt_dequantizeHalf(v0.pz));
+        const glm::vec3 v1_pos =
+            glm::vec3(meshopt_dequantizeHalf(v1.px), meshopt_dequantizeHalf(v1.py), meshopt_dequantizeHalf(v1.pz));
+        const glm::vec3 v2_pos =
+            glm::vec3(meshopt_dequantizeHalf(v2.px), meshopt_dequantizeHalf(v2.py), meshopt_dequantizeHalf(v2.pz));
+
+        const glm::vec2 uv0 = glm::vec2(meshopt_dequantizeHalf(v0.ux), meshopt_dequantizeHalf(v0.uy));
+        const glm::vec2 uv1 = glm::vec2(meshopt_dequantizeHalf(v1.ux), meshopt_dequantizeHalf(v1.uy));
+        const glm::vec2 uv2 = glm::vec2(meshopt_dequantizeHalf(v2.ux), meshopt_dequantizeHalf(v2.uy));
+
+        glm::vec3 edge1     = v1_pos - v0_pos;
+        glm::vec3 edge2     = v2_pos - v0_pos;
+        glm::vec2 delta_uv1 = uv1 - uv0;
+        glm::vec2 delta_uv2 = uv2 - uv0;
 
         float f = 1.0f / (delta_uv1.x * delta_uv2.y - delta_uv2.x * delta_uv1.y);
 
@@ -530,7 +549,11 @@ void generate_tangents(std::vector<Vertex>& vertices, const std::vector<uint32_t
     }
 
     for (size_t i = 0; i < vertices.size(); ++i) {
-        const glm::vec3& n = vertices[i].normal;
+        const glm::vec3& n = glm::vec3(
+            (vertices[i].norm & 1023) / 511.0f - 1.0f,
+            ((vertices[i].norm >> 10) & 1023) / 511.0f - 1.0f,
+            ((vertices[i].norm >> 20) & 1023) / 511.0f - 1.0f
+        );
         const glm::vec3& t = tangents[i];
         const glm::vec3& b = bitangents[i];
 
@@ -538,7 +561,8 @@ void generate_tangents(std::vector<Vertex>& vertices, const std::vector<uint32_t
 
         float handedness = (glm::dot(glm::cross(n, tangent), b) < 0.0f) ? -1.0f : 1.0f;
 
-        vertices[i].tangent_sign = glm::vec4(tangent, handedness);
+        vertices[i].norm |= (handedness >= 0 ? 0 : 1) << 30;
+        vertices[i].tn = pack_tangent(tangent);
     }
 }
 
@@ -778,29 +802,23 @@ void load_scene(
 
                 vertices.emplace_back(
                     Vertex{
-                        .position = position,
-                        .normal =
-                            {
-                                normals[i * 3 + 0],
-                                normals[i * 3 + 1],
-                                normals[i * 3 + 2],
-                            },
-                        .uv =
-                            {
-                                texcoords[i * 2 + 0],
-                                texcoords[i * 2 + 1],
-                            },
-                        .tangent_sign = tangent_sign,
+                        .px   = meshopt_quantizeHalf(position.x),
+                        .py   = meshopt_quantizeHalf(position.y),
+                        .pz   = meshopt_quantizeHalf(position.z),
+                        .ux   = meshopt_quantizeHalf(texcoords[i * 2 + 0]),
+                        .uy   = meshopt_quantizeHalf(texcoords[i * 2 + 1]),
+                        .tn   = pack_tangent(glm::vec3(tangent_sign)),
+                        .norm = static_cast<uint32_t>(
+                            (meshopt_quantizeSnorm(normals[i * 3 + 0], 10) + 511) |
+                            (meshopt_quantizeSnorm(normals[i * 3 + 1], 10) + 511) << 10 |
+                            (meshopt_quantizeSnorm(normals[i * 3 + 2], 10) + 511) << 20 |
+                            (tangent_sign.w >= 0 ? 0 : 1) << 30
+                        ),
                     }
                 );
             }
 
             center /= float(vertex_count);
-
-            float radius = 0.0f;
-            for (const auto& vertex : vertices) {
-                radius = std::max(radius, glm::distance(center, vertex.position));
-            }
 
             if (primitive.indices >= 0) {
                 const tinygltf::Accessor&   index_accessor = model.accessors[primitive.indices];
@@ -845,17 +863,49 @@ void load_scene(
                 generate_tangents(vertices, indices);
             }
 
+            std::vector<uint32_t> remap_table(vertices.size());
+            auto                  unique_vertices = meshopt_generateVertexRemap(
+                remap_table.data(), indices.data(), indices.size(), vertices.data(), vertices.size(), sizeof(Vertex)
+            );
+
+            float remap_reduction = (((float)unique_vertices / (float)vertices.size()) * 100.0f);
+            remap_reduction       = 100.0f - remap_reduction;
+            if (remap_reduction > 0.0f) {
+                spdlog::info("Remap table reduction: {:03.2f}%", remap_reduction);
+            }
+
+            meshopt_remapVertexBuffer(
+                vertices.data(), vertices.data(), vertices.size(), sizeof(Vertex), remap_table.data()
+            );
+            meshopt_remapIndexBuffer(indices.data(), indices.data(), indices.size(), remap_table.data());
+            vertices.resize(unique_vertices);
+
+            meshopt_optimizeVertexCache(indices.data(), indices.data(), indices.size(), vertices.size());
+            meshopt_optimizeVertexFetch(
+                vertices.data(), indices.data(), indices.size(), vertices.data(), vertices.size(), sizeof(Vertex)
+            );
+
+            std::vector<glm::vec3> unquantized_positions(vertices.size());
+            for (int i = 0; i < vertices.size(); i++) {
+                Vertex& v = vertices[i];
+                unquantized_positions[i] =
+                    glm::vec3(meshopt_dequantizeHalf(v.px), meshopt_dequantizeHalf(v.py), meshopt_dequantizeHalf(v.pz));
+            }
+
+            float radius = 0.0f;
+            for (const auto& pos : unquantized_positions) {
+                radius = std::max(radius, glm::distance(center, pos));
+            }
+
             JPH::TriangleList triangles;
             for (size_t i = 0; i < indices.size(); i += 3) {
-                const Vertex& v0 = vertices[indices[i + 0]];
-                const Vertex& v1 = vertices[indices[i + 1]];
-                const Vertex& v2 = vertices[indices[i + 2]];
+                const glm::vec3& v0 = unquantized_positions[indices[i + 0]];
+                const glm::vec3& v1 = unquantized_positions[indices[i + 1]];
+                const glm::vec3& v2 = unquantized_positions[indices[i + 2]];
 
                 triangles.push_back(
                     JPH::Triangle(
-                        JPH::Float3(v0.position.x, v0.position.y, v0.position.z),
-                        JPH::Float3(v1.position.x, v1.position.y, v1.position.z),
-                        JPH::Float3(v2.position.x, v2.position.y, v2.position.z)
+                        JPH::Float3(v0.x, v0.y, v0.z), JPH::Float3(v1.x, v1.y, v1.z), JPH::Float3(v2.x, v2.y, v2.z)
                     )
                 );
             }
@@ -916,9 +966,9 @@ void load_scene(
                 meshlet_triangles.data(),
                 indices.data(),
                 indices.size(),
-                &vertices[0].position.x,
-                vertices.size(),
-                sizeof(Vertex),
+                (float*)unquantized_positions.data(),
+                unquantized_positions.size(),
+                sizeof(glm::vec3),
                 max_vertices,
                 max_triangles,
                 cone_weight
@@ -943,9 +993,9 @@ void load_scene(
                     &meshlet_vertices[m.vertex_offset],
                     &meshlet_triangles[m.triangle_offset],
                     m.triangle_count,
-                    &vertices[0].position.x,
-                    vertices.size(),
-                    sizeof(Vertex)
+                    (float*)unquantized_positions.data(),
+                    unquantized_positions.size(),
+                    sizeof(glm::vec3)
                 );
 
                 meshlet_bounds[idx++] = MeshletBounds{
@@ -2739,7 +2789,7 @@ int main(int argc, char* argv[]) {
     }
 
     Buffer global_vertex_buffer = create_buffer(
-        1024 * 1024 * 364,
+        1024 * 1024 * 164,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             (use_hardware_rt ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
@@ -6779,7 +6829,7 @@ int main(int argc, char* argv[]) {
         }
 
         static bool press_guard = false;
-        if (pressed_keys[SDL_SCANCODE_GRAVE] && !capturing_mouse) {
+        if (pressed_keys[SDL_SCANCODE_C] && !capturing_mouse) {
             if (pressed_buttons[SDL_BUTTON_LEFT]) {
                 if (grabbed_mesh != -1 && !press_guard) {
                     int w;

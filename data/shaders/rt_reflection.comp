@@ -174,16 +174,16 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         Vertex v1 = global_vertices.vertices[vertex_offset + i1];
         Vertex v2 = global_vertices.vertices[vertex_offset + i2];
 
-        vec3 n0 = v0.normal;
-        vec3 n1 = v1.normal;
-        vec3 n2 = v2.normal;
+        vec3 n0 = unpack_vertex_normal(v0.norm);
+        vec3 n1 = unpack_vertex_normal(v1.norm);
+        vec3 n2 = unpack_vertex_normal(v2.norm);
         vec3 local_normal = normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
 
         vec3 world_normal = normalize(mat3(objectToWorld) * local_normal);
 
-        vec2 uv0 = v0.uv;
-        vec2 uv1 = v1.uv;
-        vec2 uv2 = v2.uv;
+        vec2 uv0 = vec2(v0.ux, v0.uy);
+        vec2 uv1 = vec2(v1.ux, v1.uy);
+        vec2 uv2 = vec2(v2.ux, v2.uy);
         vec2 uv = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
 
         vec4 albedo = material_get_albedo(material, textures[nonuniformEXT(material.albedo_index)], uv);

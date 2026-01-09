@@ -1,6 +1,9 @@
 #ifndef COMMON_GLSL
 #define COMMON_GLSL
 
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
 #define MESHLETS_PER_TASK 32
 
 #define EFFECT_RADIUS 0.5
@@ -157,10 +160,17 @@ struct MeshletBounds {
 };
 
 struct Vertex {
-    vec3 position;
-    vec3 normal;
-    vec2 uv;
-    vec4 tangent_sign;
+    float16_t px;
+    float16_t py;
+    float16_t pz;
+
+    float16_t ux;
+    float16_t uy;
+
+    uint16_t tn;
+
+    // normal + tangent sign
+    uint norm;
 };
 
 struct SceneUBO {
@@ -449,6 +459,22 @@ float linear_rgb_to_luminance(vec3 rgb) {
     const vec3 weights = vec3(0.2126, 0.7152, 0.0722);
 
     return dot(rgb, weights);
+}
+
+vec3 unpack_vertex_normal(uint packed) {
+    return vec3(
+        (packed & 1023) / 511.0 - 1.0,
+        ((packed >> 10) & 1023) / 511.0 - 1.0,
+        ((packed >> 20) & 1023) / 511.0 - 1.0
+    );
+}
+
+float unpack_tangent_sign(uint packed) {
+    return (packed & (1 << 30)) != 0 ? -1.0 : 1.0;
+}
+
+vec3 unpack_tangent(uint packed) {
+    return oct_decode(vec2((packed & 255) / 127.0 - 1.0, ((packed >> 8) & 255) / 127.0 - 1.0));
 }
 
 #endif

@@ -35,6 +35,8 @@ RTScene create_rt_scene(
 
     std::vector<BLAS> bottom_level_acceleration_structures;
 
+    static_assert(offsetof(Vertex, pz) == offsetof(Vertex, px) + sizeof(uint16_t) * 2);
+
     for (auto& mesh : meshes) {
         VkAccelerationStructureGeometryKHR acceleration_structure_geometry = {
             .sType        = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
@@ -44,7 +46,7 @@ RTScene create_rt_scene(
                 {.triangles =
                      {
                          .sType        = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
-                         .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
+                         .vertexFormat = VK_FORMAT_R16G16B16A16_SFLOAT,
                          .vertexData =
                              {
                                  .deviceAddress = global_vertex_buffer_address + (mesh.vertex_offset * sizeof(Vertex)),
