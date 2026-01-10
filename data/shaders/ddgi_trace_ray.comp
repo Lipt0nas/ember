@@ -187,7 +187,7 @@ void main() {
 
         radiance = Lo + indirect + emissive;
     } else {
-        radiance = get_sky_color(ray_dir, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom);
+        radiance = get_sky_color(ray_dir, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, lighting.light_color);
     }
 
     ray_buffer.rays[global_ray_idx].ray_data = vec4(radiance, hit_distance);

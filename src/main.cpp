@@ -263,6 +263,14 @@ struct alignas(16) LightingUBO {
     glm::quat ddgi_probe_ray_rotation;
 };
 
+struct LuminanceConstants {
+    float min_log2_luminance;
+    float inverse_log2_luminance;
+
+    float time_coef;
+    float pixel_count;
+};
+
 struct ShadowBlurConstants {
     glm::vec2 image_size;
     float     direction;
@@ -309,6 +317,11 @@ struct XeGTAOConstants {
 struct CompositePushConstants {
     float    bloom_strength;
     uint32_t tonemapping_type;
+
+    float key_value;
+    float min_exposure;
+    float max_exposure;
+    uint  enable_auto_exposure;
 };
 
 struct BloomPushConstants {
@@ -1674,7 +1687,7 @@ int main(int argc, char* argv[]) {
         gbuffer_id,
     };
 
-    bool        visualize_probes = true;
+    bool        visualize_probes = false;
     LightingUBO lighting_data    = {
            .light_direction  = glm::vec4(-0.2f, -0.7f, -1.0f, 0.0f),
            .light_color      = glm::vec4(1.0, 1.0, 1.0, 10.0f),
@@ -1761,6 +1774,20 @@ int main(int argc, char* argv[]) {
         swapchain.width,
         swapchain.height,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
+
+    Buffer luminance_buffer = create_buffer(
+        sizeof(uint32_t) * 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+    );
+    Image average_luminance_image = create_image(
+        VK_FORMAT_R16_SFLOAT,
+        1,
+        1,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
         false,
         vma_allocator,
@@ -2192,6 +2219,17 @@ int main(int argc, char* argv[]) {
             VK_ACCESS_2_TRANSFER_WRITE_BIT
         );
 
+        image_pipeline_barrier(
+            average_luminance_image,
+            command_buffer,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT
+        );
+
         VkClearColorValue       clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
         VkImageSubresourceRange range       = {
                   .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2235,6 +2273,16 @@ int main(int argc, char* argv[]) {
         vkCmdClearColorImage(
             command_buffer,
             ddgi_depth_atlas_history.handle,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            &clear_color,
+            1,
+            &range
+        );
+
+        clear_color.float32[0] = 0.5f;
+        vkCmdClearColorImage(
+            command_buffer,
+            average_luminance_image.handle,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             &clear_color,
             1,
@@ -2307,6 +2355,17 @@ int main(int argc, char* argv[]) {
 
         image_pipeline_barrier(
             ddgi_irradiance_history,
+            command_buffer,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+        );
+
+        image_pipeline_barrier(
+            average_luminance_image,
             command_buffer,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_GENERAL,
@@ -2501,6 +2560,18 @@ int main(int argc, char* argv[]) {
             0,
             VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
             0
+        );
+
+        vkCmdFillBuffer(command_buffer, luminance_buffer.handle, 0, VK_WHOLE_SIZE, 0);
+        buffer_pipeline_barrier(
+            luminance_buffer,
+            command_buffer,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+            0,
+            luminance_buffer.size
         );
 
         // std::vector<VkImageView> specular_image_views(specular_cubemap.levels);
@@ -3157,6 +3228,17 @@ int main(int argc, char* argv[]) {
 
     std::array<uint64_t, 2> pipeline_stats;
 
+    float min_log_lum    = -8.0f;
+    float max_log_lum    = 4.0f;
+    float adaption_speed = 1.1f;
+
+    LuminanceConstants luminance_constants = {
+        .min_log2_luminance     = min_log_lum,
+        .inverse_log2_luminance = 1.0f / (max_log_lum - min_log_lum),
+        .time_coef              = 0,
+        .pixel_count            = static_cast<float>(lightpass_output.width * lightpass_output.height),
+    };
+
     DescriptorLayout scene_data_layout = {
         .bindings = {
             DescriptorBinding{
@@ -3588,7 +3670,11 @@ int main(int argc, char* argv[]) {
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
                                 linear_sampler_clamped, bloom_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                            )
+                            ),
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(average_luminance_image.view, VK_IMAGE_LAYOUT_GENERAL),
                         },
                     }
             },
@@ -3600,8 +3686,12 @@ int main(int argc, char* argv[]) {
         allocate_descriptor_sets(device, descriptor_pool, composite_pipeline);
 
     CompositePushConstants composite_push_constants{
-        .bloom_strength   = 0.04f,
-        .tonemapping_type = 1,
+        .bloom_strength       = 0.04f,
+        .tonemapping_type     = 1,
+        .key_value            = 0.18f,
+        .min_exposure         = 0.1f,
+        .max_exposure         = 10.0f,
+        .enable_auto_exposure = true,
     };
 
     Pipeline fxaa_pipeline = create_compute_pipeline(
@@ -3649,15 +3739,16 @@ int main(int argc, char* argv[]) {
     framegraph.import_image(ao_output_denoised, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(ao_output_denoised_pong, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(ao_prefiltered_depth, VK_IMAGE_LAYOUT_GENERAL);
-    framegraph.import_image(directional_shadow_buffer, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(directional_shadow_buffer, VK_IMAGE_LAYOUT_GENERAL, false);
     framegraph.import_image(directional_shadow_buffer_pong, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(smaa_edges, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(smaa_weights, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(smaa_output, VK_IMAGE_LAYOUT_GENERAL);
-    framegraph.import_image(ddgi_irradiance, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(ddgi_irradiance, VK_IMAGE_LAYOUT_GENERAL, false);
     framegraph.import_image(ddgi_irradiance_history, VK_IMAGE_LAYOUT_GENERAL);
-    framegraph.import_image(ddgi_depth_atlas, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(ddgi_depth_atlas, VK_IMAGE_LAYOUT_GENERAL, false);
     framegraph.import_image(ddgi_depth_atlas_history, VK_IMAGE_LAYOUT_GENERAL);
+    framegraph.import_image(average_luminance_image, VK_IMAGE_LAYOUT_GENERAL, false);
 
     auto tlas_rebuild_pass =
         framegraph.add_pass("RT structure rebuild")
@@ -5603,6 +5694,127 @@ int main(int argc, char* argv[]) {
                 vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
             });
 
+    Pipeline luminance_histogram_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/luminance_histogram.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(lightpass_output.view)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(luminance_buffer.handle, 0, luminance_buffer.size)
+                        },
+                    },
+            },
+        },
+        sizeof(LuminanceConstants)
+    );
+    std::vector<VkDescriptorSet> luminance_histogram_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, luminance_histogram_pipeline);
+
+    auto& luminance_histogram_pass =
+        framegraph.add_pass("luminance histogram")
+            .writes_buffer(
+                luminance_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+            )
+            .reads_storage_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
+                ZoneScopedN("DDGI Pass");
+
+                const Pipeline& pipeline = luminance_histogram_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    luminance_histogram_descriptor_sets.size(),
+                    luminance_histogram_descriptor_sets.data(),
+                    0,
+                    nullptr
+                );
+                vkCmdPushConstants(
+                    command_buffer,
+                    pipeline.pipeline_layout,
+                    pipeline.stage_flags,
+                    0,
+                    sizeof(LuminanceConstants),
+                    &luminance_constants
+                );
+
+                vkCmdDispatch(
+                    command_buffer, (lightpass_output.width + 15) / 16, (lightpass_output.height + 15) / 16, 1
+                );
+            });
+
+    Pipeline luminance_average_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/luminance_average.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            .write_info = DescriptorInfo(average_luminance_image.view)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(luminance_buffer.handle, 0, luminance_buffer.size)
+                        },
+                    },
+            },
+        },
+        sizeof(LuminanceConstants)
+
+    );
+    std::vector<VkDescriptorSet> luminance_average_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, luminance_average_pipeline);
+
+    auto& luminance_average_pass =
+        framegraph.add_pass("luminance average")
+            .reads_buffer(luminance_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT)
+            .writes_buffer(
+                luminance_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+            )
+            .writes_storage_image(average_luminance_image, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .reads_storage_image(average_luminance_image, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
+                ZoneScopedN("DDGI Pass");
+
+                const Pipeline& pipeline = luminance_average_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    luminance_average_descriptor_sets.size(),
+                    luminance_average_descriptor_sets.data(),
+                    0,
+                    nullptr
+                );
+                vkCmdPushConstants(
+                    command_buffer,
+                    pipeline.pipeline_layout,
+                    pipeline.stage_flags,
+                    0,
+                    sizeof(LuminanceConstants),
+                    &luminance_constants
+                );
+
+                vkCmdDispatch(command_buffer, 1, 1, 1);
+            });
+
     Pipeline smaa_edge_pipeline = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/smaa_edges.comp.spv"),
@@ -5980,6 +6192,7 @@ int main(int argc, char* argv[]) {
         framegraph.add_pass("composite")
             .samples_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(bloom_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .reads_storage_image(average_luminance_image, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(composite_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 TracyVkZone(tracy_vk_context, command_buffer, "Composite Pass");
@@ -6484,6 +6697,10 @@ int main(int argc, char* argv[]) {
 
         update_camera(camera);
 
+        luminance_constants.time_coef          = glm::clamp(1.0f - glm::exp(-delta_time * adaption_speed), 0.0f, 1.0f);
+        luminance_constants.min_log2_luminance = min_log_lum;
+        luminance_constants.inverse_log2_luminance = 1.0f / (max_log_lum - min_log_lum);
+
         auto transposed_projection = glm::transpose(camera.projection_matrix);
 
         glm::vec4 frustum_x = normalize_plane(transposed_projection[3] + transposed_projection[0]);
@@ -6655,6 +6872,14 @@ int main(int argc, char* argv[]) {
             ImGui::SliderInt("Bloom levels", &bloom_levels, 0, bloom_buffer.levels);
 
             ImGui::SeparatorText("Post process");
+            ImGui::Checkbox("Auto Exposure", (bool*)&composite_push_constants.enable_auto_exposure);
+            ImGui::SliderFloat("Min Log Luminance", &min_log_lum, -16.0f, 0.0f, "%.1f");
+            ImGui::SliderFloat("Max Log Luminance", &max_log_lum, 0.0f, 8.0f, "%.1f");
+            ImGui::SliderFloat("Key Value", &composite_push_constants.key_value, 0.05f, 2.0f, "%.2f");
+            ImGui::SliderFloat("Min Exposure", &composite_push_constants.min_exposure, 0.05f, 20.0f, "%.2f");
+            ImGui::SliderFloat("Max Exposure", &composite_push_constants.max_exposure, 0.05f, 50.0f, "%.2f");
+            ImGui::SliderFloat("Adaptation Speed", &adaption_speed, 0.1f, 5.0f, "%.2f");
+            ImGui::Separator();
             ImGui::Checkbox("Use GT5 tonemapping", (bool*)&composite_push_constants.tonemapping_type);
             ImGui::Checkbox("Apply FXAA", (bool*)&use_fxaa);
             ImGui::TreePop();
@@ -7359,6 +7584,7 @@ int main(int argc, char* argv[]) {
     destroy_buffer(drawcall_buffer, device, vma_allocator);
     destroy_buffer(mesh_buffer, device, vma_allocator);
     destroy_buffer(pick_buffer, device, vma_allocator);
+    destroy_buffer(luminance_buffer, device, vma_allocator);
     destroy_image(depth_buffer, device, vma_allocator);
     destroy_image(lightpass_output, device, vma_allocator);
     destroy_image(composite_output, device, vma_allocator);
@@ -7392,6 +7618,7 @@ int main(int argc, char* argv[]) {
     destroy_image(rt_reflection_buffer, device, vma_allocator);
     destroy_image(rt_reflection_history, device, vma_allocator);
     destroy_image(blue_noise_texure, device, vma_allocator);
+    destroy_image(average_luminance_image, device, vma_allocator);
 
     for (auto view : depth_mip_views) {
         vkDestroyImageView(device, view, nullptr);
@@ -7433,6 +7660,8 @@ int main(int argc, char* argv[]) {
     destroy_pipeline(device, shadow_blur_pipeline);
     destroy_pipeline(device, rt_reflection_pipeline);
     destroy_pipeline(device, rt_reflection_upsample);
+    destroy_pipeline(device, luminance_histogram_pipeline);
+    destroy_pipeline(device, luminance_average_pipeline);
 
     for (auto image : loaded_images) {
         destroy_image(image, device, vma_allocator);

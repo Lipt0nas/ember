@@ -1,0 +1,58 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+
+#include "common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform image2D scene;
+
+layout(set = 0, binding = 1, std430) buffer Luminance {
+    uint luminance[];
+};
+
+layout(push_constant, std430) uniform pc {
+    float min_log2_luminance;
+    float inverse_log2_luminance;
+
+    float time_coef;
+    float pixel_count;
+} push;
+
+shared uint shared_histogram[256];
+
+uint color_to_bin(vec3 color, float min_log_lum, float inverse_log_lum_range) {
+    float lum = linear_rgb_to_luminance(color);
+
+    if (lum < 0.005) {
+        return 0;
+    }
+
+    float log_lum = clamp((log2(lum) - min_log_lum) * inverse_log_lum_range, 0.0, 1.0);
+
+    return uint(log_lum * 254.0 + 1.0);
+}
+
+void main() {
+    shared_histogram[gl_LocalInvocationIndex] = 0;
+
+    barrier();
+
+    uvec2 dim = imageSize(scene);
+
+    if (gl_GlobalInvocationID.x < dim.x && gl_GlobalInvocationID.y < dim.y) {
+        vec3 color = imageLoad(scene, ivec2(gl_GlobalInvocationID.xy)).xyz;
+        uint bin_index = color_to_bin(color, push.min_log2_luminance, push.inverse_log2_luminance);
+
+        atomicAdd(shared_histogram[bin_index], 1);
+    }
+
+    barrier();
+
+    atomicAdd(luminance[gl_LocalInvocationIndex], shared_histogram[gl_LocalInvocationIndex]);
+}

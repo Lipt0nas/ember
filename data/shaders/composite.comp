@@ -14,10 +14,16 @@ layout(set = 0, binding = 0, rgba8) uniform image2D out_color;
 
 layout(set = 0, binding = 1) uniform sampler2D scene_texture;
 layout(set = 0, binding = 2) uniform sampler2D bloom_texture;
+layout(set = 0, binding = 3, r16f) uniform image2D average_luminance_texture;
 
 layout(push_constant, std430) uniform pc {
     float bloom_strength;
     uint tonemapping_type;
+
+    float key_value;
+    float min_exposure;
+    float max_exposure;
+    uint enable_auto_exposure;
 } push;
 
 void main() {
@@ -32,8 +38,16 @@ void main() {
 
     vec3 scene = texture(scene_texture, uv).rgb;
     vec3 bloom = texture(bloom_texture, uv).rgb;
+    float luminance = imageLoad(average_luminance_texture, ivec2(0, 0)).x;
 
     vec3 color = mix(scene, bloom, push.bloom_strength);
+
+    if (push.enable_auto_exposure == 1) {
+        float exposure = push.key_value / max(luminance, 0.001);
+        exposure = clamp(exposure, push.min_exposure, push.max_exposure);
+
+        color *= exposure;
+    }
 
     vec3 tonemapped = vec3(0.0);
     if (push.tonemapping_type == 0) {

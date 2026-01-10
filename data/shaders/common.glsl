@@ -314,9 +314,36 @@ float gradient_noise(vec2 uv) {
     return fract(52.9829189 * fract(dot(uv, vec2(0.06711056, 0.00583715))));
 }
 
-vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisphere_bottom) {
-    float sky = ray_dir.y * 0.5 + 0.5;
-    return mix(hemisphere_bottom.rgb, hemisphere_top.rgb, sky);
+vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisphere_bottom, vec4 sun_params) {
+    vec3 rd = normalize(ray_dir);
+    vec3 sd = normalize(sun_dir);
+
+    float sky_gradient = rd.y * 0.5 + 0.5;
+    float atmosphere = sqrt(max(0.0, rd.y));
+
+    float sun_height = sd.y * 0.5 + 0.5;
+    float scatter = pow(sun_height, 1.0 / 15.0);
+    scatter = 1.0 - clamp(scatter, 0.8, 1.0);
+
+    vec3 base_sky = mix(hemisphere_bottom.rgb, hemisphere_top.rgb, sky_gradient);
+    vec3 scatter_color = mix(vec3(1.0), sun_params.rgb * 1.5, scatter);
+    vec3 sky_color = mix(base_sky, scatter_color, atmosphere / 1.3);
+
+    float sun_dot = dot(rd, sd);
+    float sun_disk = clamp(sun_dot, 0.0, 1.0);
+
+    float sun = pow(sun_disk, 1000.0);
+    sun = clamp(sun, 0.0, 1.0);
+
+    float glow = pow(sun_disk, 50.0) * 0.1;
+    sun += glow;
+
+    float height_factor = pow(max(0.0, rd.y), 1.0 / 1.65);
+    sun *= height_factor;
+
+    vec3 sun_color = sun_params.rgb * sun * sun_params.w;
+
+    return sky_color + sun_color;
 }
 
 vec2 pack_normals(vec3 normals) {

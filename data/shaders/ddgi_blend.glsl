@@ -235,7 +235,7 @@ void main() {
         return;
     }
 
-    memoryBarrierShared();
+    memoryBarrier();
     barrier();
 
     update_border_texel(group_thread_id, group_thread_id, probe_idx, probes_per_row);

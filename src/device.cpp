@@ -231,18 +231,21 @@ VkDevice create_device(
     features.multiDrawIndirect         = VK_TRUE;
     features.drawIndirectFirstInstance = VK_TRUE;
     features.pipelineStatisticsQuery   = VK_TRUE;
+    features.shaderInt16               = VK_TRUE;
 
     VkPhysicalDeviceVulkan11Features vulkan_features_11 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
         .pNext = feature_chain,
     };
-    vulkan_features_11.shaderDrawParameters = VK_TRUE;
+    vulkan_features_11.shaderDrawParameters     = VK_TRUE;
+    vulkan_features_11.storageBuffer16BitAccess = VK_TRUE;
 
     VkPhysicalDeviceVulkan12Features vulkan_features_12 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .pNext = &vulkan_features_11,
     };
     vulkan_features_12.storageBuffer8BitAccess                      = VK_TRUE;
+    vulkan_features_12.shaderFloat16                                = VK_TRUE;
     vulkan_features_12.drawIndirectCount                            = VK_TRUE;
     vulkan_features_12.scalarBlockLayout                            = VK_TRUE;
     vulkan_features_12.bufferDeviceAddress                          = VK_TRUE;
