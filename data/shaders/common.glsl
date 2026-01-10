@@ -235,6 +235,8 @@ vec2 material_get_roughness_metallic(const Material material, sampler2D material
         roughness_metallic *= texture(material_sampler, uv).yz;
     }
 
+    roughness_metallic.x = clamp(roughness_metallic.x, 0.05, 1.0);
+
     // roughness_metallic = vec2(1.0, 0.0);
 
     return roughness_metallic;
