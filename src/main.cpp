@@ -1996,17 +1996,6 @@ int main(int argc, char* argv[]) {
         device
     );
 
-    Image fxaa_output = create_image(
-        VK_FORMAT_R8G8B8A8_UNORM,
-        swapchain.width,
-        swapchain.height,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT,
-        false,
-        vma_allocator,
-        device
-    );
-
     Image rt_reflection_buffer = create_image(
         VK_FORMAT_R16G16B16A16_SFLOAT,
         swapchain.width,
@@ -2567,17 +2556,6 @@ int main(int argc, char* argv[]) {
 
         image_pipeline_barrier(
             ao_prefiltered_depth,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            0,
-            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-            0
-        );
-
-        image_pipeline_barrier(
-            fxaa_output,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_GENERAL,
@@ -3281,11 +3259,10 @@ int main(int argc, char* argv[]) {
     bool debug_frustum   = false;
     bool disable_culling = false;
 
-    bool use_fxaa = false;
+    bool use_smaa = true;
+    bool running  = true;
 
-    bool running = true;
-
-    int bloom_levels = 6;
+    int bloom_levels = glm::max(5ul, bloom_mip_views.size() - 5);
 
     std::array<uint64_t, 2> pipeline_stats;
 
@@ -3761,30 +3738,6 @@ int main(int argc, char* argv[]) {
         .enable_auto_exposure = true,
     };
 
-    Pipeline fxaa_pipeline = create_compute_pipeline(
-        device,
-        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/fxaa.comp.spv"),
-        {
-            DescriptorLayout{
-                .bindings = {
-                    DescriptorBinding{
-                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                        .write_info = DescriptorInfo(fxaa_output.view, VK_IMAGE_LAYOUT_GENERAL)
-                    },
-                    DescriptorBinding{
-                        .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                        .write_info = DescriptorInfo(
-                            linear_sampler_clamped, smaa_output.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                        )
-                    }
-                }
-            },
-        }
-    );
-
-    std::vector<VkDescriptorSet> fxaa_descriptor_sets =
-        allocate_descriptor_sets(device, descriptor_pool, fxaa_pipeline);
-
     std::vector<uint32_t> dynamic_offsets;
     dynamic_offsets.resize(static_cast<uint32_t>(DynamicOffset::COUNT));
 
@@ -3799,7 +3752,6 @@ int main(int argc, char* argv[]) {
     framegraph.import_image(gbuffer_id, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph.import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
-    framegraph.import_image(fxaa_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(bloom_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     framegraph.import_image(ao_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(ao_output_edges, VK_IMAGE_LAYOUT_GENERAL);
@@ -6492,30 +6444,6 @@ int main(int argc, char* argv[]) {
 
                 vkCmdDispatch(command_buffer, (smaa_weights.width + 7) / 8, (smaa_weights.height + 7) / 8, 1);
             });
-
-    auto& fxaa_pass =
-        framegraph.add_pass("fxaa")
-            .samples_image(smaa_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .writes_storage_image(fxaa_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "FXAA Pass");
-                ZoneScopedN("FXAA Pass");
-
-                vkCmdBindPipeline(command_buffer, fxaa_pipeline.bind_point, fxaa_pipeline.pipeline_handle);
-                vkCmdBindDescriptorSets(
-                    command_buffer,
-                    fxaa_pipeline.bind_point,
-                    fxaa_pipeline.pipeline_layout,
-                    0,
-                    fxaa_descriptor_sets.size(),
-                    fxaa_descriptor_sets.data(),
-                    0,
-                    nullptr
-                );
-
-                vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
-            });
-
     framegraph.build();
 
     int pick_frame = UINT32_MAX;
@@ -6967,7 +6895,7 @@ int main(int argc, char* argv[]) {
             ImGui::SliderFloat("Adaptation Speed", &adaption_speed, 0.1f, 5.0f, "%.2f");
             ImGui::Separator();
             ImGui::Checkbox("Use GT5 tonemapping", (bool*)&composite_push_constants.tonemapping_type);
-            ImGui::Checkbox("Apply FXAA", (bool*)&use_fxaa);
+            ImGui::Checkbox("Apply SMAA", (bool*)&use_smaa);
             ImGui::TreePop();
         }
         ImGui::End();
@@ -7433,12 +7361,12 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        auto& blit_source = use_fxaa ? fxaa_output : smaa_output;
+        auto& blit_source = use_smaa ? smaa_output : composite_output;
 
         image_pipeline_barrier(
             blit_source,
             command_buffer,
-            use_fxaa ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            use_smaa ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -7678,7 +7606,6 @@ int main(int argc, char* argv[]) {
     destroy_image(gbuffer_velocity, device, vma_allocator);
     destroy_image(depth_hiz, device, vma_allocator);
     destroy_image(bloom_buffer, device, vma_allocator);
-    destroy_image(fxaa_output, device, vma_allocator);
     destroy_image(ao_output, device, vma_allocator);
     destroy_image(ao_output_denoised, device, vma_allocator);
     destroy_image(ao_output_denoised_pong, device, vma_allocator);
@@ -7727,7 +7654,6 @@ int main(int argc, char* argv[]) {
     destroy_pipeline(device, bloom_downsample_pipeline);
     destroy_pipeline(device, bloom_upsample_pipeline);
     destroy_pipeline(device, composite_pipeline);
-    destroy_pipeline(device, fxaa_pipeline);
     destroy_pipeline(device, ao_prefilter_pipeline);
     destroy_pipeline(device, ao_pipeline);
     destroy_pipeline(device, ao_denoise_pipeline);
