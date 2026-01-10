@@ -1690,7 +1690,7 @@ int main(int argc, char* argv[]) {
     bool        visualize_probes = false;
     LightingUBO lighting_data    = {
            .light_direction  = glm::vec4(-0.2f, -0.7f, -1.0f, 0.0f),
-           .light_color      = glm::vec4(1.0, 1.0, 1.0, 10.0f),
+           .light_color      = glm::vec4(1.0, 0.9, 0.8, 5.0f),
            .grid_origin      = {0, 15, 0},
            .probe_spacing    = 5.0f,
            .probe_counts     = {16, 8, 16},
@@ -6826,7 +6826,9 @@ int main(int argc, char* argv[]) {
 
             ImGui::SeparatorText("Light");
             ImGui::DragFloat3("Light direction", &lighting_data.light_direction.x, 0.01, -1.0, 1.0);
-            ImGui::SliderFloat3("Light color", &lighting_data.light_color.x, 0.0, 1.0);
+            ImGui::ColorEdit3(
+                "Light color", &lighting_data.light_color.x, ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float
+            );
             ImGui::SliderFloat("Light intensity", &lighting_data.light_color.w, 0.0, 100.0);
 
             ImGui::ColorEdit3(

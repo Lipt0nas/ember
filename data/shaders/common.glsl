@@ -315,7 +315,6 @@ vec3 oct_decode(vec2 oct) {
 float gradient_noise(vec2 uv) {
     return fract(52.9829189 * fract(dot(uv, vec2(0.06711056, 0.00583715))));
 }
-
 vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisphere_bottom, vec4 sun_params) {
     vec3 rd = normalize(ray_dir);
     vec3 sd = normalize(sun_dir);
@@ -328,7 +327,7 @@ vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisph
     scatter = 1.0 - clamp(scatter, 0.8, 1.0);
 
     vec3 base_sky = mix(hemisphere_bottom.rgb, hemisphere_top.rgb, sky_gradient);
-    vec3 scatter_color = mix(vec3(1.0), sun_params.rgb * 1.5, scatter);
+    vec3 scatter_color = mix(base_sky, sun_params.rgb * 1.5 * sun_params.w, scatter);
     vec3 sky_color = mix(base_sky, scatter_color, atmosphere / 1.3);
 
     float sun_dot = dot(rd, sd);
