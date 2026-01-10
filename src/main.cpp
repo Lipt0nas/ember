@@ -146,6 +146,62 @@ void draw_pass_profiler(const std::vector<std::pair<std::string, PassTiming>>& p
     }
 }
 
+#define XEGTAO_HILBERT_LEVEL 6U
+#define XEGTAO_HILBERT_WIDTH ((1U << XEGTAO_HILBERT_LEVEL))
+#define XEGTAO_HILBERT_AREA  (XEGTAO_HILBERT_WIDTH * XEGTAO_HILBERT_WIDTH)
+uint32_t hilbert_index(uint32_t pos_x, uint32_t pos_y) {
+    uint32_t index = 0;
+    for (uint32_t i = XEGTAO_HILBERT_WIDTH / 2; i > 0; i /= 2) {
+        uint32_t region_x = (pos_x & i) > 0;
+        uint32_t region_y = (pos_y & i) > 0;
+
+        index += i * i * ((3 * region_x) ^ region_y);
+        if (region_y == 0) {
+            if (region_x == 1) {
+                pos_x = (XEGTAO_HILBERT_WIDTH - 1) - pos_x;
+                pos_y = (XEGTAO_HILBERT_WIDTH - 1) - pos_y;
+            }
+
+            uint32_t temp = pos_x;
+            pos_x         = pos_y;
+            pos_y         = temp;
+        }
+    }
+
+    return index;
+}
+
+Image create_hilbert_lut(
+    const Buffer& staging_buffer, VkCommandBuffer command_buffer, VkQueue queue, VmaAllocator allocator, VkDevice device
+) {
+    std::array<uint16_t, 64 * 64> data;
+
+    for (int x = 0; x < 64; x++) {
+        for (int y = 0; y < 64; y++) {
+            uint32_t r2_index = hilbert_index(x, y);
+            assert(r2_index < UINT16_MAX);
+
+            data[x + 64 * x] = static_cast<uint16_t>(r2_index);
+        }
+    }
+
+    return create_image_with_data(
+        VK_FORMAT_R16_UINT,
+        64,
+        64,
+        VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        staging_buffer,
+        data.data(),
+        sizeof(uint16_t) * data.size(),
+        command_buffer,
+        queue,
+        allocator,
+        device
+    );
+}
+
 static std::uniform_real_distribution<float> rng_distribution(0.f, 1.f);
 static std::mt19937                          rng;
 
@@ -1850,6 +1906,8 @@ int main(int argc, char* argv[]) {
         device
     );
 
+    Image hilbert_lut = create_hilbert_lut(staging_buffer, command_buffers[0], graphics_queue, vma_allocator, device);
+
     Image ao_output = create_image(
         VK_FORMAT_R32_UINT,
         swapchain.width,
@@ -3191,8 +3249,11 @@ int main(int argc, char* argv[]) {
     bool      capturing_mouse = false;
     glm::vec2 mouse_pos       = {};
 
-    bool pressed_keys[512]   = {0};
-    bool pressed_buttons[12] = {0};
+    std::array<bool, 512> pressed_keys    = {0};
+    std::array<bool, 12>  pressed_buttons = {0};
+
+    std::array<bool, 512> released_keys    = {1};
+    std::array<bool, 12>  released_buttons = {1};
 
     ImGuizmo::OPERATION tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
 
@@ -3474,6 +3535,12 @@ int main(int argc, char* argv[]) {
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
                                 linear_sampler_clamped, gbuffer_normals.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(
+                                nearest_sampler, hilbert_lut.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
                     },
@@ -6496,10 +6563,13 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case SDL_EVENT_KEY_UP:
-                pressed_keys[window_event.key.scancode] = false;
+                pressed_keys[window_event.key.scancode]  = false;
+                released_keys[window_event.key.scancode] = true;
+
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 pressed_buttons[window_event.button.button] = true;
+
                 if (window_event.button.button == SDL_BUTTON_RIGHT) {
                     SDL_SetWindowMouseGrab(window, true);
                     SDL_SetWindowRelativeMouseMode(window, true);
@@ -6508,7 +6578,9 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
-                pressed_buttons[window_event.button.button] = false;
+                pressed_buttons[window_event.button.button]  = false;
+                released_buttons[window_event.button.button] = true;
+
                 if (window_event.button.button == SDL_BUTTON_RIGHT) {
                     SDL_SetWindowMouseGrab(window, false);
                     SDL_SetWindowRelativeMouseMode(window, false);
@@ -6579,6 +6651,18 @@ int main(int argc, char* argv[]) {
 
         if (pressed_keys[SDL_SCANCODE_ESCAPE]) {
             running = false;
+        }
+
+        if (pressed_keys[SDL_SCANCODE_G] && released_keys[SDL_SCANCODE_G]) {
+            player_physics = !player_physics;
+
+            if (player_physics) {
+                player_character->SetPosition(JPH::RVec3(camera.position.x, camera.position.y, camera.position.z));
+            }
+        }
+
+        if (pressed_keys[SDL_SCANCODE_P] && released_keys[SDL_SCANCODE_P]) {
+            visualize_probes = !visualize_probes;
         }
 
         while (physics_time_accumulator >= physics_delta_time) {
@@ -7055,10 +7139,9 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        static bool press_guard = false;
         if (pressed_keys[SDL_SCANCODE_C] && !capturing_mouse) {
-            if (pressed_buttons[SDL_BUTTON_LEFT]) {
-                if (grabbed_mesh != -1 && !press_guard) {
+            if (pressed_buttons[SDL_BUTTON_LEFT] && released_buttons[SDL_BUTTON_LEFT]) {
+                if (grabbed_mesh != -1) {
                     int w;
                     int h;
                     SDL_GetWindowSizeInPixels(window, &w, &h);
@@ -7189,11 +7272,7 @@ int main(int argc, char* argv[]) {
 
                     mesh_instances.push_back(new_instance);
                     dynamic_bodies.push_back(PhysicsObject{body_id, static_cast<int>(mesh_instances.size() - 1)});
-
-                    press_guard = true;
                 }
-            } else {
-                press_guard = false;
             }
         }
 
@@ -7286,77 +7365,71 @@ int main(int argc, char* argv[]) {
 
         framegraph.execute(command_buffer, frame_index);
 
-        static bool pick_guard = false;
         if (pressed_keys[SDL_SCANCODE_LSHIFT] && !capturing_mouse) {
-            if (pressed_buttons[SDL_BUTTON_LEFT]) {
-                if (!pick_guard) {
-                    int w;
-                    int h;
-                    SDL_GetWindowSizeInPixels(window, &w, &h);
+            if (pressed_buttons[SDL_BUTTON_LEFT] && released_buttons[SDL_BUTTON_LEFT]) {
+                int w;
+                int h;
+                SDL_GetWindowSizeInPixels(window, &w, &h);
 
-                    int mouse_x = glm::clamp((int)mouse_pos.x, 0, w);
-                    int mouse_y = glm::clamp((int)mouse_pos.y, 0, h);
+                int mouse_x = glm::clamp((int)mouse_pos.x, 0, w);
+                int mouse_y = glm::clamp((int)mouse_pos.y, 0, h);
 
-                    VkBufferImageCopy region = {
-                        .bufferOffset      = 0,
-                        .bufferRowLength   = 0,
-                        .bufferImageHeight = 0,
-                        .imageSubresource =
-                            {
-                                .aspectMask     = gbuffer_id.aspect,
-                                .mipLevel       = 0,
-                                .baseArrayLayer = 0,
-                                .layerCount     = 1,
-                            },
-                        .imageOffset =
-                            {
-                                .x = mouse_x,
-                                .y = mouse_y,
-                                .z = 0,
-                            },
-                        .imageExtent = {
-                            .width  = 1,
-                            .height = 1,
-                            .depth  = 1,
-                        }
-                    };
+                VkBufferImageCopy region = {
+                    .bufferOffset      = 0,
+                    .bufferRowLength   = 0,
+                    .bufferImageHeight = 0,
+                    .imageSubresource =
+                        {
+                            .aspectMask     = gbuffer_id.aspect,
+                            .mipLevel       = 0,
+                            .baseArrayLayer = 0,
+                            .layerCount     = 1,
+                        },
+                    .imageOffset =
+                        {
+                            .x = mouse_x,
+                            .y = mouse_y,
+                            .z = 0,
+                        },
+                    .imageExtent = {
+                        .width  = 1,
+                        .height = 1,
+                        .depth  = 1,
+                    }
+                };
 
-                    image_pipeline_barrier(
-                        gbuffer_id,
-                        command_buffer,
-                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                        VK_ACCESS_2_TRANSFER_READ_BIT
-                    );
+                image_pipeline_barrier(
+                    gbuffer_id,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT
+                );
 
-                    vkCmdCopyImageToBuffer(
-                        command_buffer,
-                        gbuffer_id.handle,
-                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                        pick_buffer.handle,
-                        1,
-                        &region
-                    );
+                vkCmdCopyImageToBuffer(
+                    command_buffer,
+                    gbuffer_id.handle,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    pick_buffer.handle,
+                    1,
+                    &region
+                );
 
-                    image_pipeline_barrier(
-                        gbuffer_id,
-                        command_buffer,
-                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                        VK_ACCESS_2_TRANSFER_READ_BIT,
-                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
-                    );
+                image_pipeline_barrier(
+                    gbuffer_id,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+                );
 
-                    pick_frame = frame_count + FRAMES_IN_FLIGHT + 1;
-                    pick_guard = true;
-                }
-            } else {
-                pick_guard = false;
+                pick_frame = frame_count + FRAMES_IN_FLIGHT + 1;
             }
         }
 
@@ -7556,6 +7629,14 @@ int main(int argc, char* argv[]) {
             draw.last_scale    = draw.scale;
             draw.last_rotation = draw.rotation;
         }
+
+        for (int i = 0; i < pressed_keys.size(); i++) {
+            released_keys[i] = !pressed_keys[i];
+        }
+
+        for (int i = 0; i < pressed_buttons.size(); i++) {
+            released_buttons[i] = !pressed_buttons[i];
+        }
     }
 
     VK_CHECK(vkDeviceWaitIdle(device));
@@ -7621,6 +7702,7 @@ int main(int argc, char* argv[]) {
     destroy_image(rt_reflection_history, device, vma_allocator);
     destroy_image(blue_noise_texure, device, vma_allocator);
     destroy_image(average_luminance_image, device, vma_allocator);
+    destroy_image(hilbert_lut, device, vma_allocator);
 
     for (auto view : depth_mip_views) {
         vkDestroyImageView(device, view, nullptr);

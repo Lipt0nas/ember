@@ -76,6 +76,22 @@ Image load_image(
     VkDevice                     device
 );
 
+Image create_image_with_data(
+    VkFormat           format,
+    uint32_t           width,
+    uint32_t           height,
+    VkImageUsageFlags  usage,
+    VkImageAspectFlags aspect,
+    bool               generate_mipmaps,
+    const Buffer&      staging_buffer,
+    void*              data_ptr,
+    size_t             data_size,
+    VkCommandBuffer    command_buffer,
+    VkQueue            queue,
+    VmaAllocator       allocator,
+    VkDevice           device
+);
+
 Image create_image(
     VkFormat           format,
     uint32_t           width,

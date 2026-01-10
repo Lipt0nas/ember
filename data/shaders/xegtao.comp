@@ -15,6 +15,7 @@ layout(set = 0, binding = 1, r8) uniform writeonly image2D out_edges;
 
 layout(set = 0, binding = 2) uniform sampler2D depth_texture;
 layout(set = 0, binding = 3) uniform sampler2D g_normals_texture;
+layout(set = 0, binding = 4) uniform usampler2D hilbert_lut;
 
 layout(set = 1, binding = 0) uniform UBO {
     SceneUBO scene;
@@ -42,51 +43,13 @@ vec4 XeGTAO_calculate_edges(const float center_z, const float left_z, const floa
     return vec4(clamp((1.25 - edges_lrtb / (center_z * 0.011)), 0.0, 1.0));
 }
 
-#define XE_HILBERT_LEVEL    6U
-#define XE_HILBERT_WIDTH    ( (1U << XE_HILBERT_LEVEL) )
-#define XE_HILBERT_AREA     ( XE_HILBERT_WIDTH * XE_HILBERT_WIDTH )
-uint HilbertIndex(uint posX, uint posY)
-{
-    uint index = 0U;
-    for (uint curLevel = XE_HILBERT_WIDTH / 2U; curLevel > 0U; curLevel /= 2U)
-    {
-        uint regionX = uint((posX & curLevel) > 0U);
-        uint regionY = uint((posY & curLevel) > 0U);
-        index += curLevel * curLevel * ((3U * regionX) ^ regionY);
-        if (regionY == 0U)
-        {
-            if (regionX == 1U)
-            {
-                posX = uint((XE_HILBERT_WIDTH - 1U)) - posX;
-                posY = uint((XE_HILBERT_WIDTH - 1U)) - posY;
-            }
-
-            uint temp = posX;
-            posX = posY;
-            posY = temp;
-        }
-    }
-    return index;
-}
-
 // Engine-specific screen & temporal noise loader
 vec2 SpatioTemporalNoise(uvec2 pixCoord, uint temporalIndex) {
     vec2 noise;
-    uint index = HilbertIndex(pixCoord.x, pixCoord.y);
+    uint index = texture(hilbert_lut, vec2(pixCoord % 64)).x;
     index += 288 * (temporalIndex % 64); // why 288? tried out a few and that's the best so far (with XE_HILBERT_LEVEL 6U) - but there's probably better :)
     // R2 sequence - see http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/
     return vec2(fract(0.5 + index * vec2(0.75487766624669276005, 0.5698402909980532659114)));
-}
-
-// TODO: TEMP
-vec2 generateLocalNoise(uvec2 pixCoord, uint frameIndex)
-{
-    // Simple hash function
-    uint hash = pixCoord.x * 1973u + pixCoord.y * 9277u + frameIndex * 26699u;
-    hash = hash * 1664525u + 1013904223u;
-
-    float angle = float(hash) * (1.0 / 4294967296.0) * 2.0 * 3.1454;
-    return vec2(cos(angle), sin(angle));
 }
 
 float XeGTAO_screen_space_to_view_space_depth(float screen_depth) {
