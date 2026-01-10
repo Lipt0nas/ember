@@ -1,5 +1,6 @@
 #include "ember.hpp"
 
+#include "args.hpp"
 #include "camera.hpp"
 #include "device.hpp"
 #include "framegraph.hpp"
@@ -1328,6 +1329,9 @@ void populate_materials(
 }
 
 int main(int argc, char* argv[]) {
+    ArgParser args;
+    args.parse(argc, argv);
+
     std::random_device rd;
     rng.seed((int)rd());
 
@@ -1342,7 +1346,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    auto* window = SDL_CreateWindow("Ember", 2550, 1440, SDL_WINDOW_VULKAN);
+    auto* window = SDL_CreateWindow("Ember", args.get_arg("w", 1920), args.get_arg("h", 1080), SDL_WINDOW_VULKAN);
     if (!window) {
         spdlog::error("Failed to create SDL window");
         return 1;
@@ -1393,6 +1397,8 @@ int main(int argc, char* argv[]) {
         instance, physical_device, graphics_family_index, enable_validation, use_meshlets, use_hardware_rt
     );
     volkLoadDevice(device);
+
+    use_meshlets = args.get_arg<bool>("meshlets", true);
 
     spdlog::info("Extension support:\n\tMesh shading: {}\n\tRay tracing: {}", use_meshlets, use_hardware_rt);
 
@@ -3127,7 +3133,7 @@ int main(int argc, char* argv[]) {
 
     physics_system.OptimizeBroadPhase();
 
-    std::string load_path = argc > 1 ? argv[1] : "data/models/room2.glb";
+    std::string load_path = args.get_arg<std::string>("s", "data/models/room2.glb");
 
     load_scene(
         load_path,
