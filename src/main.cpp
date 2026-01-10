@@ -2056,17 +2056,6 @@ int main(int argc, char* argv[]) {
         device
     );
 
-    Image blue_noise_texure = load_image(
-        "data/textures/LDR_RGBA_0.png",
-        VK_FORMAT_R8G8B8A8_UNORM,
-        false,
-        staging_buffer,
-        command_buffers[0],
-        graphics_queue,
-        vma_allocator,
-        device
-    );
-
     Image smaa_search_tex = load_image(
         "data/textures/smaa_search_tex.png",
         VK_FORMAT_R8G8B8A8_UNORM,
@@ -5047,7 +5036,7 @@ int main(int argc, char* argv[]) {
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
-                                linear_sampler, blue_noise_texure.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                nearest_sampler, hilbert_lut.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
                         DescriptorBinding{
@@ -7633,7 +7622,6 @@ int main(int argc, char* argv[]) {
     destroy_image(smaa_weights, device, vma_allocator);
     destroy_image(rt_reflection_buffer, device, vma_allocator);
     destroy_image(rt_reflection_history, device, vma_allocator);
-    destroy_image(blue_noise_texure, device, vma_allocator);
     destroy_image(average_luminance_image, device, vma_allocator);
     destroy_image(hilbert_lut, device, vma_allocator);
 
