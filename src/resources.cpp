@@ -124,6 +124,7 @@ Image load_image(
         memcpy(staging_buffer_ptr, texture_data, sizeof(float) * width * height * 4);
         stbi_image_free(texture_data);
     }
+    vmaUnmapMemory(allocator, staging_buffer.allocation);
 
     Image image = create_image(
         format,
@@ -138,7 +139,41 @@ Image load_image(
 
     copy_image(staging_buffer, image, generate_mipmaps, command_buffer, queue, device);
 
+    return image;
+}
+
+Image create_image_with_data(
+    VkFormat           format,
+    uint32_t           width,
+    uint32_t           height,
+    VkImageUsageFlags  usage,
+    VkImageAspectFlags aspect,
+    bool               generate_mipmaps,
+    const Buffer&      staging_buffer,
+    void*              data_ptr,
+    size_t             data_size,
+    VkCommandBuffer    command_buffer,
+    VkQueue            queue,
+    VmaAllocator       allocator,
+    VkDevice           device
+) {
+    void* staging_buffer_ptr = nullptr;
+    VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
+    memcpy(staging_buffer_ptr, data_ptr, data_size);
     vmaUnmapMemory(allocator, staging_buffer.allocation);
+
+    Image image = create_image(
+        format,
+        width,
+        height,
+        usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        aspect,
+        generate_mipmaps,
+        allocator,
+        device
+    );
+
+    copy_image(staging_buffer, image, generate_mipmaps, command_buffer, queue, device);
 
     return image;
 }
