@@ -1,0 +1,59 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+
+#include "common.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, r16f) uniform image2D avg_luminance_image;
+
+layout(set = 0, binding = 1, std430) buffer Luminance {
+    uint luminance[];
+};
+
+layout(push_constant, std430) uniform pc {
+    float min_log2_luminance;
+    float inverse_log2_luminance;
+
+    float time_coef;
+    float pixel_count;
+} push;
+
+shared uint shared_histogram[256];
+
+void main() {
+    uint local_index = gl_LocalInvocationIndex;
+
+    uint count = luminance[local_index];
+    shared_histogram[local_index] = count * local_index;
+
+    barrier();
+
+    luminance[local_index] = 0;
+
+    for (uint cutoff = (256 >> 1); cutoff > 0; cutoff >>= 1) {
+        if (uint(local_index) < cutoff) {
+            shared_histogram[local_index] += shared_histogram[local_index + cutoff];
+        }
+        barrier();
+    }
+
+    if (local_index == 0) {
+        float weighted_bin_avg = (shared_histogram[0] / max(push.pixel_count - float(count), 1.0)) - 1.0;
+
+        float normalized = weighted_bin_avg / 254.0;
+
+        float log_luminance = normalized / push.inverse_log2_luminance + push.min_log2_luminance;
+        float weighted_avg_lum = exp2(log_luminance);
+
+        float last_frame_lum = imageLoad(avg_luminance_image, ivec2(0, 0)).x;
+        float adapted_lum = last_frame_lum + (weighted_avg_lum - last_frame_lum) * push.time_coef;
+
+        imageStore(avg_luminance_image, ivec2(0, 0), vec4(adapted_lum, 0.0, 0.0, 0.0));
+    }
+}

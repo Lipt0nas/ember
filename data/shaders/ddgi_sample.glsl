@@ -23,9 +23,10 @@ vec3 sample_ddgi(LightingUBO lighting, vec3 surface_pos, vec3 surface_normal, ve
 
         DDGIProbe probe = probes[probe_idx];
 
-        if (probe.state == 0 && lighting.use_probe_state == 1) {
+        if (probe.state == 0) {
             continue;
         }
+
         vec3 probe_pos = ddgi_get_probe_position(probe_idx, lighting.probe_counts, lighting.grid_origin, vec3(lighting.probe_spacing), probe.offset);
 
         // Direction from surface to probe (for directional weight)
@@ -45,7 +46,7 @@ vec3 sample_ddgi(LightingUBO lighting, vec3 surface_pos, vec3 surface_normal, ve
 
         // Chebyshev visibility test
         // Sample depth at probe-to-surface direction
-        vec2 depth_data = texture(ddgi_depth, ddgi_probe_uv(lighting.probe_counts, probe_idx, probe_to_surface, lighting.depth_texels_per_probe)).rg;
+        vec2 depth_data = 2.0 * texture(ddgi_depth, ddgi_probe_uv(lighting.probe_counts, probe_idx, probe_to_surface, lighting.depth_texels_per_probe)).rg;
         float mean_dist = depth_data.x;
         float mean_dist_sq = depth_data.y;
 

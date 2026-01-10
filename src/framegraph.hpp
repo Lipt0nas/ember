@@ -72,6 +72,12 @@ struct BufferResourceUse {
     bool dynamic;
 };
 
+struct TrackedImage {
+    VkImageLayout image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    bool clear_on_first_write = true;
+};
+
 struct RenderPass {
     std::string name;
 
@@ -246,7 +252,7 @@ constexpr uint32_t QUERY_COUNT = 64;
 struct Framegraph {
     std::vector<RenderPass> passes;
 
-    std::unordered_map<VkImage, VkImageLayout> tracked_layouts;
+    std::unordered_map<VkImage, TrackedImage> tracked_layouts;
 
     // Image barriers to submit before rendering the respective pass:
     // index 0 - image barriers before render pass 0
@@ -259,6 +265,11 @@ struct Framegraph {
     // index 1 - buffer barriers before render pass 1
     // ...
     std::vector<std::vector<BufferBarrier>> buffer_barriers;
+
+    // Image barriers at the end of the frame, meant to transition
+    // images that don't need to transition from UNDEFINED layout
+    // and instead need to match their imported state
+    std::vector<ImageBarrier> post_frame_image_barriers;
 
     bool                     enable_timings   = false;
     uint32_t                 next_query_index = 0;
@@ -337,8 +348,8 @@ struct Framegraph {
     // Import external image into the framegraph, the `expected_layout`
     // is expected image layout on the first frame of the framegraph
     // execution, used to simplify transition tracking
-    void import_image(const Image& image, VkImageLayout expected_layout) {
-        tracked_layouts.insert({image.handle, expected_layout});
+    void import_image(const Image& image, VkImageLayout expected_layout, bool clear_on_first_write = true) {
+        tracked_layouts.insert({image.handle, {expected_layout, clear_on_first_write}});
     }
 
     const PassTiming& get_pass_timing(const std::string& pass_name) {
@@ -353,7 +364,7 @@ struct Framegraph {
         image_barriers.resize(passes.size());
         buffer_barriers.resize(passes.size());
 
-        struct LastAccess {
+        struct ResourceAccess {
             int                      pass_idx     = -1;
             VkPipelineStageFlagBits2 stage        = VK_PIPELINE_STAGE_2_NONE;
             VkAccessFlagBits2        access       = VK_ACCESS_2_NONE;
@@ -362,11 +373,17 @@ struct Framegraph {
             VkDeviceSize offset = 0;
             VkDeviceSize size   = 0;
 
+            VkImageSubresourceRange image_subresource_range;
+
             bool dynamic = false;
         };
 
-        std::unordered_map<VkImage, LastAccess>  last_image_access;
-        std::unordered_map<VkBuffer, LastAccess> last_buffer_access;
+        std::unordered_map<VkImage, ResourceAccess>  last_image_access;
+        std::unordered_map<VkBuffer, ResourceAccess> last_buffer_access;
+
+        std::unordered_map<VkImage, TrackedImage> tracked_layouts(
+            this->tracked_layouts.begin(), this->tracked_layouts.end()
+        );
 
         for (int pass_idx = 0; pass_idx < passes.size(); pass_idx++) {
             auto& current_pass = passes[pass_idx];
@@ -375,18 +392,23 @@ struct Framegraph {
             current_pass.query_end_index   = next_query_index++;
 
             for (const auto& image_write : current_pass.image_writes) {
-                VkImageLayout& old_layout  = tracked_layouts[image_write.image];
-                LastAccess&    last_access = last_image_access[image_write.image];
+                TrackedImage&   tracked     = tracked_layouts[image_write.image];
+                ResourceAccess& last_access = last_image_access[image_write.image];
 
                 // If the pass writes to an image as an attachment, we assume that it wants it cleared
                 // but only if it's the first writer
+                // NOTE: this changed a little bit, might be worth to rename
                 bool should_clear = ((image_write.access & (VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
                                                             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
                                                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)) != 0) &&
                                     last_access.pass_idx == -1;
 
+                if (!tracked.clear_on_first_write) {
+                    should_clear = false;
+                }
+
                 bool needs_barrier = should_clear;
-                if (old_layout != image_write.layout) {
+                if (tracked.image_layout != image_write.layout) {
                     needs_barrier = true;
                 }
 
@@ -400,7 +422,7 @@ struct Framegraph {
                 if (needs_barrier) {
                     ImageBarrier barrier = {
                         .image             = image_write.image,
-                        .old_layout        = should_clear ? VK_IMAGE_LAYOUT_UNDEFINED : old_layout,
+                        .old_layout        = should_clear ? VK_IMAGE_LAYOUT_UNDEFINED : tracked.image_layout,
                         .new_layout        = image_write.layout,
                         .src_stage_mask    = src_stage_mask,
                         .src_access_mask   = src_access_mask,
@@ -412,19 +434,20 @@ struct Framegraph {
                     image_barriers[pass_idx].push_back(barrier);
                 }
 
-                old_layout  = image_write.layout;
-                last_access = {
-                    .pass_idx = pass_idx, .stage = image_write.stage, .access = image_write.access, .write_access = true
+                tracked.image_layout = image_write.layout;
+                last_access          = {
+                             .pass_idx = pass_idx, .stage = image_write.stage, .access = image_write.access, .write_access = true
                 };
+                last_access.image_subresource_range = image_write.subresource_range;
             }
 
             for (const auto& image_read : current_pass.image_reads) {
-                VkImageLayout& old_layout  = tracked_layouts[image_read.image];
-                LastAccess&    last_access = last_image_access[image_read.image];
+                TrackedImage&   tracked     = tracked_layouts[image_read.image];
+                ResourceAccess& last_access = last_image_access[image_read.image];
 
                 bool needs_barrier = false;
 
-                if (old_layout != image_read.layout) {
+                if (tracked.image_layout != image_read.layout) {
                     needs_barrier = true;
                 }
 
@@ -438,7 +461,7 @@ struct Framegraph {
                 if (needs_barrier) {
                     ImageBarrier barrier = {
                         .image             = image_read.image,
-                        .old_layout        = old_layout,
+                        .old_layout        = tracked.image_layout,
                         .new_layout        = image_read.layout,
                         .src_stage_mask    = src_stage_mask,
                         .src_access_mask   = src_access_mask,
@@ -450,14 +473,15 @@ struct Framegraph {
                     image_barriers[pass_idx].push_back(barrier);
                 }
 
-                old_layout  = image_read.layout;
-                last_access = {
-                    .pass_idx = pass_idx, .stage = image_read.stage, .access = image_read.access, .write_access = false
+                tracked.image_layout = image_read.layout;
+                last_access          = {
+                             .pass_idx = pass_idx, .stage = image_read.stage, .access = image_read.access, .write_access = false
                 };
+                last_access.image_subresource_range = image_read.subresource_range;
             }
 
             for (const auto& buffer_write : current_pass.buffer_writes) {
-                LastAccess& last_access = last_buffer_access[buffer_write.buffer];
+                ResourceAccess& last_access = last_buffer_access[buffer_write.buffer];
 
                 bool needs_barrier = false;
 
@@ -495,7 +519,7 @@ struct Framegraph {
             }
 
             for (const auto& buffer_read : current_pass.buffer_reads) {
-                LastAccess& last_access = last_buffer_access[buffer_read.buffer];
+                ResourceAccess& last_access = last_buffer_access[buffer_read.buffer];
 
                 bool needs_barrier = false;
 
@@ -547,6 +571,30 @@ struct Framegraph {
             }
         }
 
+        // For images that won't be discarded on the next frame, we should transition them back to the originally
+        // tracked layout
+        for (auto& [image, layout] : tracked_layouts) {
+            if (this->tracked_layouts.contains(image)) {
+                TrackedImage& original_image = this->tracked_layouts.at(image);
+
+                if (layout.image_layout != original_image.image_layout) {
+                    if (!layout.clear_on_first_write) {
+                        ImageBarrier barrier = {
+                            .image             = image,
+                            .old_layout        = layout.image_layout,
+                            .new_layout        = original_image.image_layout,
+                            .src_stage_mask    = last_image_access[image].stage,
+                            .src_access_mask   = last_image_access[image].access,
+                            .dst_stage_mask    = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                            .dst_access_mask   = VK_ACCESS_2_NONE,
+                            .subresource_range = last_image_access[image].image_subresource_range,
+                        };
+                        post_frame_image_barriers.push_back(barrier);
+                    }
+                }
+            }
+        }
+
         for (int i = 0; i < passes.size(); i++) {
             auto& pass = passes[i];
 
@@ -562,25 +610,21 @@ struct Framegraph {
             }
             spdlog::info("---- ");
         }
+
+        spdlog::info("---- Post frame transitions:");
+        for (int b = 0; b < post_frame_image_barriers.size(); b++) {
+            auto& barrier = post_frame_image_barriers[b];
+            spdlog::info(
+                "\tTransition image 0x{:x}: {} -> {}",
+                (uintptr_t)barrier.image,
+                string_VkImageLayout(barrier.old_layout),
+                string_VkImageLayout(barrier.new_layout)
+            );
+        }
+        spdlog::info("---- ");
     }
 
     void execute(VkCommandBuffer command_buffer, uint32_t frame_index) {
-        // NOTE: this is for cross-frame barrier debugging
-
-        // VkMemoryBarrier2 full_barrier = {
-        //     .sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        //     .srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        //     .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-        //     .dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        //     .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT
-        // };
-        //
-        // VkDependencyInfo dep = {
-        //     .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &full_barrier
-        // };
-        //
-        // vkCmdPipelineBarrier2(command_buffer, &dep);
-
         VkQueryPool query_pool = timestamp_query_pools[query_pool_index];
         if (enable_timings) {
             vkCmdResetQueryPool(command_buffer, query_pool, 0, next_query_index);
@@ -666,6 +710,40 @@ struct Framegraph {
                 );
             }
         }
+
+        // NOTE: should consider moving this to resources.hpp
+        std::vector<VkImageMemoryBarrier2> img_barriers;
+        for (const auto& image : post_frame_image_barriers) {
+            img_barriers.push_back(
+                VkImageMemoryBarrier2{
+                    .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                    .pNext               = nullptr,
+                    .srcStageMask        = image.src_stage_mask,
+                    .srcAccessMask       = image.src_access_mask,
+                    .dstStageMask        = image.dst_stage_mask,
+                    .dstAccessMask       = image.dst_access_mask,
+                    .oldLayout           = image.old_layout,
+                    .newLayout           = image.new_layout,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image               = image.image,
+                    .subresourceRange    = image.subresource_range
+                }
+            );
+        }
+        VkDependencyInfo dependency = {
+            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext                    = nullptr,
+            .dependencyFlags          = 0,
+            .memoryBarrierCount       = 0,
+            .pMemoryBarriers          = nullptr,
+            .bufferMemoryBarrierCount = 0,
+            .pBufferMemoryBarriers    = nullptr,
+            .imageMemoryBarrierCount  = static_cast<uint32_t>(img_barriers.size()),
+            .pImageMemoryBarriers     = img_barriers.data(),
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
 
         if (!start_reading) {
             if (query_pool_index >= timestamp_query_pools.size() - 1) {

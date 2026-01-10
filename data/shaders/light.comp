@@ -68,7 +68,7 @@ void main() {
         mat3 viewRotation = mat3(scene.view);
         vec3 worldDirection = inverse(viewRotation) * viewDir;
 
-        vec3 radiance = get_sky_color(worldDirection, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom);
+        vec3 radiance = get_sky_color(worldDirection, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, lighting.light_color);
         final_color = radiance;
     } else {
         vec4 albedo_rougness = texture(g_albedo_texture, uv);
