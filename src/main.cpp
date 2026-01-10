@@ -182,7 +182,7 @@ Image create_hilbert_lut(
             uint32_t r2_index = hilbert_index(x, y);
             assert(r2_index < UINT16_MAX);
 
-            data[x + 64 * x] = static_cast<uint16_t>(r2_index);
+            data[x + 64 * y] = static_cast<uint16_t>(r2_index);
         }
     }
 

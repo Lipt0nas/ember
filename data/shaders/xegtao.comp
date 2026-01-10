@@ -46,7 +46,7 @@ vec4 XeGTAO_calculate_edges(const float center_z, const float left_z, const floa
 // Engine-specific screen & temporal noise loader
 vec2 SpatioTemporalNoise(uvec2 pixCoord, uint temporalIndex) {
     vec2 noise;
-    uint index = texture(hilbert_lut, vec2(pixCoord % 64)).x;
+    uint index = texture(hilbert_lut, vec2(pixCoord % 64) / 64.0).x;
     index += 288 * (temporalIndex % 64); // why 288? tried out a few and that's the best so far (with XE_HILBERT_LEVEL 6U) - but there's probably better :)
     // R2 sequence - see http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/
     return vec2(fract(0.5 + index * vec2(0.75487766624669276005, 0.5698402909980532659114)));
