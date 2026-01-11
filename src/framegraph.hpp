@@ -8,6 +8,9 @@
 #include <functional>
 #include <unordered_map>
 
+#include <tracy/Tracy.hpp>
+#include <tracy/TracyVulkan.hpp>
+
 struct ImageBarrier {
     VkImage image;
 
@@ -280,11 +283,18 @@ struct Framegraph {
 
     std::unordered_map<std::string, PassTiming> pass_timings;
 
-    // TODO: Probably not a constructor
+    tracy::VkCtx* tracy_vk_context;
+
     Framegraph(
-        VkDevice device, VkQueue queue, VkCommandBuffer command_buffer, uint32_t frames_in_flight, bool enable_timings
+        VkDevice        device,
+        VkQueue         queue,
+        VkCommandBuffer command_buffer,
+        uint32_t        frames_in_flight,
+        bool            enable_timings,
+        tracy::VkCtx*   tracy_vk_context
     ) {
-        this->enable_timings = enable_timings;
+        this->enable_timings   = enable_timings;
+        this->tracy_vk_context = tracy_vk_context;
 
         timestamp_query_pools.resize(frames_in_flight);
 
@@ -637,6 +647,9 @@ struct Framegraph {
     }
 
     void execute(VkCommandBuffer command_buffer, uint32_t frame_index) {
+        ZoneScopedN("Framegraph::execute()");
+        TracyVkZone(this->tracy_vk_context, command_buffer, "Framegraph::execute()");
+
         VkQueryPool query_pool = timestamp_query_pools[query_pool_index];
         if (enable_timings) {
             vkCmdResetQueryPool(command_buffer, query_pool, 0, next_query_index);
