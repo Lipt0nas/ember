@@ -2403,7 +2403,7 @@ int main(int argc, char* argv[]) {
         //     VK_CHECK(vkCreateImageView(device, &mip_view_info, nullptr, &specular_image_views[i]));
         // }
 
-        Framegraph ibl_graph(device, graphics_queue, command_buffer, 1, false);
+        Framegraph ibl_graph(device, graphics_queue, command_buffer, 1, false, tracy_vk_context);
         // ibl_graph.import_image(irradiance_cubemap, VK_IMAGE_LAYOUT_GENERAL);
         // ibl_graph.import_image(specular_cubemap, VK_IMAGE_LAYOUT_GENERAL);
         ibl_graph.import_image(brdf_lut, VK_IMAGE_LAYOUT_GENERAL);
@@ -3528,7 +3528,9 @@ int main(int argc, char* argv[]) {
     dynamic_offsets.resize(static_cast<uint32_t>(DynamicOffset::COUNT));
 
     spdlog::info("Creating framegraph");
-    Framegraph framegraph(device, graphics_queue, command_buffers[0], FRAMES_IN_FLIGHT, supports_timestamp_queries);
+    Framegraph framegraph(
+        device, graphics_queue, command_buffers[0], FRAMES_IN_FLIGHT, supports_timestamp_queries, tracy_vk_context
+    );
     framegraph.import_image(depth_hiz, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(depth_buffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     framegraph.import_image(gbuffer_albedo, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -3590,9 +3592,6 @@ int main(int argc, char* argv[]) {
                 indirect_command_buffer.size / FRAMES_IN_FLIGHT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "Early Cull Pass");
-                ZoneScopedN("Early Cull Pass");
-
                 std::array<uint32_t, 5> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
@@ -3669,9 +3668,6 @@ int main(int argc, char* argv[]) {
                 material_buffer.size / FRAMES_IN_FLIGHT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "Gbuffer Pass");
-                ZoneScopedN("Gbuffer Pass");
-
                 vkCmdBeginQuery(command_buffer, statistics_pools[frame_index], 0, 0);
 
                 std::vector<VkRenderingAttachmentInfo> gbuffer_color_attachments = {
@@ -3848,9 +3844,6 @@ int main(int argc, char* argv[]) {
                                       VK_IMAGE_LAYOUT_GENERAL
                                   )
                                   .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                                      TracyVkZone(tracy_vk_context, command_buffer, "Depth Pyramid");
-                                      ZoneScopedN("Depth Pyramid");
-
                                       VkPipelineBindPoint bind_point      = hiz_pipeline.bind_point;
                                       VkPipeline          pipeline        = hiz_pipeline.pipeline_handle;
                                       VkPipelineLayout    pipeline_layout = hiz_pipeline.pipeline_layout;
@@ -3956,9 +3949,6 @@ int main(int argc, char* argv[]) {
             .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(ao_prefiltered_depth, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "AO Prefilter Pass");
-                ZoneScopedN("AO Prefilter Pass");
-
                 vkCmdBindPipeline(
                     command_buffer, ao_prefilter_pipeline.bind_point, ao_prefilter_pipeline.pipeline_handle
                 );
@@ -3997,9 +3987,6 @@ int main(int argc, char* argv[]) {
                        .writes_storage_image(ao_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                        .writes_storage_image(ao_output_edges, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                        .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                           TracyVkZone(tracy_vk_context, command_buffer, "AO Pass");
-                           ZoneScopedN("AO Pass");
-
                            vkCmdBindPipeline(command_buffer, ao_pipeline.bind_point, ao_pipeline.pipeline_handle);
                            vkCmdBindDescriptorSets(
                                command_buffer,
@@ -4037,9 +4024,6 @@ int main(int argc, char* argv[]) {
             .writes_storage_image(ao_output_denoised, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(ao_output_denoised_pong, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "AO Denoise Pass");
-                ZoneScopedN("AO Denoise Pass");
-
                 vkCmdBindPipeline(command_buffer, ao_denoise_pipeline.bind_point, ao_denoise_pipeline.pipeline_handle);
 
                 int denoise_passes = 2;
@@ -4227,9 +4211,6 @@ int main(int argc, char* argv[]) {
             .samples_image(ddgi_irradiance_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(ddgi_depth_atlas_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
-                ZoneScopedN("DDGI Pass");
-
                 const Pipeline& pipeline = ddgi_ray_pipeline;
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -4314,9 +4295,6 @@ int main(int argc, char* argv[]) {
             .writes_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .reads_storage_image(ddgi_depth_atlas_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
-                ZoneScopedN("DDGI Pass");
-
                 const Pipeline& pipeline = ddgi_probe_blend_depth_pipeline;
 
                 std::array<uint32_t, 1> offsets = {dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]};
@@ -4473,9 +4451,6 @@ int main(int argc, char* argv[]) {
             .writes_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .reads_storage_image(ddgi_irradiance_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
-                ZoneScopedN("DDGI Pass");
-
                 const Pipeline& pipeline = ddgi_probe_blend_irradiance_pipeline;
 
                 std::array<uint32_t, 1> offsets = {dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]};
@@ -4625,9 +4600,6 @@ int main(int argc, char* argv[]) {
                 lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
-                ZoneScopedN("DDGI Pass");
-
                 const Pipeline& pipeline = ddgi_probe_relocate_pipeline;
 
                 std::array<uint32_t, 1> offsets = {dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]};
@@ -4688,9 +4660,6 @@ int main(int argc, char* argv[]) {
                 lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
-                ZoneScopedN("DDGI Pass");
-
                 const Pipeline& pipeline = ddgi_probe_classify_pipeline;
 
                 std::array<uint32_t, 1> offsets = {dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)]};
@@ -4747,9 +4716,6 @@ int main(int argc, char* argv[]) {
                                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
                                 )
                                 .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                                    TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
-                                    ZoneScopedN("RT Shadows");
-
                                     const Pipeline& pipeline = tile_clear_pipeline;
 
                                     vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -4902,9 +4868,6 @@ int main(int argc, char* argv[]) {
             .samples_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(rt_reflection_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
-                ZoneScopedN("RT Shadows");
-
                 const Pipeline& pipeline = rt_reflection_pipeline;
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -4981,9 +4944,6 @@ int main(int argc, char* argv[]) {
             )
             .writes_storage_image(rt_reflection_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
-                ZoneScopedN("RT Shadows");
-
                 const Pipeline& pipeline = reflection_tile_copy_pipeline;
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -5067,9 +5027,6 @@ int main(int argc, char* argv[]) {
             .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(rt_reflection_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
-                ZoneScopedN("RT Shadows");
-
                 const Pipeline& pipeline = rt_reflection_upsample;
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -5265,9 +5222,6 @@ int main(int argc, char* argv[]) {
                             .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                             .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadows");
-                                ZoneScopedN("RT Shadows");
-
                                 const Pipeline& pipeline = shadow_pipeline;
 
                                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -5335,9 +5289,6 @@ int main(int argc, char* argv[]) {
             .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadow Fill");
-                ZoneScopedN("RT Shadow Fill");
-
                 const Pipeline& pipeline = shadow_fill_pipeline;
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -5396,9 +5347,6 @@ int main(int argc, char* argv[]) {
             .reads_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(directional_shadow_buffer_pong, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadow Blur");
-                ZoneScopedN("RT Shadow Blur");
-
                 const Pipeline& pipeline = shadow_blur_pipeline;
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -5530,9 +5478,6 @@ int main(int argc, char* argv[]) {
             .samples_image(rt_reflection_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "Light Pass");
-                ZoneScopedN("Light Pass");
-
                 std::array<uint32_t, 2> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)]
@@ -5583,9 +5528,6 @@ int main(int argc, char* argv[]) {
             )
             .reads_storage_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
-                ZoneScopedN("DDGI Pass");
-
                 const Pipeline& pipeline = luminance_histogram_pipeline;
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -5646,9 +5588,6 @@ int main(int argc, char* argv[]) {
             .writes_storage_image(average_luminance_image, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .reads_storage_image(average_luminance_image, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "DDGI Pass");
-                ZoneScopedN("DDGI Pass");
-
                 const Pipeline& pipeline = luminance_average_pipeline;
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -5718,9 +5657,6 @@ int main(int argc, char* argv[]) {
             .samples_image(gbuffer_id, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(smaa_edges, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadow Fill");
-                ZoneScopedN("RT Shadow Fill");
-
                 const Pipeline& pipeline = smaa_edge_pipeline;
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -5797,9 +5733,6 @@ int main(int argc, char* argv[]) {
             .samples_image(smaa_edges, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(smaa_weights, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadow Fill");
-                ZoneScopedN("RT Shadow Fill");
-
                 const Pipeline& pipeline = smaa_weights_pipeline;
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -5849,9 +5782,6 @@ int main(int argc, char* argv[]) {
                 VK_IMAGE_LAYOUT_GENERAL
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "Bloom Downsample Pass");
-                ZoneScopedN("Bloom Downsample Pass");
-
                 VkPipelineBindPoint bind_point      = bloom_downsample_pipeline.bind_point;
                 VkPipeline          pipeline        = bloom_downsample_pipeline.pipeline_handle;
                 VkPipelineLayout    pipeline_layout = bloom_downsample_pipeline.pipeline_layout;
@@ -5951,9 +5881,6 @@ int main(int argc, char* argv[]) {
                 VK_IMAGE_LAYOUT_GENERAL
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "Bloom Upsample Pass");
-                ZoneScopedN("Bloom Upsample Pass");
-
                 VkPipelineBindPoint bind_point      = bloom_upsample_pipeline.bind_point;
                 VkPipeline          pipeline        = bloom_upsample_pipeline.pipeline_handle;
                 VkPipelineLayout    pipeline_layout = bloom_upsample_pipeline.pipeline_layout;
@@ -6068,9 +5995,6 @@ int main(int argc, char* argv[]) {
             .reads_storage_image(average_luminance_image, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(composite_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "Composite Pass");
-                ZoneScopedN("Composite Pass");
-
                 vkCmdBindPipeline(command_buffer, composite_pipeline.bind_point, composite_pipeline.pipeline_handle);
                 vkCmdBindDescriptorSets(
                     command_buffer,
@@ -6126,9 +6050,6 @@ int main(int argc, char* argv[]) {
                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "Debug Pass");
-                ZoneScopedN("Debug Pass");
-
                 if (debug_renderer.instance_count == 0) {
                     return;
                 }
@@ -6260,9 +6181,6 @@ int main(int argc, char* argv[]) {
             .samples_image(composite_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(smaa_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                TracyVkZone(tracy_vk_context, command_buffer, "RT Shadow Fill");
-                ZoneScopedN("RT Shadow Fill");
-
                 const Pipeline& pipeline = smaa_blend_pipeline;
 
                 vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
