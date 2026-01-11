@@ -12,7 +12,9 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0, rg8) uniform image2D edgesTex;
 
-layout(set = 0, binding = 1) uniform sampler2D colorTex;
+layout(set = 0, binding = 1) uniform sampler2D normalTex;
+layout(set = 0, binding = 2) uniform usampler2D objectIDTex;
+layout(set = 0, binding = 3) uniform sampler2D colorTex;
 
 layout(push_constant, std430) uniform pc {
     vec4 bufferSize;
@@ -81,11 +83,60 @@ layout(push_constant, std430) uniform pc {
 #define bool4 bvec4
 
 /**
- * Color Edge Detection
+ * Threshold to be used in the additional predication buffer.
  *
- * IMPORTANT NOTICE: color edge detection requires gamma-corrected colors, and
- * thus 'colorTex' should be a non-sRGB texture.
+ * Range: depends on the input, so you'll have to find the magic number that
+ * works for you.
  */
+#ifndef SMAA_PREDICATION_THRESHOLD
+#define SMAA_PREDICATION_THRESHOLD 0.01
+#endif
+
+/**
+ * How much to scale the global threshold used for luma or color edge
+ * detection when using predication.
+ *
+ * Range: [1, 5]
+ */
+#ifndef SMAA_PREDICATION_SCALE
+#define SMAA_PREDICATION_SCALE 1.0
+#endif
+
+/**
+ * How much to locally decrease the threshold.
+ *
+ * Range: [0, 1]
+ */
+#ifndef SMAA_PREDICATION_STRENGTH
+#define SMAA_PREDICATION_STRENGTH 1.0
+#endif
+
+/**
+ * Gathers current pixel, and the top-left neighbors.
+ */
+float3 SMAAGatherNeighbours(float2 texcoord,
+    float4 offset[3]) {
+    #ifdef SMAAGather
+    return SMAAGather(objectIDTex, texcoord + SMAA_RT_METRICS.xy * float2(-0.5, -0.5)).grb;
+    #else
+    float P = SMAASamplePoint(objectIDTex, texcoord).r;
+    float Pleft = SMAASamplePoint(objectIDTex, offset[0].xy).r;
+    float Ptop = SMAASamplePoint(objectIDTex, offset[0].zw).r;
+    return float3(P, Pleft, Ptop);
+    #endif
+}
+
+/**
+ * Adjusts the threshold by means of predication.
+ */
+float2 SMAACalculatePredicatedThreshold(float2 texcoord,
+    float4 offset[3]) {
+    float3 neighbours = SMAAGatherNeighbours(texcoord, offset);
+    float2 delta = abs(neighbours.xx - neighbours.yz);
+    float2 edges = step(SMAA_PREDICATION_THRESHOLD, delta);
+    return SMAA_PREDICATION_SCALE * SMAA_THRESHOLD * (1.0 - SMAA_PREDICATION_STRENGTH * edges);
+}
+
 void SMAAColorEdgeDetectionCS(int2 coord) {
     float2 texcoord = coord.xy;
     // account for pixel center
@@ -97,9 +148,10 @@ void SMAAColorEdgeDetectionCS(int2 coord) {
     offset[1] = mad(SMAA_RT_METRICS.xyxy, float4(1.0, 0.0, 0.0, API_V_DIR(1.0)), texcoord.xyxy);
     offset[2] = mad(SMAA_RT_METRICS.xyxy, float4(-2.0, 0.0, 0.0, API_V_DIR(-2.0)), texcoord.xyxy);
 
+    #define SMAA_PREDICATION 1
     // Calculate the threshold:
     #if SMAA_PREDICATION
-    float2 threshold = SMAACalculatePredicatedThreshold(texcoord, offset[0], predicationTex);
+    float2 threshold = SMAACalculatePredicatedThreshold(texcoord, offset);
     #else  // SMAA_PREDICATION
     float2 threshold = float2(SMAA_THRESHOLD, SMAA_THRESHOLD);
     #endif  // SMAA_PREDICATION
