@@ -471,13 +471,9 @@ float D_Disney(float NoV, float NoL, float LoH, float roughness) {
     return light_scatter * view_scatter * (1.0 / PI);
 }
 
-float D_Oren_Nayar(float roughness, vec3 N, vec3 V, vec3 L) {
-    float NdotV = max(dot(N, V), 0.0001);
-    float NdotL = max(dot(N, L), 0.0001);
-
-    float a2 = roughness * roughness;
-    float A = 1.0 - 0.5 * (a2 / (a2 + 0.57));
-    float B = 0.45 * (a2 / (a2 + 0.09));
+float D_Oren_Nayar(float NdotV, float NdotL, float a, vec3 L, vec3 V) {
+    float A = 1.0 - 0.5 * (a / (a + 0.57));
+    float B = 0.45 * (a / (a + 0.09));
 
     float s = dot(L, V) - NdotL * NdotV;
     float t = mix(1.0, max(NdotL, NdotV), step(0.0, s));

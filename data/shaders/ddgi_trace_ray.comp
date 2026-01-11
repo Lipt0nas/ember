@@ -176,10 +176,6 @@ void main() {
         vec3 indirect = sample_ddgi(lighting, pos, world_normal, V, ddgi_atlas, ddgi_depth);
         indirect *= (min(albedo.rgb, vec3(0.90f)) / PI);
 
-        if (lighting.multibounce == 0) {
-            indirect *= 0.0;
-        }
-
         vec3 kD = (1.0 - metallic) * albedo.rgb;
 
         vec3 direct_radiance = lighting.light_color.xyz * lighting.light_color.a * NdotL * shadow;

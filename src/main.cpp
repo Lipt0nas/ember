@@ -3561,6 +3561,7 @@ int main(int argc, char* argv[]) {
     framegraph.import_image(ddgi_depth_atlas, VK_IMAGE_LAYOUT_GENERAL, false);
     framegraph.import_image(ddgi_depth_atlas_history, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(average_luminance_image, VK_IMAGE_LAYOUT_GENERAL, false);
+    framegraph.import_image(rt_reflection_buffer, VK_IMAGE_LAYOUT_GENERAL, false);
 
     auto tlas_rebuild_pass =
         framegraph.add_pass("RT structure rebuild")
@@ -5057,7 +5058,7 @@ int main(int argc, char* argv[]) {
         allocate_descriptor_sets(device, descriptor_pool, reflection_tile_copy_pipeline);
 
     auto& reflection_tile_copy_pass =
-        framegraph.add_pass("Reflection Tile Clear")
+        framegraph.add_pass("Reflection Tile Copy")
             .reads_buffer(
                 indirect_dispatch_tile_copy_buffer,
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,

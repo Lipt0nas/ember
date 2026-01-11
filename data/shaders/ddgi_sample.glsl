@@ -59,10 +59,6 @@ vec3 sample_ddgi(LightingUBO lighting, vec3 surface_pos, vec3 surface_normal, ve
             chebyshev = max(pow(chebyshev, 3.0), 0.0);
         }
 
-        if (lighting.remove_visiblity_checks == 1) {
-            chebyshev = 1.0;
-        }
-
         weight *= max(0.05, chebyshev);
         weight = max(0.000001, weight);
 

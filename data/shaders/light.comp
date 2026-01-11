@@ -115,21 +115,14 @@ void main() {
 
         vec3 radiance = light_color * light_intensity * shadow;
 
-        vec3 diffuse;
-        if (lighting.disney_diffuse == 1) {
-            diffuse = albedo * D_Disney(NoV, NdotL, LoH, roughness);
-        } else {
-            diffuse = albedo * D_Oren_Nayar(roughness, normal, V, L);
-        }
-
+        vec3 diffuse = albedo * D_Oren_Nayar(NoV, NdotL, a, L, V);
         vec3 Lo = (kD * diffuse + specular) * radiance * NdotL;
 
         vec3 F_ibl = F_Schlick_Roughness(NoV, F0, roughness);
         vec3 kS_ibl = F_ibl;
         vec3 kD_ibl = (vec3(1.0) - kS_ibl) * (1.0 - metallic);
 
-        vec3 irradiance = sample_ddgi(lighting, world_pos,
-                lighting.use_bent_normals == 1 ? bent_normal : normal, V, ddgi_atlas, ddgi_depth);
+        vec3 irradiance = sample_ddgi(lighting, world_pos, bent_normal, V, ddgi_atlas, ddgi_depth);
         vec3 diffuse_ibl = kD_ibl * irradiance * albedo / PI;
 
         vec3 R = reflect(-V, normal);
@@ -155,9 +148,7 @@ void main() {
         vec3 compensation = 1.0 + F0 * (1.0 / max(E, 0.001) - 1.0);
 
         vec3 specular_ibl = specular_single * specular_occlusion;
-        if (lighting.compensate_specular == 1) {
-            specular_ibl *= compensation;
-        }
+        specular_ibl *= compensation;
 
         vec3 ambient = diffuse_ibl * ao + specular_ibl;
         vec3 color = Lo + ambient + emissive;

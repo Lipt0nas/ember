@@ -213,13 +213,7 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
 
         vec3 direct_radiance = lighting.light_color.xyz * lighting.light_color.a;
 
-        vec3 diffuse;
-        if (lighting.disney_diffuse == 1) {
-            diffuse = albedo.rgb * D_Disney(NoV, NdotL, LoH, roughness);
-        } else {
-            diffuse = albedo.rgb * D_Oren_Nayar(roughness, world_normal, V, L);
-        }
-
+        vec3 diffuse = albedo.rgb * D_Oren_Nayar(NoV, NdotL, a, L, V);
         vec3 Lo = (kD * diffuse + specular) * direct_radiance * NdotL * shadow;
 
         vec3 indirect = sample_ddgi(lighting, hit_pos, world_normal, V, ddgi_atlas, ddgi_depth);
