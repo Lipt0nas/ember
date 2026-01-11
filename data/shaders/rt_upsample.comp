@@ -10,13 +10,20 @@
 #include "common.glsl"
 #include "ddgi_common.glsl"
 
-layout(local_size_x = 8, local_size_y = 8) in;
+// we're working on 8x8 tiles, but since we can only have a 1d invocation
+// one x workgroup works on a whole tile
+layout(local_size_x = 64, local_size_y = 1) in;
 
 layout(set = 0, binding = 0, rgba16f) uniform image2D upsampled;
 layout(set = 0, binding = 1) uniform sampler2D low_res;
 layout(set = 0, binding = 2) uniform sampler2D normal_metallic;
 layout(set = 0, binding = 3) uniform sampler2D history_buffer;
 layout(set = 0, binding = 4) uniform sampler2D depth_texture;
+
+layout(set = 0, binding = 5, std430) buffer TileBuffer {
+    IndirectDispatchCommand dispatch;
+    ivec2 tiles[];
+};
 
 layout(set = 1, binding = 0) uniform UBO {
     SceneUBO scene;
@@ -27,20 +34,28 @@ layout(push_constant) uniform PushConstants {
     uint frame_count;
 } push;
 
-// Reproject current pixel to previous frame
 vec2 reproject(vec2 uv, float depth) {
     vec3 world_pos = reconstruct_world_position(uv, depth, scene.inverse_view_proj);
     vec4 prev_clip = push.prev_view_proj * vec4(world_pos, 1.0);
     prev_clip.xyz /= prev_clip.w;
 
     vec2 prev_uv = prev_clip.xy * 0.5 + 0.5;
-    prev_uv.y = 1.0 - prev_uv.y; // <-- Add this if Y is flipped
+    prev_uv.y = 1.0 - prev_uv.y;
 
     return prev_uv;
 }
 
 void main() {
-    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
+    uint tile_index = gl_WorkGroupID.x / 4;
+    uint sub_tile = gl_WorkGroupID.x % 4;
+
+    ivec2 local_8x8 = ivec2(gl_LocalInvocationID.x % 8, gl_LocalInvocationID.x / 8);
+    ivec2 quadrant_offset = ivec2(sub_tile % 2, sub_tile / 2) * 8;
+    ivec2 base_workgroup = tiles[tile_index];
+
+    ivec2 pixel_coord = base_workgroup * 16 + quadrant_offset + local_8x8;
+    ivec2 halfres_pixel = base_workgroup * 8 + (quadrant_offset + local_8x8) / 2;
+
     ivec2 image_size = imageSize(upsampled);
 
     if (pixel_coord.x >= image_size.x || pixel_coord.y >= image_size.y) {
@@ -49,48 +64,38 @@ void main() {
 
     vec2 uv = (vec2(pixel_coord) + 0.5) / vec2(image_size);
 
-    // Full-res G-buffer at current pixel
     vec3 center_normal = unpack_normals(texture(normal_metallic, uv));
     float center_depth = texture(depth_texture, uv).r;
 
     vec3 result = vec3(0.0);
     float weight_sum = 0.0;
 
-    // For variance
     vec3 m1 = vec3(0.0);
     vec3 m2 = vec3(0.0);
     int sample_count = 0;
 
-    // Sample from half-res reflection buffer
     ivec2 low_res_size = textureSize(low_res, 0);
     vec2 low_res_texel = 1.0 / vec2(low_res_size);
 
-    // Map full-res pixel to half-res space
     vec2 low_res_uv = uv;
     vec2 low_res_pixel = low_res_uv * vec2(low_res_size) - 0.5;
     ivec2 low_res_base = ivec2(floor(low_res_pixel));
 
-    // Sample 2x2 neighborhood in half-res (or 3x3 if you want kernel=1)
     const int kernel = 1;
     for (int y = -kernel; y <= kernel; y++) {
         for (int x = -kernel; x <= kernel; x++) {
             ivec2 sample_coord = low_res_base + ivec2(x, y);
             vec2 sample_uv = (vec2(sample_coord) + 0.5) * low_res_texel;
 
-            // Fetch half-res reflection + stored depth
             vec4 sample_val = textureLod(low_res, sample_uv, 0);
 
-            // Fetch FULL-RES G-buffer at the position this half-res sample represents
-            // This is key - each half-res sample came from a specific full-res location
-            vec2 sample_gbuffer_uv = sample_uv; // Or map back to full-res coordinates
+            vec2 sample_gbuffer_uv = sample_uv;
             vec3 sample_normal = unpack_normals(texture(normal_metallic, sample_gbuffer_uv));
             float sample_depth = texture(depth_texture, sample_gbuffer_uv).r;
 
-            // Bilateral weights
             float normal_weight = pow(max(0.0, dot(center_normal, sample_normal)), 32.0);
             float depth_weight = exp(-abs(center_depth - sample_depth) / max(center_depth, 0.001) * 50.0);
 
-            // Spatial weight (distance from center)
             vec2 spatial_offset = vec2(x, y);
             float spatial_weight = exp(-dot(spatial_offset, spatial_offset) * 0.5);
 
@@ -99,7 +104,6 @@ void main() {
             result += sample_val.rgb * weight;
             weight_sum += weight;
 
-            // Variance stats
             m1 += sample_val.rgb;
             m2 += sample_val.rgb * sample_val.rgb;
             sample_count++;
@@ -108,18 +112,13 @@ void main() {
 
     vec3 current_color = result / max(weight_sum, 0.001);
 
-    // === Temporal Accumulation with Variance Clipping ===
-
-    // Skip temporal on first frame or invalid depth
     if (push.frame_count == 0 || center_depth < 0.0001) {
         imageStore(upsampled, pixel_coord, vec4(current_color, 1.0));
         return;
     }
 
-    // Reproject to previous frame
     vec2 prev_uv = reproject(uv, center_depth);
 
-    // Check if reprojection is valid
     bool valid_history = all(greaterThanEqual(prev_uv, vec2(0.0))) &&
             all(lessThanEqual(prev_uv, vec2(1.0)));
 
@@ -128,23 +127,19 @@ void main() {
         return;
     }
 
-    // Sample history at reprojected location
     vec3 history = texture(history_buffer, prev_uv).rgb;
 
-    // Disocclusion check
     vec3 prev_normal = unpack_normals(texture(normal_metallic, prev_uv));
     float prev_depth = texture(depth_texture, prev_uv).r;
 
     float normal_similarity = dot(center_normal, prev_normal);
     float depth_difference = abs(prev_depth - center_depth) / max(center_depth, 0.001);
 
-    // Reject history if geometry changed
     if (normal_similarity < 0.9 || depth_difference > 0.02) {
         imageStore(upsampled, pixel_coord, vec4(current_color, 1.0));
         return;
     }
 
-    // Variance clipping to prevent ghosting
     if (sample_count > 0) {
         m1 /= float(sample_count);
         m2 /= float(sample_count);
@@ -152,15 +147,13 @@ void main() {
         vec3 variance = max(m2 - m1 * m1, vec3(0.0));
         vec3 std_dev = sqrt(variance);
 
-        // Clamp history to neighborhood bounds
-        float gamma = 1.25; // Tune this: 1.0 = aggressive, 2.0 = lenient
+        float gamma = 1.25;
         vec3 box_min = m1 - gamma * std_dev;
         vec3 box_max = m1 + gamma * std_dev;
 
         history = clamp(history, box_min, box_max);
     }
 
-    // Blend with clamped history
     vec3 blended = mix(current_color, history, 0.99);
 
     imageStore(upsampled, pixel_coord, vec4(blended, 1.0));

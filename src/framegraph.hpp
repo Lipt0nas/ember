@@ -608,6 +608,18 @@ struct Framegraph {
                     string_VkImageLayout(barrier.new_layout)
                 );
             }
+            for (int b = 0; b < buffer_barriers[i].size(); b++) {
+                auto& barrier = buffer_barriers[i][b];
+                spdlog::info(
+                    "\tBuffer barrier 0x{:x}: ({} | {}) -> ({} | {})",
+                    (uintptr_t)barrier.buffer,
+                    string_VkAccessFlags2(barrier.src_access_mask),
+                    string_VkPipelineStageFlags2(barrier.src_stage_mask),
+                    string_VkAccessFlags2(barrier.dst_access_mask),
+                    string_VkPipelineStageFlags2(barrier.dst_stage_mask)
+                );
+            }
+
             spdlog::info("---- ");
         }
 
