@@ -1,0 +1,37 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+
+#include "common.glsl"
+
+// we're working on 8x8 tiles, but since we can only have a 1d invocation
+// one x workgroup works on a whole tile
+layout(local_size_x = 64, local_size_y = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform image2D out_color;
+layout(set = 0, binding = 1) uniform sampler2D in_color;
+
+layout(set = 0, binding = 2, std430) buffer TileBuffer {
+    IndirectDispatchCommand dispatch;
+    ivec2 tiles[];
+};
+
+void main() {
+    uint tile_index = gl_WorkGroupID.x / 4;
+    uint sub_tile = gl_WorkGroupID.x % 4;
+
+    ivec2 local_8x8 = ivec2(gl_LocalInvocationID.x % 8, gl_LocalInvocationID.x / 8);
+    ivec2 quadrant_offset = ivec2(sub_tile % 2, sub_tile / 2) * 8;
+    ivec2 base_workgroup = tiles[tile_index];
+
+    ivec2 fullres_pixel = base_workgroup * 16 + quadrant_offset + local_8x8;
+    ivec2 halfres_pixel = base_workgroup * 8 + (quadrant_offset + local_8x8) / 2;
+
+    vec2 halfres_uv = (halfres_pixel + 0.5) / textureSize(in_color, 0);
+
+    imageStore(out_color, fullres_pixel, texture(in_color, halfres_uv));
+}

@@ -171,7 +171,10 @@ VkDevice create_device(
     use_meshlets    = meshlets_supported;
     use_hardware_rt = ray_tracing_supported;
 
-    std::vector<const char*> device_extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    std::vector<const char*> device_extensions = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_EXT_SHADER_SUBGROUP_VOTE_EXTENSION_NAME,
+    };
 
     if (use_meshlets) {
         device_extensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);

@@ -246,6 +246,89 @@ glm::quat ddgi_random_rotation() {
     return glm::quat_cast(transform);
 }
 
+void transition_clear_color_image_subresource(
+    const Image&            image,
+    VkImageLayout           old_layout,
+    VkImageLayout           new_layout,
+    VkPipelineStageFlags2   src_stage_mask,
+    VkAccessFlags2          src_access_mask,
+    VkPipelineStageFlags2   dst_stage_mask,
+    VkAccessFlags2          dst_access_mask,
+    VkImageSubresourceRange subresource,
+    VkCommandBuffer         command_buffer
+) {
+    image_pipeline_barrier(
+        image.handle,
+        command_buffer,
+        old_layout,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        src_stage_mask,
+        src_access_mask,
+        VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        subresource
+    );
+
+    VkClearColorValue clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
+    vkCmdClearColorImage(
+        command_buffer, image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &subresource
+    );
+
+    image_pipeline_barrier(
+        image.handle,
+        command_buffer,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        new_layout,
+        VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        dst_stage_mask,
+        dst_access_mask,
+        subresource
+    );
+}
+
+void transition_clear_color_image(
+    const Image&          image,
+    VkImageLayout         old_layout,
+    VkImageLayout         new_layout,
+    VkPipelineStageFlags2 src_stage_mask,
+    VkAccessFlags2        src_access_mask,
+    VkPipelineStageFlags2 dst_stage_mask,
+    VkAccessFlags2        dst_access_mask,
+    VkCommandBuffer       command_buffer
+) {
+    transition_clear_color_image_subresource(
+        image,
+        old_layout,
+        new_layout,
+        src_stage_mask,
+        src_access_mask,
+        dst_stage_mask,
+        dst_access_mask,
+        VkImageSubresourceRange{
+            .aspectMask     = image.aspect,
+            .baseMipLevel   = 0,
+            .levelCount     = image.levels,
+            .baseArrayLayer = 0,
+            .layerCount     = image.layers
+        },
+        command_buffer
+    );
+}
+
+void initialize_clear_image(const Image& image, VkImageLayout new_layout, VkCommandBuffer command_buffer) {
+    transition_clear_color_image(
+        image,
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        new_layout,
+        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+        VK_ACCESS_2_NONE,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+        command_buffer
+    );
+}
+
 uint16_t pack_tangent(glm::vec3 tangent) {
     float sum = glm::abs(tangent.x) + glm::abs(tangent.y) + glm::abs(tangent.z);
     float tu  = tangent.z >= 0 ? tangent.x / sum : (1 - glm::abs(tangent.y / sum)) * (tangent.x >= 0 ? 1 : -1);
@@ -2006,7 +2089,8 @@ int main(int argc, char* argv[]) {
         VK_FORMAT_R16G16B16A16_SFLOAT,
         swapchain.width,
         swapchain.height,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
         true,
         vma_allocator,
@@ -2162,318 +2246,25 @@ int main(int argc, char* argv[]) {
             );
         }
 
-        image_pipeline_barrier(
-            ddgi_depth_atlas,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT
-        );
+        initialize_clear_image(ddgi_depth_atlas, VK_IMAGE_LAYOUT_GENERAL, command_buffer);
+        initialize_clear_image(ddgi_depth_atlas_history, VK_IMAGE_LAYOUT_GENERAL, command_buffer);
 
-        image_pipeline_barrier(
-            ddgi_depth_atlas_history,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT
-        );
+        initialize_clear_image(ddgi_irradiance, VK_IMAGE_LAYOUT_GENERAL, command_buffer);
+        initialize_clear_image(ddgi_irradiance_history, VK_IMAGE_LAYOUT_GENERAL, command_buffer);
 
-        image_pipeline_barrier(
-            rt_reflection_history,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT
-        );
+        initialize_clear_image(smaa_output, VK_IMAGE_LAYOUT_GENERAL, command_buffer);
+        initialize_clear_image(smaa_edges, VK_IMAGE_LAYOUT_GENERAL, command_buffer);
+        initialize_clear_image(smaa_weights, VK_IMAGE_LAYOUT_GENERAL, command_buffer);
 
-        image_pipeline_barrier(
-            ddgi_irradiance,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT
-        );
+        initialize_clear_image(average_luminance_image, VK_IMAGE_LAYOUT_GENERAL, command_buffer);
 
-        image_pipeline_barrier(
-            ddgi_irradiance_history,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT
-        );
+        initialize_clear_image(rt_reflection_buffer, VK_IMAGE_LAYOUT_GENERAL, command_buffer);
+        initialize_clear_image(rt_reflection_history, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, command_buffer);
 
-        image_pipeline_barrier(
-            directional_shadow_buffer,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT
-        );
-
-        image_pipeline_barrier(
-            smaa_edges,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT
-        );
-
-        image_pipeline_barrier(
-            smaa_weights,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT
-        );
-
-        image_pipeline_barrier(
-            smaa_output,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT
-        );
-
-        image_pipeline_barrier(
-            average_luminance_image,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT
-        );
-
-        VkClearColorValue       clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
-        VkImageSubresourceRange range       = {
-                  .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                  .baseMipLevel   = 0,
-                  .levelCount     = 1,
-                  .baseArrayLayer = 0,
-                  .layerCount     = 1
-        };
-
-        vkCmdClearColorImage(
-            command_buffer,
-            ddgi_irradiance_history.handle,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            &clear_color,
-            1,
-            &range
-        );
-        vkCmdClearColorImage(
-            command_buffer, ddgi_irradiance.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
-        );
-
-        vkCmdClearColorImage(
-            command_buffer, ddgi_depth_atlas.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
-        );
-
-        vkCmdClearColorImage(
-            command_buffer, smaa_output.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
-        );
-
-        vkCmdClearColorImage(
-            command_buffer, smaa_edges.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
-        );
-
-        vkCmdClearColorImage(
-            command_buffer, smaa_weights.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
-        );
-        vkCmdClearColorImage(
-            command_buffer, rt_reflection_history.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range
-        );
-
-        vkCmdClearColorImage(
-            command_buffer,
-            ddgi_depth_atlas_history.handle,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            &clear_color,
-            1,
-            &range
-        );
-
-        clear_color.float32[0] = 0.5f;
-        vkCmdClearColorImage(
-            command_buffer,
-            average_luminance_image.handle,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            &clear_color,
-            1,
-            &range
-        );
-
-        image_pipeline_barrier(
-            smaa_edges,
-            command_buffer,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-        );
-
-        image_pipeline_barrier(
-            smaa_weights,
-            command_buffer,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-        );
-
-        image_pipeline_barrier(
-            smaa_output,
-            command_buffer,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-        );
-
-        image_pipeline_barrier(
-            rt_reflection_buffer,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-        );
-
-        vkCmdClearColorImage(
-            command_buffer,
-            directional_shadow_buffer.handle,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            &clear_color,
-            1,
-            &range
-        );
-
-        image_pipeline_barrier(
-            directional_shadow_buffer,
-            command_buffer,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-        );
-
-        image_pipeline_barrier(
-            ddgi_irradiance_history,
-            command_buffer,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-        );
-
-        image_pipeline_barrier(
-            average_luminance_image,
-            command_buffer,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-        );
-
-        image_pipeline_barrier(
-            rt_reflection_history,
-            command_buffer,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-        );
-
-        image_pipeline_barrier(
-            ddgi_irradiance,
-            command_buffer,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-        );
-
-        image_pipeline_barrier(
-            ddgi_depth_atlas,
-            command_buffer,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-        );
-
-        image_pipeline_barrier(
-            ddgi_depth_atlas_history,
-            command_buffer,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_CLEAR_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-        );
+        initialize_clear_image(directional_shadow_buffer, VK_IMAGE_LAYOUT_GENERAL, command_buffer);
 
         image_pipeline_barrier(
             lightpass_output,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            0,
-            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-            0
-        );
-
-        image_pipeline_barrier(
-            directional_shadow_buffer,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_GENERAL,
@@ -2573,17 +2364,6 @@ int main(int argc, char* argv[]) {
 
         image_pipeline_barrier(
             specular_cubemap,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            0,
-            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-            0
-        );
-
-        image_pipeline_barrier(
-            brdf_lut,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_GENERAL,
@@ -2924,6 +2704,24 @@ int main(int argc, char* argv[]) {
     Buffer indirect_command_buffer = create_buffer(
         1024 * 1024 * 12 * FRAMES_IN_FLIGHT,
         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        vma_allocator
+    );
+
+    // NOTE: could maybe reuse the buffer above, but this isn't a big crime (i think)
+
+    // layout - indirect command structure + tile * screen_size / 8
+    Buffer indirect_dispatch_tile_copy_buffer = create_buffer(
+        sizeof(VkDispatchIndirectCommand) +
+            sizeof(uint32_t) * 2 * ((swapchain.width + 7) / 8) * ((swapchain.height + 7) / 8),
+        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        vma_allocator
+    );
+
+    // layout - indirect command structure + tile * screen_size / 8
+    Buffer indirect_dispatch_tile_process_buffer = create_buffer(
+        sizeof(VkDispatchIndirectCommand) +
+            sizeof(uint32_t) * 2 * ((swapchain.width + 7) / 8) * ((swapchain.height + 7) / 8),
+        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         vma_allocator
     );
 
@@ -4992,6 +4790,61 @@ int main(int argc, char* argv[]) {
                 vkCmdDispatch(command_buffer, (probe_count + 31) / 32, 1, 1);
             });
 
+    Pipeline tile_clear_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/dispatch_clear.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings = {
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                        .write_info = DescriptorInfo(indirect_dispatch_tile_process_buffer.handle)
+                    },
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                        .write_info = DescriptorInfo(indirect_dispatch_tile_copy_buffer.handle)
+                    },
+                }
+            },
+        }
+    );
+
+    std::vector<VkDescriptorSet> tile_clear_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, tile_clear_pipeline);
+
+    auto& tile_clear_pass = framegraph.add_pass("Tile Clear")
+                                .writes_buffer(
+                                    indirect_dispatch_tile_process_buffer,
+                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                                )
+                                .writes_buffer(
+                                    indirect_dispatch_tile_copy_buffer,
+                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                                )
+                                .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                                    TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
+                                    ZoneScopedN("RT Shadows");
+
+                                    const Pipeline& pipeline = tile_clear_pipeline;
+
+                                    vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                                    vkCmdBindDescriptorSets(
+                                        command_buffer,
+                                        VK_PIPELINE_BIND_POINT_COMPUTE,
+                                        pipeline.pipeline_layout,
+                                        0,
+                                        tile_clear_descriptor_sets.size(),
+                                        tile_clear_descriptor_sets.data(),
+                                        0,
+                                        nullptr
+                                    );
+
+                                    vkCmdDispatch(command_buffer, 1, 1, 1);
+                                });
+
     Pipeline rt_reflection_pipeline = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/rt_reflection.comp.spv"),
@@ -5059,6 +4912,14 @@ int main(int argc, char* argv[]) {
                             .write_info =
                                 DescriptorInfo(ddgi_probe_buffer.handle, 0, ddgi_probe_buffer.size / FRAMES_IN_FLIGHT)
                         },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(indirect_dispatch_tile_process_buffer.handle)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(indirect_dispatch_tile_copy_buffer.handle)
+                        },
                     }
             },
             scene_data_layout,
@@ -5108,6 +4969,14 @@ int main(int argc, char* argv[]) {
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_SHADER_READ_BIT,
                 material_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .writes_buffer(
+                indirect_dispatch_tile_process_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_WRITE_BIT
+            )
+            .writes_buffer(
+                indirect_dispatch_tile_copy_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT
             )
             .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(gbuffer_albedo, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
@@ -5160,6 +5029,62 @@ int main(int argc, char* argv[]) {
                 );
             });
 
+    Pipeline reflection_tile_copy_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/tile_copy.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings = {
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        .write_info = DescriptorInfo(rt_reflection_views[0], VK_IMAGE_LAYOUT_GENERAL)
+                    },
+                    DescriptorBinding{
+                        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                        .write_info =
+                            DescriptorInfo(linear_sampler_clamped, rt_reflection_views[1], VK_IMAGE_LAYOUT_GENERAL)
+                    },
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                        .write_info = DescriptorInfo(indirect_dispatch_tile_copy_buffer.handle)
+                    },
+                }
+            },
+        }
+    );
+
+    std::vector<VkDescriptorSet> reflection_tile_copy_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, reflection_tile_copy_pipeline);
+
+    auto& reflection_tile_copy_pass =
+        framegraph.add_pass("Reflection Tile Clear")
+            .reads_buffer(
+                indirect_dispatch_tile_copy_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+            )
+            .writes_storage_image(rt_reflection_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                TracyVkZone(tracy_vk_context, command_buffer, "RT Reflection");
+                ZoneScopedN("RT Shadows");
+
+                const Pipeline& pipeline = reflection_tile_copy_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    reflection_tile_copy_descriptor_sets.size(),
+                    reflection_tile_copy_descriptor_sets.data(),
+                    0,
+                    nullptr
+                );
+                vkCmdDispatchIndirect(command_buffer, indirect_dispatch_tile_copy_buffer.handle, 0);
+            });
+
     Pipeline rt_reflection_upsample = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/rt_upsample.comp.spv"),
@@ -5196,12 +5121,17 @@ int main(int argc, char* argv[]) {
                                 linear_sampler_clamped, depth_buffer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(indirect_dispatch_tile_process_buffer.handle)
+                        },
                     }
             },
             scene_data_layout,
         },
         sizeof(GlossyRTConstants)
     );
+
     std::vector<VkDescriptorSet> rt_upsample_pass_descriptor_sets =
         allocate_descriptor_sets(device, descriptor_pool, rt_reflection_upsample);
 
@@ -5212,6 +5142,11 @@ int main(int argc, char* argv[]) {
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_UNIFORM_READ_BIT,
                 scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer(
+                indirect_dispatch_tile_process_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_READ_BIT
             )
             .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(rt_reflection_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
@@ -5247,9 +5182,7 @@ int main(int argc, char* argv[]) {
                     &constants
                 );
 
-                vkCmdDispatch(
-                    command_buffer, (rt_reflection_buffer.width + 7) / 8, (rt_reflection_buffer.height + 7) / 8, 1
-                );
+                vkCmdDispatchIndirect(command_buffer, indirect_dispatch_tile_process_buffer.handle, 0);
 
                 image_pipeline_barrier(
                     rt_reflection_buffer,
@@ -7591,6 +7524,8 @@ int main(int argc, char* argv[]) {
     destroy_buffer(mesh_buffer, device, vma_allocator);
     destroy_buffer(pick_buffer, device, vma_allocator);
     destroy_buffer(luminance_buffer, device, vma_allocator);
+    destroy_buffer(indirect_dispatch_tile_copy_buffer, device, vma_allocator);
+    destroy_buffer(indirect_dispatch_tile_process_buffer, device, vma_allocator);
     destroy_image(depth_buffer, device, vma_allocator);
     destroy_image(lightpass_output, device, vma_allocator);
     destroy_image(composite_output, device, vma_allocator);
@@ -7666,6 +7601,8 @@ int main(int argc, char* argv[]) {
     destroy_pipeline(device, rt_reflection_upsample);
     destroy_pipeline(device, luminance_histogram_pipeline);
     destroy_pipeline(device, luminance_average_pipeline);
+    destroy_pipeline(device, tile_clear_pipeline);
+    destroy_pipeline(device, reflection_tile_copy_pipeline);
 
     for (auto image : loaded_images) {
         destroy_image(image, device, vma_allocator);

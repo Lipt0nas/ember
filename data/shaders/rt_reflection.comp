@@ -31,6 +31,16 @@ layout(set = 0, binding = 10, std430) readonly buffer ProbeBuffer {
     DDGIProbe probes[];
 };
 
+layout(set = 0, binding = 11, std430) buffer TileProcessBuffer {
+    IndirectDispatchCommand process_dispatch;
+    ivec2 process_tiles[];
+};
+
+layout(set = 0, binding = 12, std430) buffer TileCopyBuffer {
+    IndirectDispatchCommand copy_dispatch;
+    ivec2 copy_tiles[];
+};
+
 layout(set = 1, binding = 0) uniform UBO {
     SceneUBO scene;
 };
@@ -220,9 +230,9 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         float norm = (1.0 - a);
         vec3 specular_ibl = ddgi_specular * (F_ibl * brdf.x + brdf.y) * norm;
 
-        result = vec4(Lo + diffuse_ibl + emissive + specular_ibl, hit_distance);
+        result = vec4(Lo + diffuse_ibl + emissive + specular_ibl, 1.0);
     } else {
-        result = vec4(get_sky_color(direction, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, lighting.light_color), t_max);
+        result = vec4(get_sky_color(direction, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, lighting.light_color), 1.0);
     }
 
     return result;
@@ -239,38 +249,51 @@ void main() {
     vec2 uv = (vec2(pixel_coord) + 0.5) / vec2(image_size);
 
     float depth = texture(depth_texture, uv).r;
+    float roughness = texture(albedo_roughness, uv).a;
 
-    if (depth == 0.0) {
-        imageStore(out_reflection, pixel_coord, vec4(0.0, 0, 0, 0));
-        return;
+    vec4 result = vec4(0.0);
+    bool noisy = false;
+
+    if (depth != 0.0 && roughness <= 0.3) {
+        vec4 normal_data = texture(normal_metallic, uv);
+
+        vec3 normal = unpack_normals(normal_data);
+        float metallic = normal_data.a;
+
+        vec3 world_pos = reconstruct_world_position(uv, depth, scene.inverse_view_proj);
+        vec3 V = normalize(scene.camera_position.xyz - world_pos);
+
+        vec2 Xi = noise(pixel_coord, lighting.frame_index);
+        vec3 H = importanceSampleGGX(Xi, normal, max(roughness, 0.05));
+
+        if (roughness <= 0.1) {
+            H = normal;
+        }
+
+        vec3 L = reflect(-V, H);
+
+        if (roughness > 0.1) {
+            noisy = true;
+        }
+        result = trace_ray(world_pos, L, normal);
     }
 
-    vec4 albedo_rougness_data = texture(albedo_roughness, uv);
+    imageStore(out_reflection, pixel_coord, result);
 
-    float roughness = albedo_rougness_data.a;
-    if (roughness >= 0.3) {
-        imageStore(out_reflection, pixel_coord, vec4(0.0, 0, 0, 0));
-        return;
+    bool denoise = anyInvocation(noisy);
+    if (gl_LocalInvocationIndex == 0) {
+        if (denoise) {
+            // Since we're upscaling from half-res image to full-res, we'll need x4 invocations
+            uint index = atomicAdd(process_dispatch.workgroups_x, 4);
+
+            // Which dispatch (0, 0, 0) to vkCmdDispatch(x, y, x) needs to be processed
+            process_tiles[index / 4] = ivec2(gl_WorkGroupID.xy);
+        } else {
+            // Since we're upscaling from half-res image to full-res, we'll need x4 invocations
+            uint index = atomicAdd(copy_dispatch.workgroups_x, 4);
+
+            // Which dispatch (0, 0, 0) to vkCmdDispatch(x, y, x) needs to be processed
+            copy_tiles[index / 4] = ivec2(gl_WorkGroupID.xy);
+        }
     }
-
-    vec4 normal_data = texture(normal_metallic, uv);
-
-    vec3 normal = unpack_normals(normal_data);
-    float metallic = normal_data.a;
-    vec3 albedo = albedo_rougness_data.rgb;
-
-    vec3 world_pos = reconstruct_world_position(uv, depth, scene.inverse_view_proj);
-    vec3 V = normalize(scene.camera_position.xyz - world_pos);
-
-    vec2 Xi = noise(pixel_coord, lighting.frame_index);
-    vec3 H = importanceSampleGGX(Xi, normal, max(roughness, 0.05));
-    vec3 L = reflect(-V, H);
-
-    vec4 hit_result = trace_ray(world_pos, L, normal);
-
-    if (any(isnan(hit_result)) || any(isinf(hit_result))) {
-        hit_result = vec4(0.0, 0.0, 0.0, 1.0);
-    }
-
-    imageStore(out_reflection, pixel_coord, hit_result);
 }

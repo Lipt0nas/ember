@@ -45,6 +45,12 @@
 
 #define XE_GTAO_OCCLUSION_TERM_SCALE                    1.5
 
+struct IndirectDispatchCommand {
+    uint workgroups_x;
+    uint workgroups_y;
+    uint workgroups_z;
+};
+
 struct MeshletTaskPayload {
     uint draw_id;
     uint meshlet_offset;
