@@ -47,7 +47,7 @@ void main() {
         if (valid_probe) {
             irradiance = texture(ddgi_irradiance, ddgi_probe_uv(lighting.probe_counts, in_probe_index, normalize(in_normal), lighting.texels_per_probe)).rgb;
 
-            vec3 exponent = vec3(5.0 * 0.5);
+            vec3 exponent = vec3(DDGI_PROBE_IRRADIANCE_ENCODING_GAMMA * 0.5);
             irradiance = pow(irradiance, exponent);
             irradiance *= irradiance;
             irradiance *= PI;
@@ -55,6 +55,8 @@ void main() {
             irradiance.x = GranTurismoTonemapper(irradiance.x);
             irradiance.y = GranTurismoTonemapper(irradiance.y);
             irradiance.z = GranTurismoTonemapper(irradiance.z);
+
+            irradiance = pow(irradiance, vec3(1.0 / 2.2));
         } else {
             irradiance = vec3(1.0, 0.0, 0.0);
         }
