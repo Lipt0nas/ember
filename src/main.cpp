@@ -9,6 +9,7 @@
 #include "pipeline.hpp"
 #include "resources.hpp"
 #include "rt_scene.hpp"
+#include "scene.hpp"
 #include "swapchain.hpp"
 #include "ui.hpp"
 
@@ -327,14 +328,6 @@ void initialize_clear_image(const Image& image, VkImageLayout new_layout, VkComm
     );
 }
 
-uint16_t pack_tangent(glm::vec3 tangent) {
-    float sum = glm::abs(tangent.x) + glm::abs(tangent.y) + glm::abs(tangent.z);
-    float tu  = tangent.z >= 0 ? tangent.x / sum : (1 - glm::abs(tangent.y / sum)) * (tangent.x >= 0 ? 1 : -1);
-    float tv  = tangent.z >= 0 ? tangent.y / sum : (1 - glm::abs(tangent.x / sum)) * (tangent.y >= 0 ? 1 : -1);
-
-    return (meshopt_quantizeSnorm(tu, 8) + 127) | (meshopt_quantizeSnorm(tv, 8) + 127) << 8;
-}
-
 struct MeshIndirectDrawCommand {
     uint32_t group_count_x;
     uint32_t group_count_y;
@@ -648,748 +641,15 @@ void destroy_debug_renderer(const DebugRenderer& renderer, VkDevice device, VmaA
     destroy_pipeline(device, renderer.pipeline);
 }
 
-void generate_tangents(std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
-    std::vector<glm::vec3> tangents(vertices.size(), glm::vec3(0));
-    std::vector<glm::vec3> bitangents(vertices.size(), glm::vec3(0));
-
-    for (size_t i = 0; i < indices.size(); i += 3) {
-        uint32_t i0 = indices[i + 0];
-        uint32_t i1 = indices[i + 1];
-        uint32_t i2 = indices[i + 2];
-
-        const Vertex& v0 = vertices[i0];
-        const Vertex& v1 = vertices[i1];
-        const Vertex& v2 = vertices[i2];
-
-        const glm::vec3 v0_pos =
-            glm::vec3(meshopt_dequantizeHalf(v0.px), meshopt_dequantizeHalf(v0.py), meshopt_dequantizeHalf(v0.pz));
-        const glm::vec3 v1_pos =
-            glm::vec3(meshopt_dequantizeHalf(v1.px), meshopt_dequantizeHalf(v1.py), meshopt_dequantizeHalf(v1.pz));
-        const glm::vec3 v2_pos =
-            glm::vec3(meshopt_dequantizeHalf(v2.px), meshopt_dequantizeHalf(v2.py), meshopt_dequantizeHalf(v2.pz));
-
-        const glm::vec2 uv0 = glm::vec2(meshopt_dequantizeHalf(v0.ux), meshopt_dequantizeHalf(v0.uy));
-        const glm::vec2 uv1 = glm::vec2(meshopt_dequantizeHalf(v1.ux), meshopt_dequantizeHalf(v1.uy));
-        const glm::vec2 uv2 = glm::vec2(meshopt_dequantizeHalf(v2.ux), meshopt_dequantizeHalf(v2.uy));
-
-        glm::vec3 edge1     = v1_pos - v0_pos;
-        glm::vec3 edge2     = v2_pos - v0_pos;
-        glm::vec2 delta_uv1 = uv1 - uv0;
-        glm::vec2 delta_uv2 = uv2 - uv0;
-
-        float f = 1.0f / (delta_uv1.x * delta_uv2.y - delta_uv2.x * delta_uv1.y);
-
-        glm::vec3 tangent;
-        tangent.x = f * (delta_uv2.y * edge1.x - delta_uv1.y * edge2.x);
-        tangent.y = f * (delta_uv2.y * edge1.y - delta_uv1.y * edge2.y);
-        tangent.z = f * (delta_uv2.y * edge1.z - delta_uv1.y * edge2.z);
-
-        glm::vec3 bitangent;
-        bitangent.x = f * (-delta_uv2.x * edge1.x + delta_uv1.x * edge2.x);
-        bitangent.y = f * (-delta_uv2.x * edge1.y + delta_uv1.x * edge2.y);
-        bitangent.z = f * (-delta_uv2.x * edge1.z + delta_uv1.x * edge2.z);
-
-        tangents[i0] += tangent;
-        tangents[i1] += tangent;
-        tangents[i2] += tangent;
-
-        bitangents[i0] += bitangent;
-        bitangents[i1] += bitangent;
-        bitangents[i2] += bitangent;
-    }
-
-    for (size_t i = 0; i < vertices.size(); ++i) {
-        const glm::vec3& n = glm::vec3(
-            (vertices[i].norm & 1023) / 511.0f - 1.0f,
-            ((vertices[i].norm >> 10) & 1023) / 511.0f - 1.0f,
-            ((vertices[i].norm >> 20) & 1023) / 511.0f - 1.0f
-        );
-        const glm::vec3& t = tangents[i];
-        const glm::vec3& b = bitangents[i];
-
-        glm::vec3 tangent = glm::normalize(t - n * glm::dot(n, t));
-
-        float handedness = (glm::dot(glm::cross(n, tangent), b) < 0.0f) ? -1.0f : 1.0f;
-
-        vertices[i].norm |= (handedness >= 0 ? 0 : 1) << 30;
-        vertices[i].tn = pack_tangent(tangent);
-    }
-}
-
-void load_scene(
-    const std::filesystem::path&         path,
-    std::vector<Mesh>&                   meshes,
-    std::vector<Material>&               materials,
-    std::vector<MeshInstance>&           instances,
-    const Buffer&                        staging_buffer,
-    const Buffer&                        indirect_vertex_buffer,
-    VkDeviceSize&                        indirect_vertex_buffer_offset,
-    const Buffer&                        indirect_index_buffer,
-    VkDeviceSize&                        indirect_index_buffer_offset,
-    const Buffer&                        meshlet_bufffer,
-    VkDeviceSize&                        meshlet_buffer_offset,
-    const Buffer&                        meshlet_vertex_indices,
-    VkDeviceSize&                        meshlet_vertex_indices_offset,
-    const Buffer&                        meshlet_primitive_indices,
-    VkDeviceSize&                        meshlet_primitive_indices_offset,
-    const Buffer&                        meshlet_bounds_buffer,
-    VkDeviceSize&                        meshlet_bounds_buffer_offset,
-    std::unordered_map<uint32_t, Image>& global_texture_cache,
-    std::vector<Image>&                  loaded_images,
-    JPH::PhysicsSystem*                  physics_system,
-    std::vector<JPH::BodyID>&            static_bodies,
-    VmaAllocator                         allocator,
-    VkCommandBuffer                      command_buffer,
-    VkQueue                              queue,
-    VkDevice                             device
-) {
-    ZoneScopedN("Load Scene");
-    spdlog::info("Loading scene: {}", path.string());
-
-    tinygltf::TinyGLTF loader;
-    tinygltf::Model    model;
-    std::string        error;
-    std::string        warning;
-
-    bool ret = false;
-    {
-        ZoneScopedN("Read Scene File");
-        if (path.extension() == ".gltf") {
-            ret = loader.LoadASCIIFromFile(&model, &error, &warning, path.string());
-        } else if (path.extension() == ".glb") {
-            ret = loader.LoadBinaryFromFile(&model, &error, &warning, path.string());
-        }
-        if (!warning.empty()) {
-            spdlog::warn("Warning loading model {}: {}", path.string(), warning);
-        }
-
-        if (!error.empty()) {
-            spdlog::error("Error loading model {}: {}", path.string(), error);
-        }
-
-        if (!ret) {
-            spdlog::error("Failed loading model {}", path.string());
-        }
-    }
-
-    uint32_t                               local_cache_offset = global_texture_cache.size();
-    std::unordered_map<uint32_t, uint32_t> local_texture_cache;
-
-    materials.resize(model.materials.size());
-    spdlog::info("Loading {} materials", materials.size());
-
-    void* staging_buffer_ptr = nullptr;
-    VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
-    for (int i = 0; i < model.materials.size(); i++) {
-        ZoneScopedN("Load Material");
-        auto& mat = model.materials[i];
-
-        auto upload_texture = [&](int texture_index, VkFormat format) {
-            if (texture_index < 0) {
-                return 0u;
-            }
-
-            tinygltf::Texture& texture = model.textures[texture_index];
-
-            int image_index = texture.source;
-            if (image_index < 0) {
-                return 0u;
-            }
-
-            auto local_it = local_texture_cache.find(image_index + local_cache_offset);
-            if (local_it != local_texture_cache.end()) {
-                return local_it->second;
-            } else {
-                tinygltf::Image& img = model.images[image_index];
-
-                Image image = create_image(
-                    format,
-                    static_cast<uint32_t>(img.width),
-                    static_cast<uint32_t>(img.height),
-                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT,
-                    true,
-                    allocator,
-                    device
-                );
-
-                if (img.image.size() > staging_buffer.size) {
-                    spdlog::error(
-                        "Attempted out of bounds image buffer write for image, size={}, staging size={}",
-                        img.image.size(),
-                        staging_buffer.size
-                    );
-                    exit(1);
-                }
-
-                memcpy(staging_buffer_ptr, &img.image.at(0), img.image.size());
-                copy_image(staging_buffer, image, true, command_buffer, queue, device);
-
-                uint32_t index = global_texture_cache.size();
-                global_texture_cache.insert({index, image});
-                local_texture_cache.insert({image_index + local_cache_offset, index});
-
-                loaded_images.push_back(image);
-
-                return index;
-            };
-        };
-
-        uint32_t albedo_index =
-            upload_texture(mat.pbrMetallicRoughness.baseColorTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
-        uint32_t material_index =
-            upload_texture(mat.pbrMetallicRoughness.metallicRoughnessTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
-        uint32_t normals_index  = upload_texture(mat.normalTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
-        uint32_t emissive_index = upload_texture(mat.emissiveTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
-
-        materials[i].albedo_index     = albedo_index;
-        materials[i].normals_index    = normals_index;
-        materials[i].material_index   = material_index;
-        materials[i].emissive_index   = emissive_index;
-        materials[i].roughness_factor = mat.pbrMetallicRoughness.roughnessFactor;
-        materials[i].metallic_factor  = mat.pbrMetallicRoughness.metallicFactor;
-        materials[i].emissive_factor  = glm::vec3(mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
-        materials[i].albedo_factor    = glm::vec4(
-            mat.pbrMetallicRoughness.baseColorFactor[0],
-            mat.pbrMetallicRoughness.baseColorFactor[1],
-            mat.pbrMetallicRoughness.baseColorFactor[2],
-            mat.pbrMetallicRoughness.baseColorFactor[3]
-        );
-        materials[i].normal_scale = mat.normalTexture.scale;
-    }
-
-    int                         current_entry = 0;
-    std::vector<int>            mesh_primitive_offsets(model.meshes.size());
-    std::vector<JPH::ShapeRefC> mesh_collision_shapes;
-
-    spdlog::info("Loading {} meshes", model.meshes.size());
-    for (int m = 0; m < model.meshes.size(); m++) {
-        ZoneScopedN("Load Mesh");
-        spdlog::trace("mesh {}", m);
-        const tinygltf::Mesh& mesh = model.meshes[m];
-
-        mesh_primitive_offsets[m] = current_entry;
-
-        for (int p = 0; p < mesh.primitives.size(); p++) {
-            ZoneScopedN("Load Primitive");
-            spdlog::trace("primitive {}", p);
-            std::vector<Vertex>   vertices;
-            std::vector<uint32_t> indices;
-
-            const tinygltf::Primitive& primitive = mesh.primitives[p];
-
-            auto has_position  = primitive.attributes.count("POSITION");
-            auto has_normals   = primitive.attributes.count("NORMAL");
-            auto has_texcoords = primitive.attributes.count("TEXCOORD_0");
-            auto has_tangents  = primitive.attributes.count("TANGENT");
-
-            if (!(has_position & has_normals & has_texcoords)) {
-                spdlog::warn("Mesh {} primitive {} is missing required attributes", m, p);
-                continue;
-            }
-
-            const tinygltf::Accessor& pos_accessor      = model.accessors[primitive.attributes.at("POSITION")];
-            const tinygltf::Accessor& normal_accessor   = model.accessors[primitive.attributes.at("NORMAL")];
-            const tinygltf::Accessor& texcoord_accessor = model.accessors[primitive.attributes.at("TEXCOORD_0")];
-
-            const tinygltf::BufferView& pos_view      = model.bufferViews[pos_accessor.bufferView];
-            const tinygltf::BufferView& normal_view   = model.bufferViews[normal_accessor.bufferView];
-            const tinygltf::BufferView& texcoord_view = model.bufferViews[texcoord_accessor.bufferView];
-
-            const tinygltf::Buffer& pos_buffer      = model.buffers[pos_view.buffer];
-            const tinygltf::Buffer& normal_buffer   = model.buffers[normal_view.buffer];
-            const tinygltf::Buffer& texcoord_buffer = model.buffers[texcoord_view.buffer];
-
-            size_t vertex_count = pos_accessor.count;
-
-            auto* positions =
-                reinterpret_cast<const float*>(&pos_buffer.data[pos_view.byteOffset + pos_accessor.byteOffset]);
-
-            auto* normals = reinterpret_cast<const float*>(
-                &normal_buffer.data[normal_view.byteOffset + normal_accessor.byteOffset]
-            );
-
-            auto* texcoords = reinterpret_cast<const float*>(
-                &texcoord_buffer.data[texcoord_view.byteOffset + texcoord_accessor.byteOffset]
-            );
-
-            const float* tangents = nullptr;
-
-            if (has_tangents) {
-                const tinygltf::Accessor&   tangent_accessor = model.accessors[primitive.attributes.at("TANGENT")];
-                const tinygltf::BufferView& tangent_view     = model.bufferViews[tangent_accessor.bufferView];
-                const tinygltf::Buffer&     tangent_buffer   = model.buffers[tangent_view.buffer];
-
-                tangents = reinterpret_cast<const float*>(
-                    &tangent_buffer.data[tangent_view.byteOffset + tangent_accessor.byteOffset]
-                );
-            }
-
-            glm::vec3 center     = glm::vec3(0);
-            glm::vec3 bounds_min = glm::vec3(std::numeric_limits<float>::max());
-            glm::vec3 bounds_max = glm::vec3(std::numeric_limits<float>::lowest());
-
-            for (size_t i = 0; i < vertex_count; i++) {
-                glm::vec3 position = {
-                    positions[i * 3 + 0],
-                    positions[i * 3 + 1],
-                    positions[i * 3 + 2],
-                };
-
-                glm::vec4 tangent_sign = glm::vec4(0.0);
-                if (has_tangents) {
-                    tangent_sign = {
-                        tangents[i * 4 + 0],
-                        tangents[i * 4 + 1],
-                        tangents[i * 4 + 2],
-                        tangents[i * 4 + 3],
-                    };
-                }
-
-                center += position;
-                bounds_min = glm::min(bounds_min, position);
-                bounds_max = glm::max(bounds_max, position);
-
-                vertices.emplace_back(
-                    Vertex{
-                        .px   = meshopt_quantizeHalf(position.x),
-                        .py   = meshopt_quantizeHalf(position.y),
-                        .pz   = meshopt_quantizeHalf(position.z),
-                        .ux   = meshopt_quantizeHalf(texcoords[i * 2 + 0]),
-                        .uy   = meshopt_quantizeHalf(texcoords[i * 2 + 1]),
-                        .tn   = pack_tangent(glm::vec3(tangent_sign)),
-                        .norm = static_cast<uint32_t>(
-                            (meshopt_quantizeSnorm(normals[i * 3 + 0], 10) + 511) |
-                            (meshopt_quantizeSnorm(normals[i * 3 + 1], 10) + 511) << 10 |
-                            (meshopt_quantizeSnorm(normals[i * 3 + 2], 10) + 511) << 20 |
-                            (tangent_sign.w >= 0 ? 0 : 1) << 30
-                        ),
-                    }
-                );
-            }
-
-            center /= float(vertex_count);
-
-            if (primitive.indices >= 0) {
-                const tinygltf::Accessor&   index_accessor = model.accessors[primitive.indices];
-                const tinygltf::BufferView& index_view     = model.bufferViews[index_accessor.bufferView];
-                const tinygltf::Buffer&     index_buffer   = model.buffers[index_view.buffer];
-
-                size_t index_count = index_accessor.count;
-
-                switch (index_accessor.componentType) {
-                case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
-                    const uint16_t* short_indices = reinterpret_cast<const uint16_t*>(
-                        &index_buffer.data[index_view.byteOffset + index_accessor.byteOffset]
-                    );
-                    for (size_t i = 0; i < index_count; i++) {
-                        indices.push_back(static_cast<uint32_t>(short_indices[i]));
-                    }
-                    break;
-                }
-                case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
-                    const uint32_t* long_indices = reinterpret_cast<const uint32_t*>(
-                        &index_buffer.data[index_view.byteOffset + index_accessor.byteOffset]
-                    );
-
-                    for (int ind = 0; ind < index_count; ind++) {
-                        indices.push_back(long_indices[ind]);
-                    }
-                    break;
-                }
-                case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE: {
-                    const uint8_t* byte_indices = reinterpret_cast<const uint8_t*>(
-                        &index_buffer.data[index_view.byteOffset + index_accessor.byteOffset]
-                    );
-                    for (size_t i = 0; i < index_count; i++) {
-                        indices.push_back(static_cast<uint32_t>(byte_indices[i]));
-                    }
-                    break;
-                }
-                }
-            }
-
-            if (!has_tangents) {
-                generate_tangents(vertices, indices);
-            }
-
-            std::vector<uint32_t> remap_table(vertices.size());
-            auto                  unique_vertices = meshopt_generateVertexRemap(
-                remap_table.data(), indices.data(), indices.size(), vertices.data(), vertices.size(), sizeof(Vertex)
-            );
-
-            float remap_reduction = (((float)unique_vertices / (float)vertices.size()) * 100.0f);
-            remap_reduction       = 100.0f - remap_reduction;
-            if (remap_reduction > 0.0f) {
-                spdlog::info("Remap table reduction: {:03.2f}%", remap_reduction);
-            }
-
-            meshopt_remapVertexBuffer(
-                vertices.data(), vertices.data(), vertices.size(), sizeof(Vertex), remap_table.data()
-            );
-            meshopt_remapIndexBuffer(indices.data(), indices.data(), indices.size(), remap_table.data());
-            vertices.resize(unique_vertices);
-
-            meshopt_optimizeVertexCache(indices.data(), indices.data(), indices.size(), vertices.size());
-            meshopt_optimizeVertexFetch(
-                vertices.data(), indices.data(), indices.size(), vertices.data(), vertices.size(), sizeof(Vertex)
-            );
-
-            std::vector<glm::vec3> unquantized_positions(vertices.size());
-            for (int i = 0; i < vertices.size(); i++) {
-                Vertex& v = vertices[i];
-                unquantized_positions[i] =
-                    glm::vec3(meshopt_dequantizeHalf(v.px), meshopt_dequantizeHalf(v.py), meshopt_dequantizeHalf(v.pz));
-            }
-
-            float radius = 0.0f;
-            for (const auto& pos : unquantized_positions) {
-                radius = std::max(radius, glm::distance(center, pos));
-            }
-
-            JPH::TriangleList triangles;
-            for (size_t i = 0; i < indices.size(); i += 3) {
-                const glm::vec3& v0 = unquantized_positions[indices[i + 0]];
-                const glm::vec3& v1 = unquantized_positions[indices[i + 1]];
-                const glm::vec3& v2 = unquantized_positions[indices[i + 2]];
-
-                triangles.push_back(
-                    JPH::Triangle(
-                        JPH::Float3(v0.x, v0.y, v0.z), JPH::Float3(v1.x, v1.y, v1.z), JPH::Float3(v2.x, v2.y, v2.z)
-                    )
-                );
-            }
-
-            JPH::MeshShapeSettings mesh_settings(triangles);
-            JPH::ShapeRefC         collision_shape = mesh_settings.Create().Get();
-            mesh_collision_shapes.push_back(collision_shape);
-
-            VkDeviceSize mesh_vertex_offset = indirect_vertex_buffer_offset;
-            VkDeviceSize mesh_index_offset  = indirect_index_buffer_offset;
-
-            memcpy(staging_buffer_ptr, vertices.data(), sizeof(Vertex) * vertices.size());
-            copy_buffer(
-                staging_buffer,
-                indirect_vertex_buffer,
-                command_buffer,
-                queue,
-                device,
-                staging_buffer_ptr,
-                sizeof(Vertex) * vertices.size(),
-                indirect_vertex_buffer_offset
-            );
-            indirect_vertex_buffer_offset += sizeof(Vertex) * vertices.size();
-
-            spdlog::debug("Copying indices into global buffer");
-            memcpy(staging_buffer_ptr, indices.data(), sizeof(uint32_t) * indices.size());
-            copy_buffer(
-                staging_buffer,
-                indirect_index_buffer,
-                command_buffer,
-                queue,
-                device,
-                staging_buffer_ptr,
-                sizeof(uint32_t) * indices.size(),
-                indirect_index_buffer_offset
-            );
-            indirect_index_buffer_offset += sizeof(uint32_t) * indices.size();
-
-            if (primitive.material >= 0) {
-                const tinygltf::Material& material = model.materials[primitive.material];
-            }
-
-            spdlog::debug("Building meshlets");
-            const size_t max_vertices  = 64;
-            const size_t max_triangles = 124;
-            const float  cone_weight   = 0.25f;
-
-            size_t max_meshlets = meshopt_buildMeshletsBound(indices.size(), max_vertices, max_triangles);
-            spdlog::trace("Max meshlets {}", max_meshlets);
-
-            std::vector<meshopt_Meshlet> meshlets(max_meshlets);
-            std::vector<unsigned int>    meshlet_vertices(max_meshlets * max_vertices);
-            std::vector<unsigned char>   meshlet_triangles(max_meshlets * max_triangles * 3);
-
-            size_t meshlet_count = meshopt_buildMeshlets(
-                meshlets.data(),
-                meshlet_vertices.data(),
-                meshlet_triangles.data(),
-                indices.data(),
-                indices.size(),
-                (float*)unquantized_positions.data(),
-                unquantized_positions.size(),
-                sizeof(glm::vec3),
-                max_vertices,
-                max_triangles,
-                cone_weight
-            );
-
-            auto& last_meshlet = meshlets[meshlet_count - 1];
-            meshlet_vertices.resize(last_meshlet.vertex_offset + last_meshlet.vertex_count);
-            meshlet_triangles.resize(last_meshlet.triangle_offset + ((last_meshlet.triangle_count * 3 + 3) & ~3));
-            meshlets.resize(meshlet_count);
-            std::vector<MeshletBounds> meshlet_bounds(meshlet_count);
-
-            uint32_t idx = 0;
-            for (auto& m : meshlets) {
-                meshopt_optimizeMeshlet(
-                    &meshlet_vertices[m.vertex_offset],
-                    &meshlet_triangles[m.triangle_offset],
-                    m.triangle_count,
-                    m.vertex_count
-                );
-
-                auto bounds = meshopt_computeMeshletBounds(
-                    &meshlet_vertices[m.vertex_offset],
-                    &meshlet_triangles[m.triangle_offset],
-                    m.triangle_count,
-                    (float*)unquantized_positions.data(),
-                    unquantized_positions.size(),
-                    sizeof(glm::vec3)
-                );
-
-                meshlet_bounds[idx++] = MeshletBounds{
-                    .center      = {bounds.center[0], bounds.center[1], bounds.center[2]},
-                    .radius      = bounds.radius,
-                    .cone_axis   = {bounds.cone_axis[0], bounds.cone_axis[1], bounds.cone_axis[2]},
-                    .cone_cutoff = bounds.cone_cutoff,
-                    .cone_apex   = {bounds.cone_apex[0], bounds.cone_apex[1], bounds.cone_apex[2]},
-                };
-            }
-
-            size_t global_vertex_indices_offset    = meshlet_vertex_indices_offset / sizeof(unsigned int);
-            size_t global_primitive_indices_offset = meshlet_primitive_indices_offset;
-
-            for (size_t i = 0; i < meshlet_count; i++) {
-                meshlets[i].vertex_offset += global_vertex_indices_offset;
-                meshlets[i].triangle_offset += global_primitive_indices_offset;
-            }
-
-            for (size_t i = 0; i < meshlet_vertices.size(); i++) {
-                meshlet_vertices[i] += mesh_vertex_offset / sizeof(Vertex);
-            }
-
-            uint32_t current_meshlet_offset = meshlet_buffer_offset / sizeof(meshopt_Meshlet);
-
-            spdlog::trace(
-                "Mesh {}: meshlet_count={}, meshlet_offset={}, vertex_buf_size={}MB, index_buf_size={}MB",
-                meshes.size(),
-                meshlet_count,
-                current_meshlet_offset,
-                (vertices.size() * sizeof(Vertex)) / 1024.0f / 1024.f,
-                (sizeof(uint32_t) * indices.size()) / 1024.0f / 1024.0f
-            );
-            spdlog::trace(
-                "  global_vertex_indices_offset={}, global_primitive_indices_offset={}",
-                global_vertex_indices_offset,
-                global_primitive_indices_offset
-            );
-            spdlog::trace(
-                "  First meshlet: v_off={}, t_off={}, v_cnt={}, t_cnt={}",
-                meshlets[0].vertex_offset,
-                meshlets[0].triangle_offset,
-                meshlets[0].vertex_count,
-                meshlets[0].triangle_count
-            );
-            if (meshlet_count > 1) {
-                spdlog::trace(
-                    "  Last meshlet: v_off={}, t_off={}, v_cnt={}, t_cnt={}",
-                    meshlets[meshlet_count - 1].vertex_offset,
-                    meshlets[meshlet_count - 1].triangle_offset,
-                    meshlets[meshlet_count - 1].vertex_count,
-                    meshlets[meshlet_count - 1].triangle_count
-                );
-            }
-
-            spdlog::debug("Copying meshlets into meshlet buffer");
-            memcpy(staging_buffer_ptr, meshlets.data(), sizeof(meshopt_Meshlet) * meshlets.size());
-            copy_buffer(
-                staging_buffer,
-                meshlet_bufffer,
-                command_buffer,
-                queue,
-                device,
-                staging_buffer_ptr,
-                sizeof(meshopt_Meshlet) * meshlets.size(),
-                meshlet_buffer_offset
-            );
-            meshlet_buffer_offset += sizeof(meshopt_Meshlet) * meshlets.size();
-
-            spdlog::debug("Copying meshlet bounds into meshlet bounds buffer");
-            memcpy(staging_buffer_ptr, meshlet_bounds.data(), sizeof(MeshletBounds) * meshlet_bounds.size());
-            copy_buffer(
-                staging_buffer,
-                meshlet_bounds_buffer,
-                command_buffer,
-                queue,
-                device,
-                staging_buffer_ptr,
-                sizeof(MeshletBounds) * meshlet_bounds.size(),
-                meshlet_bounds_buffer_offset
-            );
-            meshlet_bounds_buffer_offset += sizeof(MeshletBounds) * meshlet_bounds.size();
-
-            spdlog::debug("Copying meshlet vertices into meshlet buffer");
-            memcpy(staging_buffer_ptr, meshlet_vertices.data(), sizeof(unsigned int) * meshlet_vertices.size());
-            copy_buffer(
-                staging_buffer,
-                meshlet_vertex_indices,
-                command_buffer,
-                queue,
-                device,
-                staging_buffer_ptr,
-                sizeof(unsigned int) * meshlet_vertices.size(),
-                meshlet_vertex_indices_offset
-            );
-            meshlet_vertex_indices_offset += sizeof(unsigned int) * meshlet_vertices.size();
-
-            spdlog::debug("Copying meshlet triangle indices into meshlet buffer");
-            memcpy(staging_buffer_ptr, meshlet_triangles.data(), sizeof(unsigned char) * meshlet_triangles.size());
-            copy_buffer(
-                staging_buffer,
-                meshlet_primitive_indices,
-                command_buffer,
-                queue,
-                device,
-                staging_buffer_ptr,
-                sizeof(unsigned char) * meshlet_triangles.size(),
-                meshlet_primitive_indices_offset
-            );
-            meshlet_primitive_indices_offset += sizeof(unsigned char) * meshlet_triangles.size();
-
-            spdlog::debug("Loaded mesh {} with vertices={}, indices={}", m, vertices.size(), indices.size());
-
-            meshes.emplace_back(
-                current_meshlet_offset,
-                meshlet_count,
-                vertices.size(),
-                static_cast<int32_t>(mesh_vertex_offset / sizeof(Vertex)),
-                indices.size(),
-                static_cast<uint32_t>(mesh_index_offset / sizeof(uint32_t)),
-                center,
-                radius,
-                bounds_min,
-                bounds_max
-            );
-
-            current_entry++;
-        }
-    }
-
-    vmaUnmapMemory(allocator, staging_buffer.allocation);
-
-    spdlog::info("Scene count: {}", model.scenes.size());
-    int scene_id = model.defaultScene >= 0 ? model.defaultScene : (model.scenes.size() >= 1 ? 0 : -1);
-    if (scene_id <= -1) {
-        spdlog::warn("No eligibles scenes found");
-        return;
-    }
-
-    spdlog::info("Constructing scene");
-    const tinygltf::Scene& scene = model.scenes[scene_id];
-
-    for (int node_id : scene.nodes) {
-        ZoneScopedN("Parse Scene Node");
-        const auto& node = model.nodes[node_id];
-        if (node.mesh <= -1)
-            continue;
-
-        const auto& mesh = model.meshes[node.mesh];
-
-        glm::vec3 position = glm::vec3(0.0);
-        if (node.translation.size() == 3) {
-            position = {node.translation[0], node.translation[1], node.translation[2]};
-        } else {
-        }
-
-        float scale = 1.0f;
-        if (node.scale.size() == 3) {
-            // TODO: handle this more gracefully
-            scale = node.scale[0];
-        }
-
-        glm::quat rotation = glm::quat(0.0f, 0.0f, 0.0f, 1.0f);
-        if (node.rotation.size() == 4) {
-            rotation = glm::quat(node.rotation[0], node.rotation[1], node.rotation[2], node.rotation[3]);
-        }
-
-        if (node.children.size() > 0) {
-            spdlog::warn("{} children", node.children.size());
-        }
-
-        for (int i = 0; i < mesh.primitives.size(); i++) {
-            int mesh_id = mesh_primitive_offsets[node.mesh] + i;
-
-            MeshInstance instance = {
-                .mesh_id     = mesh_id,
-                .material_id = mesh.primitives[i].material,
-                .position    = position,
-                .scale       = scale,
-                .rotation    = rotation,
-            };
-            instances.push_back(instance);
-
-            JPH::ShapeRefC final_shape;
-            if (scale != 1.0f) {
-                JPH::ScaledShapeSettings scaled(mesh_collision_shapes[mesh_id], JPH::Vec3::sReplicate(scale));
-                final_shape = scaled.Create().Get();
-            } else {
-                final_shape = mesh_collision_shapes[mesh_id];
-            }
-
-            JPH::BodyInterface& body_interface = physics_system->GetBodyInterface();
-
-            JPH::BodyCreationSettings body_settings(
-                final_shape,
-                JPH::RVec3(position.x, position.y, position.z),
-                JPH::Quat(rotation.x, rotation.y, rotation.z, rotation.w),
-                JPH::EMotionType::Static,
-                Layers::NON_MOVING
-            );
-
-            JPH::Body* body = body_interface.CreateBody(body_settings);
-            if (body) {
-                body_interface.AddBody(body->GetID(), JPH::EActivation::DontActivate);
-                static_bodies.push_back(body->GetID());
-            }
-        }
-    }
-
-    if (instances.size() == 0) {
-        for (int m = 0; m < model.meshes.size(); m++) {
-            auto& mesh = model.meshes[m];
-            for (int i = 0; i < mesh.primitives.size(); i++) {
-                int mesh_id = mesh_primitive_offsets[m] + i;
-
-                auto rot = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0));
-                rot *= glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
-
-                MeshInstance instance = {
-                    .mesh_id     = mesh_id,
-                    .material_id = mesh.primitives[i].material,
-                    .position    = {0, 0, 0},
-                    .scale       = 0.01,
-                    .rotation    = rot,
-                };
-                instances.push_back(instance);
-            }
-        }
-
-        return;
-    }
-}
-
-void populate_materials(
-    const std::unordered_map<uint32_t, Image>& texture_cache,
-    VkDescriptorSet                            descriptor_set,
-    VkSampler                                  sampler,
-    VkDevice                                   device
-) {
-    spdlog::info("Texture cache contains: {} textures", texture_cache.size());
-
-    for (auto& [slot, image] : texture_cache) {
+void populate_materials(const Scene& scene, VkDescriptorSet descriptor_set, VkDevice device) {
+    spdlog::info("Texture cache contains: {} textures", scene.images.size());
+
+    uint32_t slot = 1;
+    for (auto& image : scene.images) {
         VkDescriptorImageInfo image_write_info = {
-            .sampler = sampler, .imageView = image.view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            .sampler     = scene.samplers.at(image.sampler_index).handle,
+            .imageView   = image.image.view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         };
 
         VkWriteDescriptorSet write_set = {
@@ -1397,7 +657,7 @@ void populate_materials(
             .pNext            = nullptr,
             .dstSet           = descriptor_set,
             .dstBinding       = 0,
-            .dstArrayElement  = slot,
+            .dstArrayElement  = slot++,
             .descriptorCount  = 1,
             .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .pImageInfo       = &image_write_info,
@@ -1579,7 +839,7 @@ int main(int argc, char* argv[]) {
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 40,
+            .descriptorCount = 60,
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
@@ -1631,7 +891,7 @@ int main(int argc, char* argv[]) {
         .addressModeW            = VK_SAMPLER_ADDRESS_MODE_REPEAT,
         .mipLodBias              = 0.0f,
         .anisotropyEnable        = VK_FALSE,
-        .maxAnisotropy           = 16.0f,
+        .maxAnisotropy           = 0.0f,
         .compareEnable           = VK_FALSE,
         .compareOp               = VK_COMPARE_OP_ALWAYS,
         .minLod                  = 0.0f,
@@ -1650,15 +910,7 @@ int main(int argc, char* argv[]) {
     VkSampler linear_sampler_clamped = VK_NULL_HANDLE;
     VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &linear_sampler_clamped));
 
-    sampler_info.addressModeU           = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler_info.addressModeV           = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler_info.addressModeW           = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler_info.anisotropyEnable       = VK_TRUE;
-    VkSampler linear_sampler_anisotropy = VK_NULL_HANDLE;
-    VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &linear_sampler_anisotropy));
-
-    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-
+    sampler_info.mipmapMode                            = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     VkSamplerReductionModeCreateInfoEXT reduction_info = {
         .sType         = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO_EXT,
         .pNext         = nullptr,
@@ -2821,28 +2073,6 @@ int main(int argc, char* argv[]) {
         VK_CHECK(vkAllocateDescriptorSets(device, &global_texture_descriptor_set_info, &global_texture_descriptor_set));
     }
 
-    std::unordered_map<uint32_t, Image> texture_cache;
-    std::vector<Image>                  loaded_images;
-
-    Image missing_material = load_image(
-        "data/textures/missing_material.png",
-        VK_FORMAT_R8G8B8A8_UNORM,
-        false,
-        staging_buffer,
-        command_buffers[0],
-        graphics_queue,
-        vma_allocator,
-        device
-    );
-
-    // index 0 is a dummy texture that acts as a missing index
-    texture_cache.insert({0, missing_material});
-    loaded_images.push_back(missing_material);
-
-    std::vector<Mesh>         meshes;
-    std::vector<Material>     materials;
-    std::vector<MeshInstance> mesh_instances;
-
     spdlog::info("Initializing physics engine");
     JPH::RegisterDefaultAllocator();
     JPH::Factory::sInstance = new JPH::Factory();
@@ -2880,16 +2110,6 @@ int main(int argc, char* argv[]) {
 
     JPH::BodyInterface& physics_body_interface = physics_system.GetBodyInterface();
 
-    struct PhysicsObject {
-        JPH::BodyID body_id;
-        int         drawcall_id = -1;
-
-        JPH::Vec3 last_position;
-        JPH::Quat last_rotation;
-    };
-    std::vector<PhysicsObject> dynamic_bodies;
-    std::vector<JPH::BodyID>   static_bodies;
-
     const float                             player_height          = 1.8f;
     const float                             player_radius          = 0.3f;
     const float                             player_speed           = 10.0f;
@@ -2898,7 +2118,7 @@ int main(int argc, char* argv[]) {
     JPH::Ref<JPH::CharacterVirtualSettings> character_settings     = new JPH::CharacterVirtualSettings();
     character_settings->mShape            = new JPH::CapsuleShape(player_height / 2.0f - player_radius, player_radius);
     character_settings->mMass             = 180.0f;
-    character_settings->mMaxSlopeAngle    = JPH::DegreesToRadians(35.0f);
+    character_settings->mMaxSlopeAngle    = JPH::DegreesToRadians(45.0f);
     character_settings->mMaxStrength      = 100.0f;
     character_settings->mCharacterPadding = 0.02f;
     character_settings->mPenetrationRecoverySpeed  = 1.0f;
@@ -2916,34 +2136,50 @@ int main(int argc, char* argv[]) {
 
     std::string load_path = args.get_arg<std::string>("s", "data/models/room2.glb");
 
-    load_scene(
+    Scene scene = load_scene(
         load_path,
-        meshes,
-        materials,
-        mesh_instances,
         staging_buffer,
         global_vertex_buffer,
-        indirect_vertex_buffer_offset,
         global_index_buffer,
-        indirect_index_buffer_offset,
         meshlet_buffer,
-        meshlet_buffer_offset,
         meshlet_vertex_indices_buffer,
-        meshlet_vertex_indices_offset,
         meshlet_primitive_indices_buffer,
-        meshlet_vertex_primitive_indices_offset,
         meshlet_bounds_buffer,
-        meshlet_bounds_buffer_offset,
-        texture_cache,
-        loaded_images,
         &physics_system,
-        static_bodies,
-        vma_allocator,
-        command_buffers[0],
+        device,
         graphics_queue,
-        device
+        vma_allocator,
+        command_buffers[0]
     );
 
+    // load_scene(
+    //     load_path,
+    //     meshes,
+    //     materials,
+    //     mesh_instances,
+    //     staging_buffer,
+    //     global_vertex_buffer,
+    //     indirect_vertex_buffer_offset,
+    //     global_index_buffer,
+    //     indirect_index_buffer_offset,
+    //     meshlet_buffer,
+    //     meshlet_buffer_offset,
+    //     meshlet_vertex_indices_buffer,
+    //     meshlet_vertex_indices_offset,
+    //     meshlet_primitive_indices_buffer,
+    //     meshlet_vertex_primitive_indices_offset,
+    //     meshlet_bounds_buffer,
+    //     meshlet_bounds_buffer_offset,
+    //     texture_cache,
+    //     loaded_images,
+    //     &physics_system,
+    //     static_bodies,
+    //     vma_allocator,
+    //     command_buffers[0],
+    //     graphics_queue,
+    //     device
+    // );
+    //
     spdlog::info(
         "Buffer usage:\n\tVertex: {}MB\n\tIndex: {}MB\n\tMeshlet: {}MB\n\tMeshlet Vertex: {}MB\n\tMeshlet Index: "
         "{}MB\n\tMeshlet Bounds: {}MB",
@@ -2955,7 +2191,7 @@ int main(int argc, char* argv[]) {
         meshlet_bounds_buffer_offset / 1024 / 1024
     );
 
-    populate_materials(texture_cache, global_texture_descriptor_set, linear_sampler_anisotropy, device);
+    populate_materials(scene, global_texture_descriptor_set, device);
 
     RTScene rt_scene = {};
 
@@ -2969,8 +2205,8 @@ int main(int argc, char* argv[]) {
             graphics_queue,
             10000,
             FRAMES_IN_FLIGHT,
-            meshes,
-            mesh_instances,
+            scene.meshes,
+            scene.instances,
             get_buffer_device_address(global_vertex_buffer, device),
             get_buffer_device_address(global_index_buffer, device)
         );
@@ -2988,8 +2224,11 @@ int main(int argc, char* argv[]) {
     );
 
     std::unordered_map<uint32_t, VkDescriptorSet> imgui_material_image_handles;
-    for (auto& [slot, image] : texture_cache) {
-        imgui_material_image_handles.insert({slot, imgui_image_handle(image, linear_sampler_clamped)});
+    {
+        uint32_t slot = 0;
+        for (auto& image : scene.images) {
+            imgui_material_image_handles.insert({slot++, imgui_image_handle(image.image, nearest_sampler)});
+        }
     }
 
     Camera camera = {
@@ -3022,7 +2261,7 @@ int main(int argc, char* argv[]) {
 
     ImGuizmo::OPERATION tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
 
-    bool      enable_transform_snap = true;
+    bool      enable_transform_snap = false;
     glm::vec3 transform_snap        = glm::vec3(1.0f);
     int       grabbed_mesh          = -1;
     glm::vec2 grab_origin           = {};
@@ -3561,7 +2800,9 @@ int main(int argc, char* argv[]) {
     auto tlas_rebuild_pass =
         framegraph.add_pass("RT structure rebuild")
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                rebuild_tlas(rt_scene, device, vma_allocator, command_buffer, frame_index, meshes, mesh_instances);
+                rebuild_tlas(
+                    rt_scene, device, vma_allocator, command_buffer, frame_index, scene.meshes, scene.instances
+                );
             });
 
     auto cull_early_pass =
@@ -3612,7 +2853,7 @@ int main(int argc, char* argv[]) {
                     offsets.data()
                 );
 
-                cull_push_constants.draw_count = static_cast<uint32_t>(mesh_instances.size());
+                cull_push_constants.draw_count = static_cast<uint32_t>(scene.instances.size());
                 vkCmdPushConstants(
                     command_buffer,
                     cull_pipeline.pipeline_layout,
@@ -3622,7 +2863,7 @@ int main(int argc, char* argv[]) {
                     &cull_push_constants
                 );
 
-                vkCmdDispatch(command_buffer, (mesh_instances.size() + 255) / 256, 1, 1);
+                vkCmdDispatch(command_buffer, (scene.instances.size() + 255) / 256, 1, 1);
             });
 
     auto gbuffer_pass =
@@ -3809,7 +3050,7 @@ int main(int argc, char* argv[]) {
                         offsets[1] + sizeof(uint32_t),
                         indirect_command_buffer.handle,
                         offsets[1],
-                        mesh_instances.size(),
+                        scene.instances.size(),
                         sizeof(MeshIndirectDrawCommand)
                     );
                 } else {
@@ -3821,7 +3062,7 @@ int main(int argc, char* argv[]) {
                         offsets[1] + sizeof(uint32_t),
                         indirect_command_buffer.handle,
                         offsets[1],
-                        mesh_instances.size(),
+                        scene.instances.size(),
                         sizeof(VkDrawIndexedIndirectCommand)
                     );
                 }
@@ -6364,7 +5605,7 @@ int main(int argc, char* argv[]) {
         }
 
         while (physics_time_accumulator >= physics_delta_time) {
-            for (auto& body : dynamic_bodies) {
+            for (auto& body : scene.dynamic_bodies) {
                 JPH::Vec3 p;
                 JPH::Quat r;
                 physics_body_interface.GetPositionAndRotation(body.body_id, p, r);
@@ -6378,7 +5619,7 @@ int main(int argc, char* argv[]) {
         }
 
         float physics_alpha = physics_time_accumulator / physics_delta_time;
-        for (const auto& body : dynamic_bodies) {
+        for (const auto& body : scene.dynamic_bodies) {
             if (body.drawcall_id == -1) {
                 continue;
             }
@@ -6399,8 +5640,8 @@ int main(int argc, char* argv[]) {
                 body.last_rotation.GetW()
             );
 
-            MeshInstance& instance = mesh_instances[body.drawcall_id];
-            Mesh          mesh     = meshes[instance.mesh_id];
+            MeshInstance& instance = scene.instances[body.drawcall_id];
+            Mesh          mesh     = scene.meshes[instance.mesh_id];
 
             glm::vec3 center = (mesh.bounds_max + mesh.bounds_min) * 0.5f;
             glm::vec3 offset = new_rot * (center * instance.scale);
@@ -6467,7 +5708,7 @@ int main(int argc, char* argv[]) {
             void* ptr;
             VK_CHECK(vmaMapMemory(vma_allocator, pick_buffer.allocation, &ptr));
             uint32_t mesh_id = *reinterpret_cast<uint32_t*>(ptr);
-            if (mesh_id == UINT32_MAX || mesh_id >= mesh_instances.size()) {
+            if (mesh_id == UINT32_MAX || mesh_id >= scene.instances.size()) {
                 grabbed_mesh = -1;
             } else {
                 grabbed_mesh = mesh_id;
@@ -6503,7 +5744,7 @@ int main(int argc, char* argv[]) {
 
         if (ImGui::TreeNode("Mesh Material")) {
             if (grabbed_mesh != -1) {
-                auto& material = materials[mesh_instances[grabbed_mesh].material_id];
+                auto& material = scene.materials[scene.instances[grabbed_mesh].material_id];
 
                 std::vector<uint32_t*> material_indices = {
                     &material.albedo_index, &material.normals_index, &material.material_index, &material.emissive_index
@@ -6562,7 +5803,7 @@ int main(int argc, char* argv[]) {
 
         ImGui::SeparatorText("Info");
         ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
-        ImGui::Text("Objects: %lu", mesh_instances.size());
+        ImGui::Text("Objects: %lu", scene.instances.size());
         ImGui::Text("FPS: %u", fps);
         ImGui::Text("Camera Position: %s", glm::to_string(camera.position).c_str());
         ImGui::Text("Camera Orientation: %s", glm::to_string(camera.orientation).c_str());
@@ -6671,8 +5912,8 @@ int main(int argc, char* argv[]) {
         ImGui::End();
 
         if (grabbed_mesh != -1) {
-            auto& inst = mesh_instances[grabbed_mesh];
-            auto  mesh = meshes[inst.mesh_id];
+            auto& inst = scene.instances[grabbed_mesh];
+            auto  mesh = scene.meshes[inst.mesh_id];
 
             glm::mat4 transform = glm::translate(glm::mat4(1.0f), inst.position);
             transform           = transform * glm::mat4_cast(inst.rotation);
@@ -6721,6 +5962,39 @@ int main(int argc, char* argv[]) {
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
                     inst.scale *= scale.x;
+                }
+
+                for (auto& body : scene.static_bodies) {
+                    if (body.drawcall_id == grabbed_mesh) {
+
+                        if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
+                            physics_body_interface.SetPosition(
+                                body.body_id,
+                                JPH::Vec3(inst.position.x, inst.position.y, inst.position.z),
+                                JPH::EActivation::DontActivate
+                            );
+                        }
+
+                        if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
+                            physics_body_interface.SetRotation(
+                                body.body_id,
+                                JPH::Quat(inst.rotation.x, inst.rotation.y, inst.rotation.z, inst.rotation.w),
+                                JPH::EActivation::DontActivate
+                            );
+                        }
+
+                        if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
+                            auto shape     = physics_body_interface.GetShape(body.body_id);
+                            auto new_shape = shape->ScaleShape(JPH::Vec3(scale.x, scale.x, scale.x));
+                            if (new_shape.IsValid()) {
+                                physics_body_interface.SetShape(
+                                    body.body_id, new_shape.Get(), false, JPH::EActivation::DontActivate
+                                );
+                            }
+                        }
+
+                        break;
+                    }
                 }
             }
         }
@@ -6857,8 +6131,8 @@ int main(int argc, char* argv[]) {
                     glm::vec3 origin  = camera.position;
                     glm::vec3 ray_dir = glm::normalize(far - near);
 
-                    MeshInstance new_instance = mesh_instances[grabbed_mesh];
-                    Mesh         mesh         = meshes[new_instance.mesh_id];
+                    MeshInstance new_instance = scene.instances[grabbed_mesh];
+                    Mesh         mesh         = scene.meshes[new_instance.mesh_id];
 
                     glm::vec3 half_extent = (mesh.bounds_max - mesh.bounds_min) * 0.5f;
                     half_extent *= new_instance.scale;
@@ -6968,8 +6242,10 @@ int main(int argc, char* argv[]) {
                     physics_body_interface.SetLinearVelocity(body_id, JPH::Vec3(ray_dir.x, ray_dir.y, ray_dir.z) * 10);
                     physics_body_interface.SetFriction(body_id, 1.0f);
 
-                    mesh_instances.push_back(new_instance);
-                    dynamic_bodies.push_back(PhysicsObject{body_id, static_cast<int>(mesh_instances.size() - 1)});
+                    scene.instances.push_back(new_instance);
+                    scene.dynamic_bodies.push_back(
+                        PhysicsObject{body_id, static_cast<int>(scene.instances.size() - 1)}
+                    );
                 }
             }
         }
@@ -6980,8 +6256,8 @@ int main(int argc, char* argv[]) {
             VK_CHECK(vmaMapMemory(vma_allocator, drawcall_buffer.allocation, &ptr));
             memcpy(
                 reinterpret_cast<char*>(ptr) + frame_offset,
-                mesh_instances.data(),
-                sizeof(MeshInstance) * mesh_instances.size()
+                scene.instances.data(),
+                sizeof(MeshInstance) * scene.instances.size()
             );
             vmaUnmapMemory(vma_allocator, drawcall_buffer.allocation);
             VK_CHECK(vmaFlushAllocation(vma_allocator, drawcall_buffer.allocation, frame_offset, drawcall_buffer.size));
@@ -6991,7 +6267,9 @@ int main(int argc, char* argv[]) {
             void*  ptr          = nullptr;
             size_t frame_offset = (mesh_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
             VK_CHECK(vmaMapMemory(vma_allocator, mesh_buffer.allocation, &ptr));
-            memcpy(reinterpret_cast<char*>(ptr) + frame_offset, meshes.data(), sizeof(Mesh) * meshes.size());
+            memcpy(
+                reinterpret_cast<char*>(ptr) + frame_offset, scene.meshes.data(), sizeof(Mesh) * scene.meshes.size()
+            );
             vmaUnmapMemory(vma_allocator, mesh_buffer.allocation);
             VK_CHECK(vmaFlushAllocation(vma_allocator, mesh_buffer.allocation, frame_offset, mesh_buffer.size));
         }
@@ -7000,7 +6278,11 @@ int main(int argc, char* argv[]) {
             void*  ptr          = nullptr;
             size_t frame_offset = (material_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
             VK_CHECK(vmaMapMemory(vma_allocator, material_buffer.allocation, &ptr));
-            memcpy(reinterpret_cast<char*>(ptr) + frame_offset, materials.data(), sizeof(Material) * materials.size());
+            memcpy(
+                reinterpret_cast<char*>(ptr) + frame_offset,
+                scene.materials.data(),
+                sizeof(Material) * scene.materials.size()
+            );
             vmaUnmapMemory(vma_allocator, material_buffer.allocation);
             VK_CHECK(vmaFlushAllocation(vma_allocator, material_buffer.allocation, frame_offset, material_buffer.size));
         }
@@ -7319,7 +6601,7 @@ int main(int argc, char* argv[]) {
 
         last_frame_view_proj = camera.combined_matrix;
 
-        for (auto& draw : mesh_instances) {
+        for (auto& draw : scene.instances) {
             draw.last_position = draw.position;
             draw.last_scale    = draw.scale;
             draw.last_rotation = draw.rotation;
@@ -7344,6 +6626,8 @@ int main(int argc, char* argv[]) {
     ImGui_ImplVulkan_Shutdown();
 
     framegraph.destroy(device);
+
+    destroy_scene(scene, device, vma_allocator);
 
     destroy_swapchain(swapchain, window, instance, device);
     destroy_buffer(staging_buffer, device, vma_allocator);
@@ -7443,10 +6727,6 @@ int main(int argc, char* argv[]) {
     destroy_pipeline(device, tile_clear_pipeline);
     destroy_pipeline(device, reflection_tile_copy_pipeline);
 
-    for (auto image : loaded_images) {
-        destroy_image(image, device, vma_allocator);
-    }
-
     if (use_hardware_rt) {
         destroy_rt_scene(rt_scene, device, vma_allocator);
     }
@@ -7458,7 +6738,6 @@ int main(int argc, char* argv[]) {
     vkDestroyDescriptorSetLayout(device, global_texture_descriptor_layout, nullptr);
     vkDestroySampler(device, linear_sampler, nullptr);
     vkDestroySampler(device, linear_sampler_clamped, nullptr);
-    vkDestroySampler(device, linear_sampler_anisotropy, nullptr);
     vkDestroySampler(device, nearest_sampler, nullptr);
     vkDestroySampler(device, depth_sampler, nullptr);
     vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
