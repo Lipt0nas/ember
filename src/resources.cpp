@@ -647,6 +647,58 @@ void copy_to_buffer(const Buffer& dst_buffer, VmaAllocator allocator, void* src_
     VK_CHECK(vmaFlushAllocation(allocator, dst_buffer.allocation, 0, size));
     vmaUnmapMemory(allocator, dst_buffer.allocation);
 }
+
+Sampler create_sampler(
+    VkFilter             mag_filter,
+    VkFilter             min_filter,
+    VkSamplerMipmapMode  mipmap_mode,
+    VkSamplerAddressMode address_mode_u,
+    VkSamplerAddressMode address_mode_v,
+    VkSamplerAddressMode address_mode_w,
+    float                anisotropy,
+    VkDevice             device,
+    void*                extensions
+) {
+    VkSamplerCreateInfo sampler_info = {
+        .sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .pNext                   = extensions,
+        .flags                   = 0,
+        .magFilter               = mag_filter,
+        .minFilter               = min_filter,
+        .mipmapMode              = mipmap_mode,
+        .addressModeU            = address_mode_u,
+        .addressModeV            = address_mode_v,
+        .addressModeW            = address_mode_w,
+        .mipLodBias              = 0.0f,
+        .anisotropyEnable        = anisotropy > 0.0f ? VK_TRUE : VK_FALSE,
+        .maxAnisotropy           = anisotropy,
+        .compareEnable           = VK_FALSE,
+        .compareOp               = VK_COMPARE_OP_ALWAYS,
+        .minLod                  = 0.0f,
+        .maxLod                  = VK_LOD_CLAMP_NONE,
+        .borderColor             = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
+        .unnormalizedCoordinates = VK_FALSE
+    };
+
+    VkSampler handle = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &handle));
+
+    return Sampler{
+        .handle         = handle,
+        .mag_filter     = mag_filter,
+        .min_filter     = min_filter,
+        .mipmap_mode    = mipmap_mode,
+        .address_mode_u = address_mode_u,
+        .address_mode_v = address_mode_v,
+        .address_mode_w = address_mode_w,
+        .anisotropy     = anisotropy,
+    };
+}
+
+void destroy_sampler(const Sampler& sampler, VkDevice device) {
+    vkDestroySampler(device, sampler.handle, nullptr);
+}
+
 uint32_t aligned_size(uint32_t size, uint32_t alignment) {
     uint32_t aligned = size;
     if (alignment > 0) {

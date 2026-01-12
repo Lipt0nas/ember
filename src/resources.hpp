@@ -2,6 +2,21 @@
 
 #include "ember.hpp"
 
+struct Sampler {
+    VkSampler handle;
+
+    VkFilter mag_filter;
+    VkFilter min_filter;
+
+    VkSamplerMipmapMode mipmap_mode;
+
+    VkSamplerAddressMode address_mode_u;
+    VkSamplerAddressMode address_mode_v;
+    VkSamplerAddressMode address_mode_w;
+
+    float anisotropy;
+};
+
 struct Buffer {
     VkBuffer      handle;
     VkDeviceSize  size;
@@ -146,6 +161,20 @@ void copy_image(
     VkQueue         queue,
     VkDevice        device
 );
+
+Sampler create_sampler(
+    VkFilter             mag_filter,
+    VkFilter             min_filter,
+    VkSamplerMipmapMode  mipmap_mode,
+    VkSamplerAddressMode address_mode_u,
+    VkSamplerAddressMode address_mode_v,
+    VkSamplerAddressMode address_mode_w,
+    float                anisotropy,
+    VkDevice             device,
+    void*                extensions = nullptr
+);
+
+void destroy_sampler(const Sampler& sampler, VkDevice device);
 
 uint32_t aligned_size(uint32_t size, uint32_t alignment);
 

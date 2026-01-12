@@ -1,0 +1,838 @@
+#include "scene.hpp"
+
+#include <tracy/Tracy.hpp>
+
+#include <map>
+
+uint16_t pack_tangent(glm::vec3 tangent) {
+    float sum = glm::abs(tangent.x) + glm::abs(tangent.y) + glm::abs(tangent.z);
+    float tu  = tangent.z >= 0 ? tangent.x / sum : (1 - glm::abs(tangent.y / sum)) * (tangent.x >= 0 ? 1 : -1);
+    float tv  = tangent.z >= 0 ? tangent.y / sum : (1 - glm::abs(tangent.x / sum)) * (tangent.y >= 0 ? 1 : -1);
+
+    return (meshopt_quantizeSnorm(tu, 8) + 127) | (meshopt_quantizeSnorm(tv, 8) + 127) << 8;
+}
+
+void generate_tangents(std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
+    std::vector<glm::vec3> tangents(vertices.size(), glm::vec3(0));
+    std::vector<glm::vec3> bitangents(vertices.size(), glm::vec3(0));
+
+    for (size_t i = 0; i < indices.size(); i += 3) {
+        uint32_t i0 = indices[i + 0];
+        uint32_t i1 = indices[i + 1];
+        uint32_t i2 = indices[i + 2];
+
+        const Vertex& v0 = vertices[i0];
+        const Vertex& v1 = vertices[i1];
+        const Vertex& v2 = vertices[i2];
+
+        const glm::vec3 v0_pos =
+            glm::vec3(meshopt_dequantizeHalf(v0.px), meshopt_dequantizeHalf(v0.py), meshopt_dequantizeHalf(v0.pz));
+        const glm::vec3 v1_pos =
+            glm::vec3(meshopt_dequantizeHalf(v1.px), meshopt_dequantizeHalf(v1.py), meshopt_dequantizeHalf(v1.pz));
+        const glm::vec3 v2_pos =
+            glm::vec3(meshopt_dequantizeHalf(v2.px), meshopt_dequantizeHalf(v2.py), meshopt_dequantizeHalf(v2.pz));
+
+        const glm::vec2 uv0 = glm::vec2(meshopt_dequantizeHalf(v0.ux), meshopt_dequantizeHalf(v0.uy));
+        const glm::vec2 uv1 = glm::vec2(meshopt_dequantizeHalf(v1.ux), meshopt_dequantizeHalf(v1.uy));
+        const glm::vec2 uv2 = glm::vec2(meshopt_dequantizeHalf(v2.ux), meshopt_dequantizeHalf(v2.uy));
+
+        glm::vec3 edge1     = v1_pos - v0_pos;
+        glm::vec3 edge2     = v2_pos - v0_pos;
+        glm::vec2 delta_uv1 = uv1 - uv0;
+        glm::vec2 delta_uv2 = uv2 - uv0;
+
+        float f = 1.0f / (delta_uv1.x * delta_uv2.y - delta_uv2.x * delta_uv1.y);
+
+        glm::vec3 tangent;
+        tangent.x = f * (delta_uv2.y * edge1.x - delta_uv1.y * edge2.x);
+        tangent.y = f * (delta_uv2.y * edge1.y - delta_uv1.y * edge2.y);
+        tangent.z = f * (delta_uv2.y * edge1.z - delta_uv1.y * edge2.z);
+
+        glm::vec3 bitangent;
+        bitangent.x = f * (-delta_uv2.x * edge1.x + delta_uv1.x * edge2.x);
+        bitangent.y = f * (-delta_uv2.x * edge1.y + delta_uv1.x * edge2.y);
+        bitangent.z = f * (-delta_uv2.x * edge1.z + delta_uv1.x * edge2.z);
+
+        tangents[i0] += tangent;
+        tangents[i1] += tangent;
+        tangents[i2] += tangent;
+
+        bitangents[i0] += bitangent;
+        bitangents[i1] += bitangent;
+        bitangents[i2] += bitangent;
+    }
+
+    for (size_t i = 0; i < vertices.size(); ++i) {
+        const glm::vec3& n = glm::vec3(
+            (vertices[i].norm & 1023) / 511.0f - 1.0f,
+            ((vertices[i].norm >> 10) & 1023) / 511.0f - 1.0f,
+            ((vertices[i].norm >> 20) & 1023) / 511.0f - 1.0f
+        );
+        const glm::vec3& t = tangents[i];
+        const glm::vec3& b = bitangents[i];
+
+        glm::vec3 tangent = glm::normalize(t - n * glm::dot(n, t));
+
+        float handedness = (glm::dot(glm::cross(n, tangent), b) < 0.0f) ? -1.0f : 1.0f;
+
+        vertices[i].norm |= (handedness >= 0 ? 0 : 1) << 30;
+        vertices[i].tn = pack_tangent(tangent);
+    }
+}
+
+Scene load_scene(
+    const std::filesystem::path& path,
+    const Buffer&                staging_buffer,
+    const Buffer&                vertex_buffer,
+    const Buffer&                index_buffer,
+    const Buffer&                meshlet_buffer,
+    const Buffer&                meshlet_vertex_indices,
+    const Buffer&                meshlet_primitive_buffer,
+    const Buffer&                meshlet_bounds_buffer,
+    JPH::PhysicsSystem*          physics_system,
+    VkDevice                     device,
+    VkQueue                      queue,
+    VmaAllocator                 allocator,
+    VkCommandBuffer              command_buffer
+) {
+    ZoneScopedN("Load Scene");
+    spdlog::info("Loading scene: {}", path.string());
+
+    tinygltf::TinyGLTF loader;
+    tinygltf::Model    model;
+    std::string        error;
+    std::string        warning;
+
+    {
+        ZoneScopedN("Read Scene File");
+        bool ret = false;
+        if (path.extension() == ".gltf") {
+            ret = loader.LoadASCIIFromFile(&model, &error, &warning, path.string());
+        } else if (path.extension() == ".glb") {
+            ret = loader.LoadBinaryFromFile(&model, &error, &warning, path.string());
+        }
+        if (!warning.empty()) {
+            spdlog::warn("Warning loading scene {}: {}", path.string(), warning);
+        }
+
+        if (!error.empty()) {
+            spdlog::error("Error loading scene {}: {}", path.string(), error);
+        }
+
+        if (!ret) {
+            spdlog::error("Failed loading scene {}", path.string());
+        }
+    }
+
+    std::map<uint32_t, int> local_texture_cache;
+    std::map<uint32_t, int> local_sampler_cache;
+
+    std::vector<ImageResource> loaded_images;
+    std::vector<Sampler>       samplers;
+    std::vector<Material>      materials(model.materials.size());
+    std::vector<Mesh>          meshes;
+
+    spdlog::info("Loading {} samplers", model.samplers.size());
+    samplers.push_back(create_sampler(
+        VK_FILTER_LINEAR,
+        VK_FILTER_LINEAR,
+        VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+        16.0f,
+        device
+    ));
+    for (int i = 0; i < model.samplers.size(); i++) {
+        auto& sampler = model.samplers[i];
+
+        int mag_filter = sampler.magFilter == -1 ? TINYGLTF_TEXTURE_FILTER_LINEAR : sampler.magFilter;
+        int min_filter = sampler.minFilter == -1 ? TINYGLTF_TEXTURE_FILTER_LINEAR : sampler.minFilter;
+
+        int wrap_s = sampler.wrapS;
+        int wrap_t = sampler.wrapS;
+
+        auto to_vk_filter = [&](int filter, VkSamplerMipmapMode& mipmap_mode) {
+            switch (filter) {
+            case TINYGLTF_TEXTURE_FILTER_NEAREST:
+                return VK_FILTER_NEAREST;
+            case TINYGLTF_TEXTURE_FILTER_LINEAR:
+                return VK_FILTER_LINEAR;
+            case TINYGLTF_TEXTURE_FILTER_NEAREST_MIPMAP_NEAREST:
+                mipmap_mode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+                return VK_FILTER_NEAREST;
+            case TINYGLTF_TEXTURE_FILTER_LINEAR_MIPMAP_NEAREST:
+                mipmap_mode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+                return VK_FILTER_LINEAR;
+            case TINYGLTF_TEXTURE_FILTER_NEAREST_MIPMAP_LINEAR:
+                mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+                return VK_FILTER_NEAREST;
+            case TINYGLTF_TEXTURE_FILTER_LINEAR_MIPMAP_LINEAR:
+                mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+                return VK_FILTER_LINEAR;
+            }
+
+            return VK_FILTER_LINEAR;
+        };
+
+        auto to_vk_wrap = [&](int wrap) {
+            switch (wrap) {
+            case TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE:
+                return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            case TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT:
+                return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+            case TINYGLTF_TEXTURE_WRAP_REPEAT:
+                return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            }
+
+            return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        };
+
+        VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+        auto vk_mag = to_vk_filter(mag_filter, mipmap_mode);
+        auto vk_min = to_vk_filter(min_filter, mipmap_mode);
+
+        auto vk_wrap_s = to_vk_wrap(wrap_s);
+        auto vk_wrap_t = to_vk_wrap(wrap_t);
+
+        local_sampler_cache.insert({i, samplers.size()});
+        samplers.push_back(create_sampler(
+            vk_mag, vk_min, mipmap_mode, vk_wrap_s, vk_wrap_t, VK_SAMPLER_ADDRESS_MODE_REPEAT, 16.0f, device
+        ));
+    }
+
+    spdlog::info("Loading {} materials", materials.size());
+
+    void* staging_buffer_ptr = nullptr;
+    VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
+    for (int i = 0; i < model.materials.size(); i++) {
+        ZoneScopedN("Load Material");
+        auto& mat = model.materials[i];
+
+        auto upload_texture = [&](int texture_index, VkFormat format) {
+            if (texture_index < 0) {
+                return 0;
+            }
+
+            tinygltf::Texture& texture = model.textures[texture_index];
+
+            int image_index = texture.source;
+            if (image_index < 0) {
+                return 0;
+            }
+
+            int sampler_index = texture.sampler;
+            if (sampler_index < 0) {
+                sampler_index = 0;
+            } else {
+                sampler_index = local_sampler_cache.at(sampler_index);
+            }
+
+            auto local_it = local_texture_cache.find(image_index);
+            if (local_it == local_texture_cache.end()) {
+                tinygltf::Image& img = model.images[image_index];
+
+                Image image = create_image(
+                    format,
+                    static_cast<uint32_t>(img.width),
+                    static_cast<uint32_t>(img.height),
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    true,
+                    allocator,
+                    device
+                );
+
+                if (img.image.size() > staging_buffer.size) {
+                    spdlog::error(
+                        "Attempted out of bounds image buffer write for image, size={}, staging size={}",
+                        img.image.size(),
+                        staging_buffer.size
+                    );
+                    exit(1);
+                }
+
+                memcpy(staging_buffer_ptr, &img.image.at(0), img.image.size());
+                copy_image(staging_buffer, image, true, command_buffer, queue, device);
+
+                local_texture_cache.insert({image_index, local_texture_cache.size() + 1});
+                loaded_images.push_back(
+                    ImageResource{
+                        .image         = image,
+                        .sampler_index = sampler_index,
+                    }
+                );
+            }
+
+            return local_texture_cache.at(image_index);
+        };
+
+        uint32_t albedo_index =
+            upload_texture(mat.pbrMetallicRoughness.baseColorTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
+        uint32_t material_index =
+            upload_texture(mat.pbrMetallicRoughness.metallicRoughnessTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
+        uint32_t normals_index  = upload_texture(mat.normalTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
+        uint32_t emissive_index = upload_texture(mat.emissiveTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
+
+        materials[i].albedo_index     = albedo_index;
+        materials[i].normals_index    = normals_index;
+        materials[i].material_index   = material_index;
+        materials[i].emissive_index   = emissive_index;
+        materials[i].roughness_factor = mat.pbrMetallicRoughness.roughnessFactor;
+        materials[i].metallic_factor  = mat.pbrMetallicRoughness.metallicFactor;
+        materials[i].emissive_factor  = glm::vec3(mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
+        materials[i].albedo_factor    = glm::vec4(
+            mat.pbrMetallicRoughness.baseColorFactor[0],
+            mat.pbrMetallicRoughness.baseColorFactor[1],
+            mat.pbrMetallicRoughness.baseColorFactor[2],
+            mat.pbrMetallicRoughness.baseColorFactor[3]
+        );
+        materials[i].normal_scale = mat.normalTexture.scale;
+    }
+
+    int                         current_entry = 0;
+    std::vector<int>            mesh_primitive_offsets(model.meshes.size());
+    std::vector<JPH::ShapeRefC> mesh_collision_shapes;
+
+    VkDeviceSize indirect_vertex_buffer_offset = 0;
+    VkDeviceSize indirect_index_buffer_offset  = 0;
+
+    VkDeviceSize meshlet_buffer_offset                   = 0;
+    VkDeviceSize meshlet_vertex_indices_offset           = 0;
+    VkDeviceSize meshlet_vertex_primitive_indices_offset = 0;
+    VkDeviceSize meshlet_bounds_buffer_offset            = 0;
+
+    spdlog::info("Loading {} meshes", model.meshes.size());
+    for (int m = 0; m < model.meshes.size(); m++) {
+        ZoneScopedN("Load Mesh");
+        spdlog::trace("mesh {}", m);
+        const tinygltf::Mesh& mesh = model.meshes[m];
+
+        mesh_primitive_offsets[m] = current_entry;
+
+        for (int p = 0; p < mesh.primitives.size(); p++) {
+            ZoneScopedN("Load Primitive");
+            spdlog::trace("primitive {}", p);
+            std::vector<Vertex>   vertices;
+            std::vector<uint32_t> indices;
+
+            const tinygltf::Primitive& primitive = mesh.primitives[p];
+
+            auto has_position  = primitive.attributes.count("POSITION");
+            auto has_normals   = primitive.attributes.count("NORMAL");
+            auto has_texcoords = primitive.attributes.count("TEXCOORD_0");
+            auto has_tangents  = primitive.attributes.count("TANGENT");
+
+            if (!(has_position & has_normals & has_texcoords)) {
+                spdlog::warn("Mesh {} primitive {} is missing required attributes", m, p);
+                continue;
+            }
+
+            const tinygltf::Accessor& pos_accessor      = model.accessors[primitive.attributes.at("POSITION")];
+            const tinygltf::Accessor& normal_accessor   = model.accessors[primitive.attributes.at("NORMAL")];
+            const tinygltf::Accessor& texcoord_accessor = model.accessors[primitive.attributes.at("TEXCOORD_0")];
+
+            const tinygltf::BufferView& pos_view      = model.bufferViews[pos_accessor.bufferView];
+            const tinygltf::BufferView& normal_view   = model.bufferViews[normal_accessor.bufferView];
+            const tinygltf::BufferView& texcoord_view = model.bufferViews[texcoord_accessor.bufferView];
+
+            const tinygltf::Buffer& pos_buffer      = model.buffers[pos_view.buffer];
+            const tinygltf::Buffer& normal_buffer   = model.buffers[normal_view.buffer];
+            const tinygltf::Buffer& texcoord_buffer = model.buffers[texcoord_view.buffer];
+
+            size_t vertex_count = pos_accessor.count;
+
+            auto* positions =
+                reinterpret_cast<const float*>(&pos_buffer.data[pos_view.byteOffset + pos_accessor.byteOffset]);
+
+            auto* normals = reinterpret_cast<const float*>(
+                &normal_buffer.data[normal_view.byteOffset + normal_accessor.byteOffset]
+            );
+
+            auto* texcoords = reinterpret_cast<const float*>(
+                &texcoord_buffer.data[texcoord_view.byteOffset + texcoord_accessor.byteOffset]
+            );
+
+            const float* tangents = nullptr;
+
+            if (has_tangents) {
+                const tinygltf::Accessor&   tangent_accessor = model.accessors[primitive.attributes.at("TANGENT")];
+                const tinygltf::BufferView& tangent_view     = model.bufferViews[tangent_accessor.bufferView];
+                const tinygltf::Buffer&     tangent_buffer   = model.buffers[tangent_view.buffer];
+
+                tangents = reinterpret_cast<const float*>(
+                    &tangent_buffer.data[tangent_view.byteOffset + tangent_accessor.byteOffset]
+                );
+            }
+
+            glm::vec3 center     = glm::vec3(0);
+            glm::vec3 bounds_min = glm::vec3(std::numeric_limits<float>::max());
+            glm::vec3 bounds_max = glm::vec3(std::numeric_limits<float>::lowest());
+
+            for (size_t i = 0; i < vertex_count; i++) {
+                glm::vec3 position = {
+                    positions[i * 3 + 0],
+                    positions[i * 3 + 1],
+                    positions[i * 3 + 2],
+                };
+
+                glm::vec4 tangent_sign = glm::vec4(0.0);
+                if (has_tangents) {
+                    tangent_sign = {
+                        tangents[i * 4 + 0],
+                        tangents[i * 4 + 1],
+                        tangents[i * 4 + 2],
+                        tangents[i * 4 + 3],
+                    };
+                }
+
+                center += position;
+                bounds_min = glm::min(bounds_min, position);
+                bounds_max = glm::max(bounds_max, position);
+
+                vertices.emplace_back(
+                    Vertex{
+                        .px   = meshopt_quantizeHalf(position.x),
+                        .py   = meshopt_quantizeHalf(position.y),
+                        .pz   = meshopt_quantizeHalf(position.z),
+                        .ux   = meshopt_quantizeHalf(texcoords[i * 2 + 0]),
+                        .uy   = meshopt_quantizeHalf(texcoords[i * 2 + 1]),
+                        .tn   = pack_tangent(glm::vec3(tangent_sign)),
+                        .norm = static_cast<uint32_t>(
+                            (meshopt_quantizeSnorm(normals[i * 3 + 0], 10) + 511) |
+                            (meshopt_quantizeSnorm(normals[i * 3 + 1], 10) + 511) << 10 |
+                            (meshopt_quantizeSnorm(normals[i * 3 + 2], 10) + 511) << 20 |
+                            (tangent_sign.w >= 0 ? 0 : 1) << 30
+                        ),
+                    }
+                );
+            }
+
+            center /= float(vertex_count);
+
+            if (primitive.indices >= 0) {
+                const tinygltf::Accessor&   index_accessor = model.accessors[primitive.indices];
+                const tinygltf::BufferView& index_view     = model.bufferViews[index_accessor.bufferView];
+                const tinygltf::Buffer&     index_buffer   = model.buffers[index_view.buffer];
+
+                size_t index_count = index_accessor.count;
+
+                switch (index_accessor.componentType) {
+                case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
+                    const uint16_t* short_indices = reinterpret_cast<const uint16_t*>(
+                        &index_buffer.data[index_view.byteOffset + index_accessor.byteOffset]
+                    );
+                    for (size_t i = 0; i < index_count; i++) {
+                        indices.push_back(static_cast<uint32_t>(short_indices[i]));
+                    }
+                    break;
+                }
+                case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
+                    const uint32_t* long_indices = reinterpret_cast<const uint32_t*>(
+                        &index_buffer.data[index_view.byteOffset + index_accessor.byteOffset]
+                    );
+
+                    for (int ind = 0; ind < index_count; ind++) {
+                        indices.push_back(long_indices[ind]);
+                    }
+                    break;
+                }
+                case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE: {
+                    const uint8_t* byte_indices = reinterpret_cast<const uint8_t*>(
+                        &index_buffer.data[index_view.byteOffset + index_accessor.byteOffset]
+                    );
+                    for (size_t i = 0; i < index_count; i++) {
+                        indices.push_back(static_cast<uint32_t>(byte_indices[i]));
+                    }
+                    break;
+                }
+                }
+            }
+
+            if (!has_tangents) {
+                generate_tangents(vertices, indices);
+            }
+
+            std::vector<uint32_t> remap_table(vertices.size());
+            auto                  unique_vertices = meshopt_generateVertexRemap(
+                remap_table.data(), indices.data(), indices.size(), vertices.data(), vertices.size(), sizeof(Vertex)
+            );
+
+            meshopt_remapVertexBuffer(
+                vertices.data(), vertices.data(), vertices.size(), sizeof(Vertex), remap_table.data()
+            );
+            meshopt_remapIndexBuffer(indices.data(), indices.data(), indices.size(), remap_table.data());
+            vertices.resize(unique_vertices);
+
+            meshopt_optimizeVertexCache(indices.data(), indices.data(), indices.size(), vertices.size());
+            meshopt_optimizeVertexFetch(
+                vertices.data(), indices.data(), indices.size(), vertices.data(), vertices.size(), sizeof(Vertex)
+            );
+
+            std::vector<glm::vec3> unquantized_positions(vertices.size());
+            for (int i = 0; i < vertices.size(); i++) {
+                Vertex& v = vertices[i];
+                unquantized_positions[i] =
+                    glm::vec3(meshopt_dequantizeHalf(v.px), meshopt_dequantizeHalf(v.py), meshopt_dequantizeHalf(v.pz));
+            }
+
+            float radius = 0.0f;
+            for (const auto& pos : unquantized_positions) {
+                radius = std::max(radius, glm::distance(center, pos));
+            }
+
+            JPH::TriangleList triangles;
+            for (size_t i = 0; i < indices.size(); i += 3) {
+                const glm::vec3& v0 = unquantized_positions[indices[i + 0]];
+                const glm::vec3& v1 = unquantized_positions[indices[i + 1]];
+                const glm::vec3& v2 = unquantized_positions[indices[i + 2]];
+
+                triangles.push_back(
+                    JPH::Triangle(
+                        JPH::Float3(v0.x, v0.y, v0.z), JPH::Float3(v1.x, v1.y, v1.z), JPH::Float3(v2.x, v2.y, v2.z)
+                    )
+                );
+            }
+
+            JPH::MeshShapeSettings mesh_settings(triangles);
+            JPH::ShapeRefC         collision_shape = mesh_settings.Create().Get();
+            mesh_collision_shapes.push_back(collision_shape);
+
+            VkDeviceSize mesh_vertex_offset = indirect_vertex_buffer_offset;
+            VkDeviceSize mesh_index_offset  = indirect_index_buffer_offset;
+
+            spdlog::debug("Copying vertices into global buffer");
+            memcpy(staging_buffer_ptr, vertices.data(), sizeof(Vertex) * vertices.size());
+            copy_buffer(
+                staging_buffer,
+                vertex_buffer,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(Vertex) * vertices.size(),
+                indirect_vertex_buffer_offset
+            );
+            indirect_vertex_buffer_offset += sizeof(Vertex) * vertices.size();
+
+            spdlog::debug("Copying indices into global buffer");
+            memcpy(staging_buffer_ptr, indices.data(), sizeof(uint32_t) * indices.size());
+            copy_buffer(
+                staging_buffer,
+                index_buffer,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(uint32_t) * indices.size(),
+                indirect_index_buffer_offset
+            );
+            indirect_index_buffer_offset += sizeof(uint32_t) * indices.size();
+
+            spdlog::debug("Building meshlets");
+            const size_t max_vertices  = 64;
+            const size_t max_triangles = 124;
+            const float  cone_weight   = 0.25f;
+
+            size_t max_meshlets = meshopt_buildMeshletsBound(indices.size(), max_vertices, max_triangles);
+            spdlog::trace("Max meshlets {}", max_meshlets);
+
+            std::vector<meshopt_Meshlet> meshlets(max_meshlets);
+            std::vector<unsigned int>    meshlet_vertices(max_meshlets * max_vertices);
+            std::vector<unsigned char>   meshlet_triangles(max_meshlets * max_triangles * 3);
+
+            size_t meshlet_count = meshopt_buildMeshlets(
+                meshlets.data(),
+                meshlet_vertices.data(),
+                meshlet_triangles.data(),
+                indices.data(),
+                indices.size(),
+                (float*)unquantized_positions.data(),
+                unquantized_positions.size(),
+                sizeof(glm::vec3),
+                max_vertices,
+                max_triangles,
+                cone_weight
+            );
+
+            auto& last_meshlet = meshlets[meshlet_count - 1];
+            meshlet_vertices.resize(last_meshlet.vertex_offset + last_meshlet.vertex_count);
+            meshlet_triangles.resize(last_meshlet.triangle_offset + ((last_meshlet.triangle_count * 3 + 3) & ~3));
+            meshlets.resize(meshlet_count);
+            std::vector<MeshletBounds> meshlet_bounds(meshlet_count);
+
+            uint32_t idx = 0;
+            for (auto& m : meshlets) {
+                meshopt_optimizeMeshlet(
+                    &meshlet_vertices[m.vertex_offset],
+                    &meshlet_triangles[m.triangle_offset],
+                    m.triangle_count,
+                    m.vertex_count
+                );
+
+                auto bounds = meshopt_computeMeshletBounds(
+                    &meshlet_vertices[m.vertex_offset],
+                    &meshlet_triangles[m.triangle_offset],
+                    m.triangle_count,
+                    (float*)unquantized_positions.data(),
+                    unquantized_positions.size(),
+                    sizeof(glm::vec3)
+                );
+
+                meshlet_bounds[idx++] = MeshletBounds{
+                    .center      = {bounds.center[0], bounds.center[1], bounds.center[2]},
+                    .radius      = bounds.radius,
+                    .cone_axis   = {bounds.cone_axis[0], bounds.cone_axis[1], bounds.cone_axis[2]},
+                    .cone_cutoff = bounds.cone_cutoff,
+                    .cone_apex   = {bounds.cone_apex[0], bounds.cone_apex[1], bounds.cone_apex[2]},
+                };
+            }
+
+            size_t global_vertex_indices_offset    = meshlet_vertex_indices_offset / sizeof(unsigned int);
+            size_t global_primitive_indices_offset = meshlet_vertex_primitive_indices_offset;
+
+            for (size_t i = 0; i < meshlet_count; i++) {
+                meshlets[i].vertex_offset += global_vertex_indices_offset;
+                meshlets[i].triangle_offset += global_primitive_indices_offset;
+            }
+
+            for (size_t i = 0; i < meshlet_vertices.size(); i++) {
+                meshlet_vertices[i] += mesh_vertex_offset / sizeof(Vertex);
+            }
+
+            uint32_t current_meshlet_offset = meshlet_buffer_offset / sizeof(meshopt_Meshlet);
+
+            spdlog::trace(
+                "Mesh {}: meshlet_count={}, meshlet_offset={}, vertex_buf_size={}MB, index_buf_size={}MB",
+                meshes.size(),
+                meshlet_count,
+                current_meshlet_offset,
+                (vertices.size() * sizeof(Vertex)) / 1024.0f / 1024.f,
+                (sizeof(uint32_t) * indices.size()) / 1024.0f / 1024.0f
+            );
+            spdlog::trace(
+                "  global_vertex_indices_offset={}, global_primitive_indices_offset={}",
+                global_vertex_indices_offset,
+                global_primitive_indices_offset
+            );
+            spdlog::trace(
+                "  First meshlet: v_off={}, t_off={}, v_cnt={}, t_cnt={}",
+                meshlets[0].vertex_offset,
+                meshlets[0].triangle_offset,
+                meshlets[0].vertex_count,
+                meshlets[0].triangle_count
+            );
+            if (meshlet_count > 1) {
+                spdlog::trace(
+                    "  Last meshlet: v_off={}, t_off={}, v_cnt={}, t_cnt={}",
+                    meshlets[meshlet_count - 1].vertex_offset,
+                    meshlets[meshlet_count - 1].triangle_offset,
+                    meshlets[meshlet_count - 1].vertex_count,
+                    meshlets[meshlet_count - 1].triangle_count
+                );
+            }
+
+            spdlog::debug("Copying meshlets into meshlet buffer");
+            memcpy(staging_buffer_ptr, meshlets.data(), sizeof(meshopt_Meshlet) * meshlets.size());
+            copy_buffer(
+                staging_buffer,
+                meshlet_buffer,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(meshopt_Meshlet) * meshlets.size(),
+                meshlet_buffer_offset
+            );
+            meshlet_buffer_offset += sizeof(meshopt_Meshlet) * meshlets.size();
+
+            spdlog::debug("Copying meshlet bounds into meshlet bounds buffer");
+            memcpy(staging_buffer_ptr, meshlet_bounds.data(), sizeof(MeshletBounds) * meshlet_bounds.size());
+            copy_buffer(
+                staging_buffer,
+                meshlet_bounds_buffer,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(MeshletBounds) * meshlet_bounds.size(),
+                meshlet_bounds_buffer_offset
+            );
+            meshlet_bounds_buffer_offset += sizeof(MeshletBounds) * meshlet_bounds.size();
+
+            spdlog::debug("Copying meshlet vertices into meshlet buffer");
+            memcpy(staging_buffer_ptr, meshlet_vertices.data(), sizeof(unsigned int) * meshlet_vertices.size());
+            copy_buffer(
+                staging_buffer,
+                meshlet_vertex_indices,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(unsigned int) * meshlet_vertices.size(),
+                meshlet_vertex_indices_offset
+            );
+            meshlet_vertex_indices_offset += sizeof(unsigned int) * meshlet_vertices.size();
+
+            spdlog::debug("Copying meshlet triangle indices into meshlet buffer");
+            memcpy(staging_buffer_ptr, meshlet_triangles.data(), sizeof(unsigned char) * meshlet_triangles.size());
+            copy_buffer(
+                staging_buffer,
+                meshlet_primitive_buffer,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(unsigned char) * meshlet_triangles.size(),
+                meshlet_vertex_primitive_indices_offset
+            );
+            meshlet_vertex_primitive_indices_offset += sizeof(unsigned char) * meshlet_triangles.size();
+
+            spdlog::debug("Loaded mesh {} with vertices={}, indices={}", m, vertices.size(), indices.size());
+
+            meshes.emplace_back(
+                current_meshlet_offset,
+                meshlet_count,
+                vertices.size(),
+                static_cast<int32_t>(mesh_vertex_offset / sizeof(Vertex)),
+                indices.size(),
+                static_cast<uint32_t>(mesh_index_offset / sizeof(uint32_t)),
+                center,
+                radius,
+                bounds_min,
+                bounds_max
+            );
+
+            current_entry++;
+        }
+    }
+
+    vmaUnmapMemory(allocator, staging_buffer.allocation);
+
+    std::vector<MeshInstance>  instances;
+    std::vector<PhysicsObject> static_bodies;
+    std::vector<PhysicsObject> dynamic_bodies;
+
+    spdlog::info("Scene count: {}", model.scenes.size());
+    int scene_id = model.defaultScene >= 0 ? model.defaultScene : (model.scenes.size() >= 1 ? 0 : -1);
+    if (scene_id != -1) {
+        spdlog::info("Constructing scene");
+        const tinygltf::Scene& scene = model.scenes[scene_id];
+
+        for (int node_id : scene.nodes) {
+            ZoneScopedN("Parse Scene Node");
+            const auto& node = model.nodes[node_id];
+            if (node.mesh <= -1)
+                continue;
+
+            const auto& mesh = model.meshes[node.mesh];
+
+            glm::vec3 position = glm::vec3(0.0);
+            if (node.translation.size() == 3) {
+                position = {node.translation[0], node.translation[1], node.translation[2]};
+            } else {
+            }
+
+            float scale = 1.0f;
+            if (node.scale.size() == 3) {
+                // TODO: handle this more gracefully
+                scale = node.scale[0];
+            }
+
+            glm::quat rotation = glm::quat(0.0f, 0.0f, 0.0f, 1.0f);
+            if (node.rotation.size() == 4) {
+                rotation = glm::quat(node.rotation[0], node.rotation[1], node.rotation[2], node.rotation[3]);
+            }
+
+            if (node.children.size() > 0) {
+                spdlog::warn("{} children", node.children.size());
+            }
+
+            for (int i = 0; i < mesh.primitives.size(); i++) {
+                int mesh_id = mesh_primitive_offsets[node.mesh] + i;
+
+                MeshInstance instance = {
+                    .mesh_id     = mesh_id,
+                    .material_id = mesh.primitives[i].material,
+                    .position    = position,
+                    .scale       = scale,
+                    .rotation    = rotation,
+                };
+                instances.push_back(instance);
+
+                JPH::ShapeRefC final_shape;
+                if (scale != 1.0f) {
+                    JPH::ScaledShapeSettings scaled(mesh_collision_shapes[mesh_id], JPH::Vec3::sReplicate(scale));
+                    final_shape = scaled.Create().Get();
+                } else {
+                    final_shape = mesh_collision_shapes[mesh_id];
+                }
+
+                JPH::BodyInterface& body_interface = physics_system->GetBodyInterface();
+
+                JPH::BodyCreationSettings body_settings(
+                    final_shape,
+                    JPH::RVec3(position.x, position.y, position.z),
+                    JPH::Quat(rotation.x, rotation.y, rotation.z, rotation.w),
+                    JPH::EMotionType::Static,
+                    Layers::NON_MOVING
+                );
+
+                JPH::Body* body = body_interface.CreateBody(body_settings);
+                if (body) {
+                    body_interface.AddBody(body->GetID(), JPH::EActivation::DontActivate);
+                    static_bodies.push_back(
+                        PhysicsObject{
+                            .body_id     = body->GetID(),
+                            .drawcall_id = static_cast<int>(instances.size() - 1),
+                        }
+                    );
+                }
+            }
+        }
+
+        if (instances.size() == 0) {
+            for (int m = 0; m < model.meshes.size(); m++) {
+                auto& mesh = model.meshes[m];
+                for (int i = 0; i < mesh.primitives.size(); i++) {
+                    int mesh_id = mesh_primitive_offsets[m] + i;
+
+                    auto rot = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0));
+                    rot *= glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
+
+                    MeshInstance instance = {
+                        .mesh_id     = mesh_id,
+                        .material_id = mesh.primitives[i].material,
+                        .position    = {0, 0, 0},
+                        .scale       = 0.01,
+                        .rotation    = rot,
+                    };
+                    instances.push_back(instance);
+                }
+            }
+        }
+    } else {
+        spdlog::warn("No eligibles scenes found");
+    }
+
+    return Scene{
+        .meshes         = meshes,
+        .images         = loaded_images,
+        .samplers       = samplers,
+        .materials      = materials,
+        .instances      = instances,
+        .static_bodies  = static_bodies,
+        .dynamic_bodies = dynamic_bodies,
+    };
+}
+
+void destroy_scene(const Scene& scene, VkDevice device, VmaAllocator allocator) {
+    for (auto image : scene.images) {
+        destroy_image(image.image, device, allocator);
+    }
+
+    for (auto sampler : scene.samplers) {
+        destroy_sampler(sampler, device);
+    }
+}
