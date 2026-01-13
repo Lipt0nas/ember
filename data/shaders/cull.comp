@@ -14,7 +14,7 @@ layout(set = 0, binding = 0) uniform UBO {
     SceneUBO scene;
 };
 
-layout(scalar, set = 1, binding = 0) buffer MeshDrawCommands {
+layout(set = 1, binding = 0) buffer MeshDrawCommands {
     uint culled_count;
     IndexedDrawCommand cmds[];
 };
@@ -23,7 +23,7 @@ layout(scalar, set = 1, binding = 1) readonly buffer MeshBuffer {
     MeshInstance draw_calls[];
 };
 
-layout(scalar, set = 1, binding = 2) readonly buffer Meshes {
+layout(set = 1, binding = 2) readonly buffer Meshes {
     Mesh meshes[];
 };
 
@@ -34,6 +34,8 @@ layout(push_constant, std430) uniform pc {
 
     uint disable_frustum_cull;
     uint disable_depth_cull;
+
+    uint enable_lods;
 };
 
 layout(set = 2, binding = 0) uniform sampler2D depth;
@@ -90,10 +92,26 @@ void main() {
     if (visible) {
         uint cmd_index = atomicAdd(culled_count, 1);
 
-        cmds[cmd_index].index_count = mesh.index_count;
+        uint lod_index = 0;
+
+        if (enable_lods == 1) {
+            float distance = max(length(center) - radius, 0);
+            float threshold = distance * scene.target_lod / draw.scale;
+
+            for (uint i = 1; i < mesh.lod_count; ++i) {
+                if (mesh.lods[i].error < threshold) {
+                    lod_index = i;
+                }
+            }
+        }
+
+        MeshLOD lod = mesh.lods[lod_index];
+
+        cmds[cmd_index].object_id = object_id;
+        cmds[cmd_index].index_count = lod.index_count;
         cmds[cmd_index].instance_count = 1;
-        cmds[cmd_index].first_index = mesh.first_index;
+        cmds[cmd_index].first_index = lod.index_offset;
         cmds[cmd_index].vertex_offset = mesh.vertex_offset;
-        cmds[cmd_index].first_instance = object_id;
+        cmds[cmd_index].first_instance = 0;
     }
 }

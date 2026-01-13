@@ -332,7 +332,10 @@ struct MeshIndirectDrawCommand {
     uint32_t group_count_x;
     uint32_t group_count_y;
     uint32_t group_count_z;
+
     uint32_t object_id;
+    uint32_t meshlet_count;
+    uint32_t meshlet_offset;
 };
 
 struct alignas(16) SceneUBO {
@@ -356,7 +359,8 @@ struct alignas(16) SceneUBO {
 
     float near_plane;
     float far_plane;
-    float pad[2];
+    float lod_target;
+    float pad;
 
     glm::mat4 last_frame_view_proj;
 };
@@ -420,6 +424,8 @@ struct CullPassPushConstants {
 
     uint32_t disable_frustum_cull;
     uint32_t disable_depth_cull;
+
+    uint32_t enable_lods;
 };
 
 struct DepthReduceConstants {
@@ -694,8 +700,10 @@ int main(int argc, char* argv[]) {
 
     const int FRAMES_IN_FLIGHT = 2;
 
-    bool use_meshlets    = true;
-    bool use_hardware_rt = true;
+    bool use_meshlets     = true;
+    bool use_hardware_rt  = true;
+    bool build_lods       = true;
+    bool fast_scene_build = true;
 
     bool enable_validation = false;
 
@@ -738,9 +746,17 @@ int main(int argc, char* argv[]) {
     );
     volkLoadDevice(device);
 
-    use_meshlets = args.get_arg<bool>("meshlets", true);
+    use_meshlets     = args.get_arg<bool>("meshlets", true);
+    build_lods       = args.get_arg<bool>("lods", true);
+    fast_scene_build = args.get_arg<bool>("fast-build", true);
 
-    spdlog::info("Extension support:\n\tMesh shading: {}\n\tRay tracing: {}", use_meshlets, use_hardware_rt);
+    spdlog::info(
+        "Extension support:\n\tMesh shading: {}\n\tRay tracing: {}\n\tFast Scene Build: {}\n\tLOD's: {}",
+        use_meshlets,
+        use_hardware_rt,
+        fast_scene_build,
+        build_lods
+    );
 
     VmaAllocatorCreateInfo allocator_info = {
         .flags                          = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
@@ -1929,7 +1945,7 @@ int main(int argc, char* argv[]) {
     );
 
     Buffer global_index_buffer = create_buffer(
-        1024 * 1024 * 164,
+        1024 * 1024 * 364,
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             (use_hardware_rt ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
@@ -1986,26 +2002,26 @@ int main(int argc, char* argv[]) {
     );
 
     Buffer mesh_buffer = create_buffer(
-        1024 * 1024 * 6 * FRAMES_IN_FLIGHT,
+        1024 * 1024 * 12 * FRAMES_IN_FLIGHT,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
 
     Buffer meshlet_buffer = create_buffer(
-        1024 * 1024 * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer meshlet_vertex_indices_buffer = create_buffer(
-        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer meshlet_primitive_indices_buffer = create_buffer(
-        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer meshlet_bounds_buffer = create_buffer(
-        1024 * 1024 * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
 
     Buffer scene_ubo_buffer = create_buffer(
@@ -2146,40 +2162,14 @@ int main(int argc, char* argv[]) {
         meshlet_primitive_indices_buffer,
         meshlet_bounds_buffer,
         &physics_system,
+        build_lods,
+        fast_scene_build,
         device,
         graphics_queue,
         vma_allocator,
         command_buffers[0]
     );
 
-    // load_scene(
-    //     load_path,
-    //     meshes,
-    //     materials,
-    //     mesh_instances,
-    //     staging_buffer,
-    //     global_vertex_buffer,
-    //     indirect_vertex_buffer_offset,
-    //     global_index_buffer,
-    //     indirect_index_buffer_offset,
-    //     meshlet_buffer,
-    //     meshlet_buffer_offset,
-    //     meshlet_vertex_indices_buffer,
-    //     meshlet_vertex_indices_offset,
-    //     meshlet_primitive_indices_buffer,
-    //     meshlet_vertex_primitive_indices_offset,
-    //     meshlet_bounds_buffer,
-    //     meshlet_bounds_buffer_offset,
-    //     texture_cache,
-    //     loaded_images,
-    //     &physics_system,
-    //     static_bodies,
-    //     vma_allocator,
-    //     command_buffers[0],
-    //     graphics_queue,
-    //     device
-    // );
-    //
     spdlog::info(
         "Buffer usage:\n\tVertex: {}MB\n\tIndex: {}MB\n\tMeshlet: {}MB\n\tMeshlet Vertex: {}MB\n\tMeshlet Index: "
         "{}MB\n\tMeshlet Bounds: {}MB",
@@ -2282,6 +2272,7 @@ int main(int argc, char* argv[]) {
     glm::mat4 frozen_view = glm::mat4(1.0f);
     float     frozen_frustum[4];
 
+    int  min_lod         = 0;
     bool debug_frustum   = false;
     bool disable_culling = false;
 
@@ -2391,6 +2382,7 @@ int main(int argc, char* argv[]) {
         .screen_size = {depth_pyramid_width, depth_pyramid_height},
         .draw_count  = 0,
     };
+    cull_push_constants.enable_lods = true;
 
     // GPASS
     std::vector<Shader> gpass_shaders = {
@@ -3063,7 +3055,7 @@ int main(int argc, char* argv[]) {
                         indirect_command_buffer.handle,
                         offsets[1],
                         scene.instances.size(),
-                        sizeof(VkDrawIndexedIndirectCommand)
+                        sizeof(VkDrawIndexedIndirectCommand) + sizeof(uint32_t)
                     );
                 }
 
@@ -5837,6 +5829,10 @@ int main(int argc, char* argv[]) {
                 frozen_frustum[3] = frustum_y.z;
             }
             ImGui::SameLine();
+            ImGui::Checkbox("Enable LOD's", (bool*)&cull_push_constants.enable_lods);
+            ImGui::SliderInt("Min LOD Level", &min_lod, 0, 8);
+            ImGui::NewLine();
+
             ImGui::Checkbox("Disable culling (global)", &disable_culling);
             ImGui::Checkbox("Disable frustum cull (compute)", (bool*)&cull_push_constants.disable_frustum_cull);
             ImGui::Checkbox("Disable depth cull (compute)", (bool*)&cull_push_constants.disable_depth_cull);
@@ -6055,6 +6051,7 @@ int main(int argc, char* argv[]) {
 
         scene_ubo.near_plane = camera.near_plane;
         scene_ubo.far_plane  = 1000.0f;
+        scene_ubo.lod_target = (2 / scene_ubo.P11) * (1.0f / float(swapchain.height)) * (1 << min_lod);
 
         scene_ubo.last_frame_view_proj = last_frame_view_proj;
 

@@ -49,7 +49,7 @@ layout(scalar, set = 2, binding = 1) readonly buffer MeshBuffer {
     MeshInstance draw_calls[];
 };
 
-layout(scalar, set = 2, binding = 2) readonly buffer Meshes {
+layout(set = 2, binding = 2) readonly buffer Meshes {
     Mesh meshes[];
 };
 
@@ -138,8 +138,9 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         MeshInstance draw = draw_calls[object_id];
         Mesh mesh = meshes[draw.mesh_id];
         Material material = materials[draw.material_id];
+        MeshLOD lod = mesh.lods[0];
 
-        uint index_offset = mesh.first_index + primitiveID * 3;
+        uint index_offset = lod.index_offset + primitiveID * 3;
         uint i0 = global_indices.indices[index_offset + 0];
         uint i1 = global_indices.indices[index_offset + 1];
         uint i2 = global_indices.indices[index_offset + 2];

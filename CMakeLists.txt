@@ -62,7 +62,7 @@ FetchContent_Declare(tinygltf
 
 FetchContent_Declare(meshoptimizer
     GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
-    GIT_TAG v0.25
+    GIT_TAG v1.0
     GIT_SHALLOW TRUE
 )
 

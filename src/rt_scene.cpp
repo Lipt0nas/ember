@@ -56,7 +56,8 @@ RTScene create_rt_scene(
                          .indexType    = VK_INDEX_TYPE_UINT32,
                          .indexData =
                              {
-                                 .deviceAddress = global_index_buffer_address + (mesh.first_index * sizeof(uint32_t)),
+                                 .deviceAddress =
+                                     global_index_buffer_address + (mesh.lods[0].index_offset * sizeof(uint32_t)),
                              },
                          .transformData = {},
                      }},
@@ -72,7 +73,7 @@ RTScene create_rt_scene(
             .pGeometries   = &acceleration_structure_geometry,
         };
 
-        const uint32_t primitive_count = mesh.index_count / 3;
+        const uint32_t primitive_count = mesh.lods[0].index_count / 3;
 
         VkAccelerationStructureBuildSizesInfoKHR acceleration_structure_build_sizes_info = {
             .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,

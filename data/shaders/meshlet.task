@@ -28,7 +28,7 @@ layout(scalar, set = 1, binding = 1) readonly buffer MeshBuffer {
     MeshInstance draw_calls[];
 };
 
-layout(scalar, set = 1, binding = 2) readonly buffer Meshes {
+layout(set = 1, binding = 2) readonly buffer Meshes {
     Mesh meshes[];
 };
 
@@ -76,9 +76,9 @@ void main() {
     uint base_meshlet_id = gl_WorkGroupID.x * MESHLETS_PER_TASK;
     uint meshlet_id = base_meshlet_id + thread_id;
 
-    uint object_id = cmds[gl_DrawID].object_id;
+    MeshDrawCommand cmd = cmds[gl_DrawID];
+    uint object_id = cmd.object_id;
     MeshInstance draw = draw_calls[object_id];
-    Mesh mesh = meshes[draw.mesh_id];
     payload.draw_id = object_id;
 
     if (thread_id == 0) {
@@ -88,8 +88,8 @@ void main() {
     barrier();
 
     bool visible = true;
-    if (meshlet_id < mesh.meshlet_count) {
-        uint global_meshlet_id = mesh.meshlet_offset + meshlet_id;
+    if (meshlet_id < cmd.meshlet_count) {
+        uint global_meshlet_id = cmd.meshlet_offset + meshlet_id;
         MeshletBounds bounds = meshlet_bounds[global_meshlet_id];
 
         mat4 view = scene.view;
@@ -152,7 +152,7 @@ void main() {
         barrier();
 
         if (thread_id == 0) {
-            payload.meshlet_offset = base_meshlet_id;
+            payload.meshlet_offset = base_meshlet_id + cmd.meshlet_offset;
             EmitMeshTasksEXT(visible_count, 1, 1);
         }
     }

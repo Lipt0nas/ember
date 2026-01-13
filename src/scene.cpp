@@ -90,6 +90,8 @@ Scene load_scene(
     const Buffer&                meshlet_primitive_buffer,
     const Buffer&                meshlet_bounds_buffer,
     JPH::PhysicsSystem*          physics_system,
+    bool                         build_lods,
+    bool                         fast_build,
     VkDevice                     device,
     VkQueue                      queue,
     VmaAllocator                 allocator,
@@ -465,7 +467,12 @@ Scene load_scene(
             meshopt_remapIndexBuffer(indices.data(), indices.data(), indices.size(), remap_table.data());
             vertices.resize(unique_vertices);
 
-            meshopt_optimizeVertexCache(indices.data(), indices.data(), indices.size(), vertices.size());
+            if (fast_build) {
+                meshopt_optimizeVertexCacheFifo(indices.data(), indices.data(), indices.size(), vertices.size(), 16);
+            } else {
+                meshopt_optimizeVertexCache(indices.data(), indices.data(), indices.size(), vertices.size());
+            }
+
             meshopt_optimizeVertexFetch(
                 vertices.data(), indices.data(), indices.size(), vertices.data(), vertices.size(), sizeof(Vertex)
             );
@@ -475,6 +482,16 @@ Scene load_scene(
                 Vertex& v = vertices[i];
                 unquantized_positions[i] =
                     glm::vec3(meshopt_dequantizeHalf(v.px), meshopt_dequantizeHalf(v.py), meshopt_dequantizeHalf(v.pz));
+            }
+
+            std::vector<glm::vec3> unquantized_normals(vertices.size());
+            for (int i = 0; i < vertices.size(); i++) {
+                Vertex& v              = vertices[i];
+                unquantized_normals[i] = glm::vec3(
+                    (v.norm & 1023) / 511.f - 1.f,
+                    ((v.norm >> 10) & 1023) / 511.f - 1.f,
+                    ((v.norm >> 20) & 1023) / 511.f - 1.f
+                );
             }
 
             float radius = 0.0f;
@@ -502,6 +519,16 @@ Scene load_scene(
             VkDeviceSize mesh_vertex_offset = indirect_vertex_buffer_offset;
             VkDeviceSize mesh_index_offset  = indirect_index_buffer_offset;
 
+            Mesh mesh = {
+                .center        = center,
+                .radius        = radius,
+                .bounds_min    = glm::vec4(bounds_min, 0.0),
+                .bounds_max    = glm::vec4(bounds_max, 0.0),
+                .vertex_offset = static_cast<uint32_t>(mesh_vertex_offset / sizeof(Vertex)),
+                .vertex_count  = static_cast<uint32_t>(vertices.size()),
+                .lod_count     = 0,
+            };
+
             spdlog::debug("Copying vertices into global buffer");
             memcpy(staging_buffer_ptr, vertices.data(), sizeof(Vertex) * vertices.size());
             copy_buffer(
@@ -516,125 +543,190 @@ Scene load_scene(
             );
             indirect_vertex_buffer_offset += sizeof(Vertex) * vertices.size();
 
-            spdlog::debug("Copying indices into global buffer");
-            memcpy(staging_buffer_ptr, indices.data(), sizeof(uint32_t) * indices.size());
-            copy_buffer(
-                staging_buffer,
-                index_buffer,
-                command_buffer,
-                queue,
-                device,
-                staging_buffer_ptr,
-                sizeof(uint32_t) * indices.size(),
-                indirect_index_buffer_offset
-            );
-            indirect_index_buffer_offset += sizeof(uint32_t) * indices.size();
+            std::vector<uint32_t>        all_indices;
+            std::vector<meshopt_Meshlet> all_meshlets;
+            std::vector<MeshletBounds>   all_meshlet_bounds;
+            std::vector<unsigned int>    all_meshlet_vertices;
+            std::vector<unsigned char>   all_meshlet_triangles;
+            {
+                float lod_scale =
+                    build_lods ? meshopt_simplifyScale(&unquantized_positions[0].x, vertices.size(), sizeof(glm::vec3))
+                               : 0.0f;
 
-            spdlog::debug("Building meshlets");
-            const size_t max_vertices  = 64;
-            const size_t max_triangles = 124;
-            const float  cone_weight   = 0.25f;
+                std::vector<uint32_t> lod_indices = indices;
+                float                 lod_error   = 0.0f;
 
-            size_t max_meshlets = meshopt_buildMeshletsBound(indices.size(), max_vertices, max_triangles);
-            spdlog::trace("Max meshlets {}", max_meshlets);
+                float normal_weights[3] = {1.0f, 1.0f, 1.0f};
 
-            std::vector<meshopt_Meshlet> meshlets(max_meshlets);
-            std::vector<unsigned int>    meshlet_vertices(max_meshlets * max_vertices);
-            std::vector<unsigned char>   meshlet_triangles(max_meshlets * max_triangles * 3);
+                uint32_t index_offset        = static_cast<uint32_t>(mesh_index_offset / sizeof(uint32_t));
+                uint32_t meshlet_base_offset = meshlet_buffer_offset / sizeof(meshopt_Meshlet);
 
-            size_t meshlet_count = meshopt_buildMeshlets(
-                meshlets.data(),
-                meshlet_vertices.data(),
-                meshlet_triangles.data(),
-                indices.data(),
-                indices.size(),
-                (float*)unquantized_positions.data(),
-                unquantized_positions.size(),
-                sizeof(glm::vec3),
-                max_vertices,
-                max_triangles,
-                cone_weight
-            );
+                while (mesh.lod_count < sizeof(mesh.lods) / sizeof(mesh.lods[0])) {
+                    MeshLOD& lod = mesh.lods[mesh.lod_count++];
 
-            auto& last_meshlet = meshlets[meshlet_count - 1];
-            meshlet_vertices.resize(last_meshlet.vertex_offset + last_meshlet.vertex_count);
-            meshlet_triangles.resize(last_meshlet.triangle_offset + ((last_meshlet.triangle_count * 3 + 3) & ~3));
-            meshlets.resize(meshlet_count);
-            std::vector<MeshletBounds> meshlet_bounds(meshlet_count);
+                    lod.index_offset = index_offset;
+                    lod.index_count  = uint32_t(lod_indices.size());
 
-            uint32_t idx = 0;
-            for (auto& m : meshlets) {
-                meshopt_optimizeMeshlet(
-                    &meshlet_vertices[m.vertex_offset],
-                    &meshlet_triangles[m.triangle_offset],
-                    m.triangle_count,
-                    m.vertex_count
-                );
+                    const size_t max_vertices  = 64;
+                    const size_t max_triangles = 124;
+                    const float  cone_weight   = 0.25f;
 
-                auto bounds = meshopt_computeMeshletBounds(
-                    &meshlet_vertices[m.vertex_offset],
-                    &meshlet_triangles[m.triangle_offset],
-                    m.triangle_count,
-                    (float*)unquantized_positions.data(),
-                    unquantized_positions.size(),
-                    sizeof(glm::vec3)
-                );
+                    size_t max_meshlets = meshopt_buildMeshletsBound(lod_indices.size(), max_vertices, max_triangles);
 
-                meshlet_bounds[idx++] = MeshletBounds{
-                    .center      = {bounds.center[0], bounds.center[1], bounds.center[2]},
-                    .radius      = bounds.radius,
-                    .cone_axis   = {bounds.cone_axis[0], bounds.cone_axis[1], bounds.cone_axis[2]},
-                    .cone_cutoff = bounds.cone_cutoff,
-                    .cone_apex   = {bounds.cone_apex[0], bounds.cone_apex[1], bounds.cone_apex[2]},
-                };
+                    std::vector<meshopt_Meshlet> meshlets(max_meshlets);
+                    std::vector<unsigned int>    meshlet_vertices(max_meshlets * max_vertices);
+                    std::vector<unsigned char>   meshlet_triangles(max_meshlets * max_triangles * 3);
+
+                    size_t meshlet_count = 0;
+                    if (fast_build) {
+                        meshlet_count = meshopt_buildMeshletsScan(
+                            meshlets.data(),
+                            meshlet_vertices.data(),
+                            meshlet_triangles.data(),
+                            lod_indices.data(),
+                            lod_indices.size(),
+                            unquantized_positions.size(),
+                            max_vertices,
+                            max_triangles
+                        );
+                    } else {
+                        meshlet_count = meshopt_buildMeshlets(
+                            meshlets.data(),
+                            meshlet_vertices.data(),
+                            meshlet_triangles.data(),
+                            lod_indices.data(),
+                            lod_indices.size(),
+                            (float*)unquantized_positions.data(),
+                            unquantized_positions.size(),
+                            sizeof(glm::vec3),
+                            max_vertices,
+                            max_triangles,
+                            cone_weight
+                        );
+                    }
+
+                    auto& last_meshlet = meshlets[meshlet_count - 1];
+                    meshlet_vertices.resize(last_meshlet.vertex_offset + last_meshlet.vertex_count);
+                    meshlet_triangles.resize(
+                        last_meshlet.triangle_offset + ((last_meshlet.triangle_count * 3 + 3) & ~3)
+                    );
+                    meshlets.resize(meshlet_count);
+                    std::vector<MeshletBounds> meshlet_bounds(meshlet_count);
+
+                    lod.meshlet_count  = meshlets.size();
+                    lod.meshlet_offset = meshlet_base_offset + all_meshlets.size();
+
+                    uint32_t idx = 0;
+                    for (auto& m : meshlets) {
+                        meshopt_optimizeMeshlet(
+                            &meshlet_vertices[m.vertex_offset],
+                            &meshlet_triangles[m.triangle_offset],
+                            m.triangle_count,
+                            m.vertex_count
+                        );
+
+                        auto bounds = meshopt_computeMeshletBounds(
+                            &meshlet_vertices[m.vertex_offset],
+                            &meshlet_triangles[m.triangle_offset],
+                            m.triangle_count,
+                            (float*)unquantized_positions.data(),
+                            unquantized_positions.size(),
+                            sizeof(glm::vec3)
+                        );
+
+                        meshlet_bounds[idx++] = MeshletBounds{
+                            .center      = {bounds.center[0], bounds.center[1], bounds.center[2]},
+                            .radius      = bounds.radius,
+                            .cone_axis   = {bounds.cone_axis[0], bounds.cone_axis[1], bounds.cone_axis[2]},
+                            .cone_cutoff = bounds.cone_cutoff,
+                            .cone_apex   = {bounds.cone_apex[0], bounds.cone_apex[1], bounds.cone_apex[2]},
+                        };
+                    }
+
+                    size_t global_vertex_indices_offset =
+                        (meshlet_vertex_indices_offset / sizeof(unsigned int)) + all_meshlet_vertices.size();
+                    size_t global_primitive_indices_offset =
+                        meshlet_vertex_primitive_indices_offset + all_meshlet_triangles.size();
+
+                    for (size_t i = 0; i < meshlet_count; i++) {
+                        meshlets[i].vertex_offset += global_vertex_indices_offset;
+                        meshlets[i].triangle_offset += global_primitive_indices_offset;
+                    }
+
+                    for (size_t i = 0; i < meshlet_vertices.size(); i++) {
+                        meshlet_vertices[i] += mesh_vertex_offset / sizeof(Vertex);
+                    }
+
+                    lod.error = lod_error * lod_scale;
+
+                    all_indices.insert(all_indices.end(), lod_indices.begin(), lod_indices.end());
+                    all_meshlets.insert(all_meshlets.end(), meshlets.begin(), meshlets.end());
+                    all_meshlet_bounds.insert(all_meshlet_bounds.end(), meshlet_bounds.begin(), meshlet_bounds.end());
+                    all_meshlet_vertices.insert(
+                        all_meshlet_vertices.end(), meshlet_vertices.begin(), meshlet_vertices.end()
+                    );
+                    all_meshlet_triangles.insert(
+                        all_meshlet_triangles.end(), meshlet_triangles.begin(), meshlet_triangles.end()
+                    );
+
+                    index_offset += lod_indices.size();
+
+                    if (!build_lods) {
+                        break;
+                    }
+
+                    if (mesh.lod_count < sizeof(mesh.lods) / sizeof(mesh.lods[0])) {
+                        const float        max_error = 1e-1f;
+                        const unsigned int options   = meshopt_SimplifySparse;
+
+                        size_t next_indices_target = (size_t(double(lod_indices.size()) * 0.6) / 3) * 3;
+                        float  next_error          = 0.0f;
+
+                        size_t next_indices = meshopt_simplifyWithAttributes(
+                            lod_indices.data(),
+                            lod_indices.data(),
+                            lod_indices.size(),
+                            &unquantized_positions[0].x,
+                            vertices.size(),
+                            sizeof(glm::vec3),
+                            &unquantized_normals[0].x,
+                            sizeof(glm::vec3),
+                            normal_weights,
+                            3,
+                            nullptr,
+                            next_indices_target,
+                            max_error,
+                            options,
+                            &next_error
+                        );
+                        assert(next_indices <= lod_indices.size());
+
+                        if (next_indices == lod_indices.size() || next_indices == 0) {
+                            break;
+                        }
+
+                        if (next_indices >= size_t(double(lod_indices.size()) * 0.85)) {
+                            break;
+                        }
+
+                        lod_indices.resize(next_indices);
+                        lod_error = glm::max(lod_error * 1.5f, next_error);
+
+                        if (fast_build) {
+                            meshopt_optimizeVertexCacheFifo(
+                                lod_indices.data(), lod_indices.data(), lod_indices.size(), vertices.size(), 16
+                            );
+                        } else {
+                            meshopt_optimizeVertexCache(
+                                lod_indices.data(), lod_indices.data(), lod_indices.size(), vertices.size()
+                            );
+                        }
+                    }
+                }
             }
 
-            size_t global_vertex_indices_offset    = meshlet_vertex_indices_offset / sizeof(unsigned int);
-            size_t global_primitive_indices_offset = meshlet_vertex_primitive_indices_offset;
-
-            for (size_t i = 0; i < meshlet_count; i++) {
-                meshlets[i].vertex_offset += global_vertex_indices_offset;
-                meshlets[i].triangle_offset += global_primitive_indices_offset;
-            }
-
-            for (size_t i = 0; i < meshlet_vertices.size(); i++) {
-                meshlet_vertices[i] += mesh_vertex_offset / sizeof(Vertex);
-            }
-
-            uint32_t current_meshlet_offset = meshlet_buffer_offset / sizeof(meshopt_Meshlet);
-
-            spdlog::trace(
-                "Mesh {}: meshlet_count={}, meshlet_offset={}, vertex_buf_size={}MB, index_buf_size={}MB",
-                meshes.size(),
-                meshlet_count,
-                current_meshlet_offset,
-                (vertices.size() * sizeof(Vertex)) / 1024.0f / 1024.f,
-                (sizeof(uint32_t) * indices.size()) / 1024.0f / 1024.0f
-            );
-            spdlog::trace(
-                "  global_vertex_indices_offset={}, global_primitive_indices_offset={}",
-                global_vertex_indices_offset,
-                global_primitive_indices_offset
-            );
-            spdlog::trace(
-                "  First meshlet: v_off={}, t_off={}, v_cnt={}, t_cnt={}",
-                meshlets[0].vertex_offset,
-                meshlets[0].triangle_offset,
-                meshlets[0].vertex_count,
-                meshlets[0].triangle_count
-            );
-            if (meshlet_count > 1) {
-                spdlog::trace(
-                    "  Last meshlet: v_off={}, t_off={}, v_cnt={}, t_cnt={}",
-                    meshlets[meshlet_count - 1].vertex_offset,
-                    meshlets[meshlet_count - 1].triangle_offset,
-                    meshlets[meshlet_count - 1].vertex_count,
-                    meshlets[meshlet_count - 1].triangle_count
-                );
-            }
-
-            spdlog::debug("Copying meshlets into meshlet buffer");
-            memcpy(staging_buffer_ptr, meshlets.data(), sizeof(meshopt_Meshlet) * meshlets.size());
+            spdlog::debug("Copying all meshlets into buffers");
+            memcpy(staging_buffer_ptr, all_meshlets.data(), sizeof(meshopt_Meshlet) * all_meshlets.size());
             copy_buffer(
                 staging_buffer,
                 meshlet_buffer,
@@ -642,13 +734,13 @@ Scene load_scene(
                 queue,
                 device,
                 staging_buffer_ptr,
-                sizeof(meshopt_Meshlet) * meshlets.size(),
+                sizeof(meshopt_Meshlet) * all_meshlets.size(),
                 meshlet_buffer_offset
             );
-            meshlet_buffer_offset += sizeof(meshopt_Meshlet) * meshlets.size();
+            meshlet_buffer_offset += sizeof(meshopt_Meshlet) * all_meshlets.size();
 
-            spdlog::debug("Copying meshlet bounds into meshlet bounds buffer");
-            memcpy(staging_buffer_ptr, meshlet_bounds.data(), sizeof(MeshletBounds) * meshlet_bounds.size());
+            spdlog::debug("Copying all meshlet bounds into buffer");
+            memcpy(staging_buffer_ptr, all_meshlet_bounds.data(), sizeof(MeshletBounds) * all_meshlet_bounds.size());
             copy_buffer(
                 staging_buffer,
                 meshlet_bounds_buffer,
@@ -656,13 +748,13 @@ Scene load_scene(
                 queue,
                 device,
                 staging_buffer_ptr,
-                sizeof(MeshletBounds) * meshlet_bounds.size(),
+                sizeof(MeshletBounds) * all_meshlet_bounds.size(),
                 meshlet_bounds_buffer_offset
             );
-            meshlet_bounds_buffer_offset += sizeof(MeshletBounds) * meshlet_bounds.size();
+            meshlet_bounds_buffer_offset += sizeof(MeshletBounds) * all_meshlet_bounds.size();
 
-            spdlog::debug("Copying meshlet vertices into meshlet buffer");
-            memcpy(staging_buffer_ptr, meshlet_vertices.data(), sizeof(unsigned int) * meshlet_vertices.size());
+            spdlog::debug("Copying all meshlet vertex indices into buffer");
+            memcpy(staging_buffer_ptr, all_meshlet_vertices.data(), sizeof(unsigned int) * all_meshlet_vertices.size());
             copy_buffer(
                 staging_buffer,
                 meshlet_vertex_indices,
@@ -670,13 +762,15 @@ Scene load_scene(
                 queue,
                 device,
                 staging_buffer_ptr,
-                sizeof(unsigned int) * meshlet_vertices.size(),
+                sizeof(unsigned int) * all_meshlet_vertices.size(),
                 meshlet_vertex_indices_offset
             );
-            meshlet_vertex_indices_offset += sizeof(unsigned int) * meshlet_vertices.size();
+            meshlet_vertex_indices_offset += sizeof(unsigned int) * all_meshlet_vertices.size();
 
-            spdlog::debug("Copying meshlet triangle indices into meshlet buffer");
-            memcpy(staging_buffer_ptr, meshlet_triangles.data(), sizeof(unsigned char) * meshlet_triangles.size());
+            spdlog::debug("Copying all meshlet triangle indices into buffer");
+            memcpy(
+                staging_buffer_ptr, all_meshlet_triangles.data(), sizeof(unsigned char) * all_meshlet_triangles.size()
+            );
             copy_buffer(
                 staging_buffer,
                 meshlet_primitive_buffer,
@@ -684,25 +778,27 @@ Scene load_scene(
                 queue,
                 device,
                 staging_buffer_ptr,
-                sizeof(unsigned char) * meshlet_triangles.size(),
+                sizeof(unsigned char) * all_meshlet_triangles.size(),
                 meshlet_vertex_primitive_indices_offset
             );
-            meshlet_vertex_primitive_indices_offset += sizeof(unsigned char) * meshlet_triangles.size();
+            meshlet_vertex_primitive_indices_offset += sizeof(unsigned char) * all_meshlet_triangles.size();
+
+            memcpy(staging_buffer_ptr, all_indices.data(), sizeof(uint32_t) * all_indices.size());
+            copy_buffer(
+                staging_buffer,
+                index_buffer,
+                command_buffer,
+                queue,
+                device,
+                staging_buffer_ptr,
+                sizeof(uint32_t) * all_indices.size(),
+                indirect_index_buffer_offset
+            );
+            indirect_index_buffer_offset += sizeof(uint32_t) * all_indices.size();
 
             spdlog::debug("Loaded mesh {} with vertices={}, indices={}", m, vertices.size(), indices.size());
 
-            meshes.emplace_back(
-                current_meshlet_offset,
-                meshlet_count,
-                vertices.size(),
-                static_cast<int32_t>(mesh_vertex_offset / sizeof(Vertex)),
-                indices.size(),
-                static_cast<uint32_t>(mesh_index_offset / sizeof(uint32_t)),
-                center,
-                radius,
-                bounds_min,
-                bounds_max
-            );
+            meshes.push_back(mesh);
 
             current_entry++;
         }
