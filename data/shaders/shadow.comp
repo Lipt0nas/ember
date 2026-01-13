@@ -29,7 +29,7 @@ layout(scalar, set = 2, binding = 1) readonly buffer MeshBuffer {
     MeshInstance draw_calls[];
 };
 
-layout(scalar, set = 2, binding = 2) readonly buffer Meshes {
+layout(set = 2, binding = 2) readonly buffer Meshes {
     Mesh meshes[];
 };
 
@@ -49,7 +49,7 @@ layout(set = 4, binding = 0) uniform sampler2D textures[];
 
 bool trace_shadow_ray(vec3 wpos, vec3 dir, uint ray_flags) {
     rayQueryEXT query;
-    rayQueryInitializeEXT(query, top_level_as, ray_flags, 0xff, wpos, 0.001, dir, 100000);
+    rayQueryInitializeEXT(query, top_level_as, ray_flags, 0xff, wpos, 0.02, dir, 100000);
     rayQueryProceedEXT(query);
 
     return rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT;
@@ -87,7 +87,7 @@ void main() {
 
     vec3 world_pos = reconstruct_world_position(uv, depth, scene.inverse_view_proj);
 
-    float shadow = trace_shadow_ray(world_pos + normal * 0.01, dir, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT) ? 0.0 : 1.0;
+    float shadow = trace_shadow_ray(world_pos, dir, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT) ? 0.0 : 1.0;
 
     imageStore(out_shadow, pixel_coord, vec4(shadow, 0, 0, 0));
 }

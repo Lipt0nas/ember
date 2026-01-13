@@ -16,20 +16,28 @@ struct Material {
     float normal_scale;
 };
 
-struct Mesh {
+struct MeshLOD {
+    uint32_t index_offset;
+    uint32_t index_count;
+
     uint32_t meshlet_offset;
     uint32_t meshlet_count;
 
-    uint32_t vertex_count;
+    float error;
+};
+
+struct alignas(16) Mesh {
+    glm::vec3 center = {};
+    float     radius = 0.0f;
+
+    glm::vec4 bounds_min;
+    glm::vec4 bounds_max;
+
     uint32_t vertex_offset;
+    uint32_t vertex_count;
 
-    uint32_t index_count;
-    uint32_t first_index;
-
-    glm::vec3 center     = {};
-    float     radius     = 0.0f;
-    glm::vec3 bounds_min = {};
-    glm::vec3 bounds_max = {};
+    uint32_t lod_count;
+    MeshLOD  lods[8];
 };
 
 struct MeshInstance {

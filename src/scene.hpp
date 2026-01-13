@@ -34,6 +34,8 @@ Scene load_scene(
     const Buffer&                meshlet_primitive_buffer,
     const Buffer&                meshlet_bounds_buffer,
     JPH::PhysicsSystem*          physics_system,
+    bool                         build_lods,
+    bool                         fast_build,
     VkDevice                     device,
     VkQueue                      queue,
     VmaAllocator                 allocator,

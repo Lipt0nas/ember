@@ -35,7 +35,7 @@ layout(scalar, set = 1, binding = 1) readonly buffer MeshBuffer {
     MeshInstance draw_calls[];
 };
 
-layout(scalar, set = 1, binding = 2) readonly buffer Meshes {
+layout(set = 1, binding = 2) readonly buffer Meshes {
     Mesh meshes[];
 };
 
@@ -84,11 +84,10 @@ void main() {
 
     uint meshlet_id = payload.meshlet_offset + local_meshlet_id;
 
+    MeshDrawCommand cmd = cmds[payload.draw_id];
     MeshInstance draw = draw_calls[payload.draw_id];
-    Mesh mesh = meshes[draw.mesh_id];
 
-    uint draw_meshlet_id = mesh.meshlet_offset + meshlet_id;
-    Meshlet m = meshlets[draw_meshlet_id];
+    Meshlet m = meshlets[meshlet_id];
 
     SetMeshOutputsEXT(m.vertex_count, m.triangle_count);
 

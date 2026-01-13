@@ -63,13 +63,18 @@ struct IndexedDrawCommand {
     uint first_index;
     uint vertex_offset;
     uint first_instance;
+
+    uint object_id;
 };
 
 struct MeshDrawCommand {
     uint group_count_x;
     uint group_count_y;
     uint group_count_z;
+
     uint object_id;
+    uint meshlet_count;
+    uint meshlet_offset;
 };
 
 struct Material {
@@ -86,20 +91,28 @@ struct Material {
     float normal_scale;
 };
 
-struct Mesh {
+struct MeshLOD {
+    uint index_offset;
+    uint index_count;
+
     uint meshlet_offset;
     uint meshlet_count;
 
-    uint vertex_count;
-    uint vertex_offset;
+    float error;
+};
 
-    uint index_count;
-    uint first_index;
-
+struct Mesh {
     vec3 center;
     float radius;
-    vec3 bounds_min;
-    vec3 bounds_max;
+
+    vec4 bounds_min;
+    vec4 bounds_max;
+
+    uint vertex_offset;
+    uint vertex_count;
+
+    uint lod_count;
+    MeshLOD lods[8];
 };
 
 struct MeshInstance {
@@ -200,7 +213,8 @@ struct SceneUBO {
 
     float near_plane;
     float far_plane;
-    vec2 _pad;
+    float target_lod;
+    float _pad;
 
     mat4 last_frame_view_proj;
 };

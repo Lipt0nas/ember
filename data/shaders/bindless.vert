@@ -2,6 +2,7 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_ARB_shader_draw_parameters: require
 
 layout(location = 0) out vec3 out_normal;
 layout(location = 1) out vec2 out_uv;
@@ -20,7 +21,7 @@ layout(set = 0, binding = 0) uniform UBO {
 
 layout(scalar, set = 1, binding = 0) readonly buffer MeshDrawCommands {
     uint culled_count;
-    MeshDrawCommand cmds[];
+    IndexedDrawCommand cmds[];
 };
 
 layout(scalar, set = 1, binding = 1) readonly buffer MeshBuffer {
@@ -52,7 +53,8 @@ layout(scalar, set = 2, binding = 5) readonly buffer MeshletPrimitiveIndices {
 };
 
 void main() {
-    MeshInstance draw = draw_calls[gl_BaseInstance];
+    uint draw_id = cmds[gl_DrawIDARB].object_id;
+    MeshInstance draw = draw_calls[draw_id];
 
     uint base = gl_VertexIndex;
     Vertex vertex = vertices[base];
@@ -76,5 +78,5 @@ void main() {
     out_clip_pos = clip_pos;
     out_last_clip_pos = last_clip_pos;
     out_material_index = draw.material_id;
-    out_draw_index = gl_BaseInstance;
+    out_draw_index = draw_id;
 }
