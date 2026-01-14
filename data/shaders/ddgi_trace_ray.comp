@@ -62,10 +62,8 @@ void main() {
     uint probe_idx = global_ray_idx / lighting.rays_per_probe;
     uint ray_idx = global_ray_idx % lighting.rays_per_probe;
 
-    if (probes[probe_idx].state == 0) {
-        if (ray_idx >= DDGI_NUM_FIXED_RAYS) {
-            return;
-        }
+    if (probes[probe_idx].state == 0 && ray_idx >= DDGI_NUM_FIXED_RAYS) {
+        return;
     }
 
     vec3 origin = ddgi_get_probe_position(int(probe_idx), lighting.probe_counts, lighting.grid_origin, vec3(lighting.probe_spacing), probes[probe_idx].offset);
@@ -100,11 +98,9 @@ void main() {
             return;
         }
 
-        if (probes[probe_idx].state == 0) {
-            if (ray_idx >= DDGI_NUM_FIXED_RAYS) {
-                ray_buffer.rays[global_ray_idx].ray_data = vec4(0.0, 0.0, 0.0, hit_distance);
-                return;
-            }
+        if (ray_idx < DDGI_NUM_FIXED_RAYS) {
+            ray_buffer.rays[global_ray_idx].ray_data = vec4(0.0, 0.0, 0.0, hit_distance);
+            return;
         }
 
         uint object_id = rayQueryGetIntersectionInstanceCustomIndexEXT(ray_query, true);
