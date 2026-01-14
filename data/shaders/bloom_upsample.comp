@@ -11,25 +11,27 @@ layout(push_constant) uniform PushConstants {
     vec2 texel_size;
 
     bool first_pass;
-    float padding;
+    float upsample_radius;
 } pc;
 
 vec3 upsampleTent9(sampler2D srcTex, vec2 uv, vec2 texelSize, float sample_scale) {
     vec4 offset = texelSize.xyxy * vec4(1.0, 1.0, -1.0, 0.0) * sample_scale;
-
     vec3 result = vec3(0.0);
 
+    // Center
     result += texture(srcTex, uv).rgb * 4.0;
 
-    result += texture(srcTex, uv - offset.wy).rgb * 2.0;
-    result += texture(srcTex, uv + offset.zy).rgb * 2.0;
-    result += texture(srcTex, uv + offset.xw).rgb * 2.0;
+    // Cross
     result += texture(srcTex, uv + offset.zw).rgb * 2.0;
+    result += texture(srcTex, uv + offset.xw).rgb * 2.0;
+    result += texture(srcTex, uv + offset.wy).rgb * 2.0;
+    result += texture(srcTex, uv + offset.wz).rgb * 2.0;
 
-    result += texture(srcTex, uv - offset.xy).rgb;
-    result += texture(srcTex, uv - offset.zy).rgb;
-    result += texture(srcTex, uv + offset.xy).rgb;
-    result += texture(srcTex, uv + offset.wy).rgb;
+    // Diag
+    result += texture(srcTex, uv + offset.zz).rgb;
+    result += texture(srcTex, uv + offset.zy).rgb;
+    result += texture(srcTex, uv + offset.xx).rgb;
+    result += texture(srcTex, uv + offset.xz).rgb;
 
     return result / 16.0;
 }
@@ -38,7 +40,7 @@ void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     vec2 uv = (vec2(coord) + 0.5) * pc.texel_size;
 
-    vec3 upsampled = upsampleTent9(lower_mip, uv, pc.texel_size, 2.5);
+    vec3 upsampled = upsampleTent9(lower_mip, uv, pc.texel_size, pc.upsample_radius);
 
     vec3 current = texture(current_mip, uv).rgb;
 
