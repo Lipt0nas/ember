@@ -1427,28 +1427,6 @@ int main(int argc, char* argv[]) {
         device
     );
 
-    Image specular_cubemap = create_cubemap_image(
-        VK_FORMAT_R32G32B32A32_SFLOAT,
-        512,
-        512,
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT,
-        true,
-        vma_allocator,
-        device
-    );
-
-    Image irradiance_cubemap = create_cubemap_image(
-        VK_FORMAT_R32G32B32A32_SFLOAT,
-        32,
-        32,
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT,
-        false,
-        vma_allocator,
-        device
-    );
-
     {
         VkCommandBufferBeginInfo begin_info = {
             .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1616,28 +1594,6 @@ int main(int argc, char* argv[]) {
             0
         );
 
-        image_pipeline_barrier(
-            irradiance_cubemap,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            0,
-            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-            0
-        );
-
-        image_pipeline_barrier(
-            specular_cubemap,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            0,
-            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-            0
-        );
-
         vkCmdFillBuffer(command_buffer, luminance_buffer.handle, 0, VK_WHOLE_SIZE, 0);
         buffer_pipeline_barrier(
             luminance_buffer,
@@ -1650,93 +1606,9 @@ int main(int argc, char* argv[]) {
             luminance_buffer.size
         );
 
-        // std::vector<VkImageView> specular_image_views(specular_cubemap.levels);
-        // for (int i = 0; i < specular_image_views.size(); i++) {
-        //     VkImageViewCreateInfo mip_view_info = {
-        //         .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        //         .pNext            = nullptr,
-        //         .flags            = 0,
-        //         .image            = specular_cubemap.handle,
-        //         .viewType         = VK_IMAGE_VIEW_TYPE_CUBE,
-        //         .format           = specular_cubemap.format,
-        //         .subresourceRange = {
-        //             .aspectMask     = specular_cubemap.aspect,
-        //             .baseMipLevel   = static_cast<uint32_t>(i),
-        //             .levelCount     = 1,
-        //             .baseArrayLayer = 0,
-        //             .layerCount     = 6
-        //         },
-        //     };
-        //
-        //     VK_CHECK(vkCreateImageView(device, &mip_view_info, nullptr, &specular_image_views[i]));
-        // }
-
         Framegraph ibl_graph(device, graphics_queue, command_buffer, 1, false, tracy_vk_context);
-        // ibl_graph.import_image(irradiance_cubemap, VK_IMAGE_LAYOUT_GENERAL);
-        // ibl_graph.import_image(specular_cubemap, VK_IMAGE_LAYOUT_GENERAL);
         ibl_graph.import_image(brdf_lut, VK_IMAGE_LAYOUT_GENERAL);
-        //
-        // Pipeline irradiance_pipeline = create_compute_pipeline(
-        //     device,
-        //     shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ibl_irradiance.comp.spv"),
-        //     {
-        //         DescriptorLayout{
-        //             .bindings = {
-        //                 DescriptorBinding{
-        //                     .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        //                     .write_info = DescriptorInfo(irradiance_cubemap.view, VK_IMAGE_LAYOUT_GENERAL)
-        //                 },
-        //                 DescriptorBinding{
-        //                     .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        //                     .write_info = DescriptorInfo(
-        //                         linear_sampler, skybox_image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-        //                     )
-        //                 },
-        //             }
-        //         },
-        //     }
-        // );
-        // std::vector<VkDescriptorSet> sets = allocate_descriptor_sets(device, descriptor_pool, irradiance_pipeline);
-        //
-        // auto irradiance_pass =
-        //     ibl_graph.add_pass("irradiance")
-        //         .samples_image(skybox_image, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-        //         .writes_storage_image(irradiance_cubemap, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-        //         .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-        //             vkCmdBindPipeline(
-        //                 command_buffer, irradiance_pipeline.bind_point, irradiance_pipeline.pipeline_handle
-        //             );
-        //             vkCmdBindDescriptorSets(
-        //                 command_buffer,
-        //                 irradiance_pipeline.bind_point,
-        //                 irradiance_pipeline.pipeline_layout,
-        //                 0,
-        //                 sets.size(),
-        //                 sets.data(),
-        //                 0,
-        //                 nullptr
-        //             );
-        //
-        //             uint32_t resolution = irradiance_cubemap.width;
-        //             vkCmdDispatch(
-        //                 command_buffer,
-        //                 (resolution + 15) / 16, // X
-        //                 (resolution + 15) / 16, // Y
-        //                 6
-        //             );
-        //
-        //             image_pipeline_barrier(
-        //                 irradiance_cubemap,
-        //                 command_buffer,
-        //                 VK_IMAGE_LAYOUT_GENERAL,
-        //                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        //                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        //                 VK_ACCESS_2_SHADER_WRITE_BIT,
-        //                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        //                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-        //             );
-        //         });
-        //
+
         Pipeline brdf_lut_pipeline = create_compute_pipeline(
             device,
             shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/brdf_lut.comp.spv"),
@@ -1786,128 +1658,8 @@ int main(int argc, char* argv[]) {
                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
                     );
                 });
-        //
-        // struct IBLConstants {
-        //     uint32_t face;
-        //     uint32_t mip_level;
-        //     float    roughness;
-        // } ibl_constants;
-        //
-        // Pipeline specular_pipeline = create_compute_pipeline(
-        //     device,
-        //     shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/ibl_specular.comp.spv"),
-        //     {
-        //         DescriptorLayout{
-        //             .bindings =
-        //                 {
-        //                     DescriptorBinding{
-        //                         .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        //                         .write_info = DescriptorInfo(specular_cubemap.view, VK_IMAGE_LAYOUT_GENERAL)
-        //                     },
-        //                     DescriptorBinding{
-        //                         .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        //                         .write_info = DescriptorInfo(
-        //                             linear_sampler, skybox_image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-        //                         )
-        //                     },
-        //                 },
-        //             .is_push_set = true,
-        //         },
-        //     },
-        //     sizeof(IBLConstants)
-        // );
-        //
-        // auto specular_pass =
-        //     ibl_graph.add_pass("ibl specular")
-        //         .samples_image(skybox_image, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-        //         .writes_storage_image(specular_cubemap, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-        //         .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-        //             vkCmdBindPipeline(command_buffer, specular_pipeline.bind_point,
-        //             specular_pipeline.pipeline_handle);
-        //
-        //             for (uint32_t mip = 0; mip < specular_cubemap.levels; ++mip) {
-        //                 uint32_t mipSize   = specular_cubemap.width >> mip;
-        //                 float    roughness = (float)mip / (float)(specular_cubemap.levels - 1);
-        //
-        //                 VkDescriptorImageInfo image_write_info = {
-        //                     .sampler     = VK_NULL_HANDLE,
-        //                     .imageView   = specular_image_views[mip],
-        //                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-        //                 };
-        //
-        //                 VkDescriptorImageInfo image_read_info = {
-        //                     .sampler     = linear_sampler,
-        //                     .imageView   = skybox_image.view,
-        //                     .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        //                 };
-        //
-        //                 std::vector<VkWriteDescriptorSet> write_sets = {
-        //                     {
-        //                         .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        //                         .pNext            = nullptr,
-        //                         .dstBinding       = 0,
-        //                         .dstArrayElement  = 0,
-        //                         .descriptorCount  = 1,
-        //                         .descriptorType   = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        //                         .pImageInfo       = &image_write_info,
-        //                         .pBufferInfo      = nullptr,
-        //                         .pTexelBufferView = nullptr,
-        //                     },
-        //                     {
-        //                         .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        //                         .pNext            = nullptr,
-        //                         .dstBinding       = 1,
-        //                         .dstArrayElement  = 0,
-        //                         .descriptorCount  = 1,
-        //                         .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        //                         .pImageInfo       = &image_read_info,
-        //                         .pBufferInfo      = nullptr,
-        //                         .pTexelBufferView = nullptr,
-        //                     },
-        //                 };
-        //
-        //                 vkCmdPushDescriptorSet(
-        //                     command_buffer,
-        //                     VK_PIPELINE_BIND_POINT_COMPUTE,
-        //                     specular_pipeline.pipeline_layout,
-        //                     0,
-        //                     static_cast<uint32_t>(write_sets.size()),
-        //                     write_sets.data()
-        //                 );
-        //
-        //                 for (uint32_t face = 0; face < 6; ++face) {
-        //                     ibl_constants.face      = face;
-        //                     ibl_constants.mip_level = mip;
-        //                     ibl_constants.roughness = roughness;
-        //
-        //                     vkCmdPushConstants(
-        //                         command_buffer,
-        //                         specular_pipeline.pipeline_layout,
-        //                         VK_SHADER_STAGE_COMPUTE_BIT,
-        //                         0,
-        //                         sizeof(IBLConstants),
-        //                         &ibl_constants
-        //                     );
-        //
-        //                     uint32_t groupCount = (mipSize + 15) / 16;
-        //                     vkCmdDispatch(command_buffer, groupCount, groupCount, 1);
-        //                 }
-        //             }
-        //         });
-        //
         ibl_graph.build();
         ibl_graph.execute(command_buffer, 0);
-        //
-        // image_pipeline_barrier(
-        //     specular_cubemap,
-        //     command_buffer,
-        //     VK_IMAGE_LAYOUT_GENERAL,
-        //     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        //     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-        //     0,
-        //     VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-        //     0
-        // );
 
         VK_CHECK(vkEndCommandBuffer(command_buffer));
 
@@ -1926,13 +1678,7 @@ int main(int argc, char* argv[]) {
         VK_CHECK(vkQueueSubmit(graphics_queue, 1, &submit_info, VK_NULL_HANDLE));
         VK_CHECK(vkDeviceWaitIdle(device));
 
-        // for (auto view : specular_image_views) {
-        //     vkDestroyImageView(device, view, nullptr);
-        // }
-
         destroy_pipeline(device, brdf_lut_pipeline);
-        // destroy_pipeline(device, specular_pipeline);
-        // destroy_pipeline(device, irradiance_pipeline);
     }
 
     Buffer global_vertex_buffer = create_buffer(
@@ -6664,8 +6410,6 @@ int main(int argc, char* argv[]) {
     destroy_image(ao_output_edges, device, vma_allocator);
     destroy_image(ao_prefiltered_depth, device, vma_allocator);
     destroy_image(brdf_lut, device, vma_allocator);
-    destroy_image(specular_cubemap, device, vma_allocator);
-    destroy_image(irradiance_cubemap, device, vma_allocator);
     destroy_image(ddgi_irradiance, device, vma_allocator);
     destroy_image(ddgi_irradiance_history, device, vma_allocator);
     destroy_image(ddgi_depth_atlas, device, vma_allocator);
