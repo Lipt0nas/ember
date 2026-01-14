@@ -2034,6 +2034,8 @@ int main(int argc, char* argv[]) {
     float max_log_lum    = 4.0f;
     float adaption_speed = 1.1f;
 
+    uint32_t swapchain_image_index = 0;
+
     LuminanceConstants luminance_constants = {
         .min_log2_luminance     = min_log_lum,
         .inverse_log2_luminance = 1.0f / (max_log_lum - min_log_lum),
@@ -5194,10 +5196,156 @@ int main(int argc, char* argv[]) {
 
                 vkCmdDispatch(command_buffer, (smaa_weights.width + 7) / 8, (smaa_weights.height + 7) / 8, 1);
             });
+
+    auto& blit_ui_pass =
+        framegraph.add_pass("Final blit + UI").render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+            auto& blit_source = use_smaa ? smaa_output : composite_output;
+
+            image_pipeline_barrier(
+                blit_source,
+                command_buffer,
+                use_smaa ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT
+            );
+
+            image_pipeline_barrier(
+                swapchain.images[swapchain_image_index],
+                command_buffer,
+                VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                0,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                {
+                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel   = 0,
+                    .levelCount     = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount     = 1,
+                }
+            );
+
+            VkImageBlit blit_region = {
+                .srcSubresource =
+                    {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
+                .srcOffsets =
+                    {
+                        {0, 0, 0},
+                        {static_cast<int32_t>(swapchain.width), static_cast<int32_t>(swapchain.height), 1},
+                    },
+                .dstSubresource =
+                    {
+                        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .mipLevel       = 0,
+                        .baseArrayLayer = 0,
+                        .layerCount     = 1,
+                    },
+                .dstOffsets = {
+                    {},
+                    {static_cast<int32_t>(swapchain.width), static_cast<int32_t>(swapchain.height), 1},
+                },
+            };
+
+            vkCmdBlitImage(
+                command_buffer,
+                blit_source.handle,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                swapchain.images[swapchain_image_index],
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1,
+                &blit_region,
+                VK_FILTER_LINEAR
+            );
+
+            image_pipeline_barrier(
+                blit_source,
+                command_buffer,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_IMAGE_LAYOUT_GENERAL,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+            );
+
+            image_pipeline_barrier(
+                swapchain.images[swapchain_image_index],
+                command_buffer,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+                {
+                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel   = 0,
+                    .levelCount     = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount     = 1,
+                }
+            );
+
+            VkRenderingAttachmentInfo swapchain_attachment_info = {
+                .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .pNext              = nullptr,
+                .imageView          = swapchain.image_views[swapchain_image_index],
+                .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .resolveMode        = VK_RESOLVE_MODE_NONE,
+                .resolveImageView   = VK_NULL_HANDLE,
+                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
+                .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+            };
+
+            VkRenderingInfo imgui_rendering_info = {
+                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .renderArea =
+                    {
+                        .offset = {.x = 0, .y = 0},
+                        .extent = {.width = swapchain.width, .height = swapchain.height},
+                    },
+                .layerCount           = 1,
+                .viewMask             = 0,
+                .colorAttachmentCount = 1,
+                .pColorAttachments    = &swapchain_attachment_info,
+                .pDepthAttachment     = nullptr,
+                .pStencilAttachment   = nullptr
+            };
+            vkCmdBeginRendering(command_buffer, &imgui_rendering_info);
+            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
+            vkCmdEndRendering(command_buffer);
+
+            image_pipeline_barrier(
+                swapchain.images[swapchain_image_index],
+                command_buffer,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                0,
+                0,
+                {
+                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel   = 0,
+                    .levelCount     = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount     = 1,
+                }
+            );
+        });
+
     framegraph.build();
 
     int pick_frame = UINT32_MAX;
-
     while (running) {
         FrameMark;
 
@@ -5748,9 +5896,13 @@ int main(int argc, char* argv[]) {
         ImGui::RenderPlatformWindowsDefault();
 
         VK_CHECK(vkWaitForFences(device, 1, &frame_fences[frame_index], VK_TRUE, UINT64_MAX));
-        uint32_t image_index = 0;
         vkAcquireNextImageKHR(
-            device, swapchain.handle, UINT64_MAX, image_available_semaphores[frame_index], VK_NULL_HANDLE, &image_index
+            device,
+            swapchain.handle,
+            UINT64_MAX,
+            image_available_semaphores[frame_index],
+            VK_NULL_HANDLE,
+            &swapchain_image_index
         );
         VK_CHECK(vkResetFences(device, 1, &frame_fences[frame_index]));
         vmaSetCurrentFrameIndex(vma_allocator, frame_index);
@@ -6155,148 +6307,6 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        auto& blit_source = use_smaa ? smaa_output : composite_output;
-
-        image_pipeline_barrier(
-            blit_source,
-            command_buffer,
-            use_smaa ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_READ_BIT
-        );
-
-        image_pipeline_barrier(
-            swapchain.images[image_index],
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            0,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            {
-                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel   = 0,
-                .levelCount     = 1,
-                .baseArrayLayer = 0,
-                .layerCount     = 1,
-            }
-        );
-
-        VkImageBlit blit_region = {
-            .srcSubresource =
-                {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
-            .srcOffsets =
-                {
-                    {0, 0, 0},
-                    {static_cast<int32_t>(swapchain.width), static_cast<int32_t>(swapchain.height), 1},
-                },
-            .dstSubresource =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .mipLevel       = 0,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                },
-            .dstOffsets = {
-                {},
-                {static_cast<int32_t>(swapchain.width), static_cast<int32_t>(swapchain.height), 1},
-            },
-        };
-
-        vkCmdBlitImage(
-            command_buffer,
-            blit_source.handle,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            swapchain.images[image_index],
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1,
-            &blit_region,
-            VK_FILTER_LINEAR
-        );
-
-        image_pipeline_barrier(
-            blit_source,
-            command_buffer,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_READ_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
-        );
-
-        image_pipeline_barrier(
-            swapchain.images[image_index],
-            command_buffer,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
-            {
-                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel   = 0,
-                .levelCount     = 1,
-                .baseArrayLayer = 0,
-                .layerCount     = 1,
-            }
-        );
-
-        VkRenderingAttachmentInfo swapchain_attachment_info = {
-            .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-            .pNext              = nullptr,
-            .imageView          = swapchain.image_views[image_index],
-            .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .resolveMode        = VK_RESOLVE_MODE_NONE,
-            .resolveImageView   = VK_NULL_HANDLE,
-            .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
-            .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-            .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
-        };
-
-        VkRenderingInfo imgui_rendering_info = {
-            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .renderArea =
-                {
-                    .offset = {.x = 0, .y = 0},
-                    .extent = {.width = swapchain.width, .height = swapchain.height},
-                },
-            .layerCount           = 1,
-            .viewMask             = 0,
-            .colorAttachmentCount = 1,
-            .pColorAttachments    = &swapchain_attachment_info,
-            .pDepthAttachment     = nullptr,
-            .pStencilAttachment   = nullptr
-        };
-        vkCmdBeginRendering(command_buffer, &imgui_rendering_info);
-        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
-        vkCmdEndRendering(command_buffer);
-
-        image_pipeline_barrier(
-            swapchain.images[image_index],
-            command_buffer,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            0,
-            0,
-            {
-                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel   = 0,
-                .levelCount     = 1,
-                .baseArrayLayer = 0,
-                .layerCount     = 1,
-            }
-        );
         TracyVkCollect(tracy_vk_context, command_buffer);
         VK_CHECK(vkEndCommandBuffer(command_buffer));
 
@@ -6310,7 +6320,7 @@ int main(int argc, char* argv[]) {
                     .commandBufferCount   = 1,
                     .pCommandBuffers      = &command_buffer,
                     .signalSemaphoreCount = 1,
-                    .pSignalSemaphores    = &render_finished_semaphores[image_index]
+                    .pSignalSemaphores    = &render_finished_semaphores[swapchain_image_index]
         };
         VK_CHECK(vkQueueSubmit(graphics_queue, 1, &submit_info, frame_fences[frame_index]));
 
@@ -6318,10 +6328,10 @@ int main(int argc, char* argv[]) {
             .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .pNext              = nullptr,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores    = &render_finished_semaphores[image_index],
+            .pWaitSemaphores    = &render_finished_semaphores[swapchain_image_index],
             .swapchainCount     = 1,
             .pSwapchains        = &swapchain.handle,
-            .pImageIndices      = &image_index,
+            .pImageIndices      = &swapchain_image_index,
             .pResults           = nullptr
         };
         VK_CHECK(vkQueuePresentKHR(graphics_queue, &present_info));
