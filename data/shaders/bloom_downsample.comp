@@ -10,7 +10,7 @@ layout(push_constant) uniform PushConstants {
     vec2 texel_size;
 
     uint first_pass;
-    float padding;
+    float upsample_radius;
 } pc;
 
 // a - b - c

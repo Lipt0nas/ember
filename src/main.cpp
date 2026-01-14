@@ -465,7 +465,7 @@ struct BloomPushConstants {
     glm::vec2 texel_size;
 
     uint32_t first_pass;
-    float    padding;
+    float    upsample_radius;
 };
 
 struct GeometryPushConstants {
@@ -2279,7 +2279,8 @@ int main(int argc, char* argv[]) {
     bool use_smaa = true;
     bool running  = true;
 
-    int bloom_levels = glm::max(5ul, bloom_mip_views.size() - 5);
+    int   bloom_levels               = glm::max(5ul, bloom_mip_views.size() - 5);
+    float bloom_upscale_sample_scale = 2.5f;
 
     std::array<uint64_t, 2> pipeline_stats;
 
@@ -5026,9 +5027,9 @@ int main(int argc, char* argv[]) {
                     uint32_t mip_height = glm::max(1u, bloom_buffer.height >> i);
 
                     BloomPushConstants constants = {
-                        .texel_size = {1.0 / mip_width, 1.0 / mip_height},
-                        .first_pass = static_cast<uint32_t>(i == 0 ? 1 : 0),
-                        .padding    = 0.0f,
+                        .texel_size      = {1.0 / mip_width, 1.0 / mip_height},
+                        .first_pass      = static_cast<uint32_t>(i == 0 ? 1 : 0),
+                        .upsample_radius = bloom_upscale_sample_scale,
                     };
 
                     VkDescriptorImageInfo image_read_info = {
@@ -5125,9 +5126,9 @@ int main(int argc, char* argv[]) {
                     uint32_t mip_height = glm::max(1u, bloom_buffer.height >> (i - 1));
 
                     BloomPushConstants constants = {
-                        .texel_size = {1.0 / mip_width, 1.0 / mip_height},
-                        .first_pass = i == 0,
-                        .padding    = 0.0f,
+                        .texel_size      = {1.0 / mip_width, 1.0 / mip_height},
+                        .first_pass      = i == 0,
+                        .upsample_radius = bloom_upscale_sample_scale,
                     };
 
                     VkDescriptorImageInfo lower_mip_info = {
@@ -5889,6 +5890,7 @@ int main(int argc, char* argv[]) {
             ImGui::Checkbox("Disney Diffuse", (bool*)&lighting_data.disney_diffuse);
 
             ImGui::SeparatorText("Bloom");
+            ImGui::SliderFloat("Bloom Upscale radius", &bloom_upscale_sample_scale, 0.0, 5.0);
             ImGui::SliderFloat("Bloom strength", &composite_push_constants.bloom_strength, 0.0, 1.0);
             ImGui::SliderInt("Bloom levels", &bloom_levels, 0, bloom_buffer.levels);
 
