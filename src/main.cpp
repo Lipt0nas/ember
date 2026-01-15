@@ -1251,17 +1251,6 @@ int main(int argc, char* argv[]) {
         device
     );
 
-    Image ao_output_denoised_pong = create_image(
-        VK_FORMAT_R32_UINT,
-        swapchain.width,
-        swapchain.height,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT,
-        false,
-        vma_allocator,
-        device
-    );
-
     Image ao_prefiltered_depth = create_image(
         VK_FORMAT_R32_SFLOAT,
         swapchain.width,
@@ -1519,17 +1508,6 @@ int main(int argc, char* argv[]) {
 
         image_pipeline_barrier(
             ao_output_denoised,
-            command_buffer,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            0,
-            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-            0
-        );
-
-        image_pipeline_barrier(
-            ao_output_denoised_pong,
             command_buffer,
             VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_GENERAL,
@@ -2343,7 +2321,7 @@ int main(int argc, char* argv[]) {
                         DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             .write_info = DescriptorInfo(
-                                nearest_sampler, ao_output_denoised.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                nearest_sampler, ao_output.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                             )
                         },
                         DescriptorBinding{
@@ -2505,7 +2483,6 @@ int main(int argc, char* argv[]) {
     framegraph.import_image(ao_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(ao_output_edges, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(ao_output_denoised, VK_IMAGE_LAYOUT_GENERAL);
-    framegraph.import_image(ao_output_denoised_pong, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(ao_prefiltered_depth, VK_IMAGE_LAYOUT_GENERAL);
     framegraph.import_image(directional_shadow_buffer, VK_IMAGE_LAYOUT_GENERAL, false);
     framegraph.import_image(directional_shadow_buffer_pong, VK_IMAGE_LAYOUT_GENERAL);
@@ -2985,21 +2962,20 @@ int main(int argc, char* argv[]) {
             .samples_image(ao_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .samples_image(ao_output_edges, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(ao_output_denoised, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-            .writes_storage_image(ao_output_denoised_pong, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 vkCmdBindPipeline(command_buffer, ao_denoise_pipeline.bind_point, ao_denoise_pipeline.pipeline_handle);
 
                 int denoise_passes = 2;
 
-                VkImageView read_view  = ao_output.view;
-                VkImageView write_view = ao_output_denoised_pong.view;
+                Image read_image  = ao_output;
+                Image write_image = ao_output_denoised;
 
                 for (int i = 0; i < denoise_passes; i++) {
                     xegtao_constants.final_pass = i == denoise_passes - 1;
 
                     VkDescriptorImageInfo image_read_info = {
                         .sampler     = nearest_sampler,
-                        .imageView   = read_view,
+                        .imageView   = read_image.view,
                         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     };
 
@@ -3011,7 +2987,7 @@ int main(int argc, char* argv[]) {
 
                     VkDescriptorImageInfo image_write_info = {
                         .sampler     = VK_NULL_HANDLE,
-                        .imageView   = write_view,
+                        .imageView   = write_image.view,
                         .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
                     };
 
@@ -3071,21 +3047,32 @@ int main(int argc, char* argv[]) {
 
                     vkCmdDispatch(command_buffer, (swapchain.width + 15) / 16, (swapchain.height + 7) / 8, 1);
 
-                    if (i != denoise_passes - 1) {
-                        image_pipeline_barrier(
-                            ao_output_denoised_pong,
-                            command_buffer,
-                            VK_IMAGE_LAYOUT_GENERAL,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            VK_ACCESS_2_SHADER_WRITE_BIT,
-                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-                        );
-                    }
+                    image_pipeline_barrier(
+                        write_image,
+                        command_buffer,
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+                    );
 
-                    read_view  = ao_output_denoised_pong.view;
-                    write_view = ao_output_denoised.view;
+                    image_pipeline_barrier(
+                        read_image,
+                        command_buffer,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+                    );
+
+                    auto temp = read_image;
+
+                    read_image  = write_image;
+                    write_image = temp;
                 }
             });
 
@@ -6464,7 +6451,6 @@ int main(int argc, char* argv[]) {
     destroy_image(bloom_buffer, device, vma_allocator);
     destroy_image(ao_output, device, vma_allocator);
     destroy_image(ao_output_denoised, device, vma_allocator);
-    destroy_image(ao_output_denoised_pong, device, vma_allocator);
     destroy_image(ao_output_edges, device, vma_allocator);
     destroy_image(ao_prefiltered_depth, device, vma_allocator);
     destroy_image(brdf_lut, device, vma_allocator);
