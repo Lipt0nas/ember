@@ -5,6 +5,7 @@
 #include "device.hpp"
 #include "framegraph.hpp"
 #include "geometry.hpp"
+#include "imgui_internal.h"
 #include "physics.hpp"
 #include "pipeline.hpp"
 #include "resources.hpp"
@@ -14,6 +15,7 @@
 #include "ui.hpp"
 
 #include <format>
+#include <map>
 
 #include <glm/gtc/random.hpp>
 
@@ -31,6 +33,11 @@ enum class DynamicOffset : uint32_t {
     DRAWCALL_BUFFER,
 
     COUNT = DRAWCALL_BUFFER + 1
+};
+
+struct EditorViewportSource {
+    Image           image;
+    VkDescriptorSet descriptor_set;
 };
 
 void draw_pass_timings_lines(const std::vector<std::pair<std::string, PassTiming>>& passes) {
@@ -2002,15 +2009,39 @@ int main(int argc, char* argv[]) {
     int       grabbed_mesh          = -1;
     glm::vec2 grab_origin           = {};
 
+    bool                                        editor_mode = true;
+    std::map<std::string, EditorViewportSource> editor_viewport_source_handles;
+
+    auto add_viewport_source = [&](const std::string& name, Image& image) {
+        editor_viewport_source_handles.insert({name, {image, imgui_image_handle(image, linear_sampler)}});
+    };
+
+    add_viewport_source("Anti-Aliased Composite", smaa_output);
+    add_viewport_source("Composite", composite_output);
+    add_viewport_source("GBuffer Albedo", gbuffer_albedo);
+    add_viewport_source("GBuffer Normals", gbuffer_normals);
+    add_viewport_source("GBuffer Velocity", gbuffer_velocity);
+    add_viewport_source("GBuffer Emissive", gbuffer_emissive);
+    add_viewport_source("GBuffer Depth", depth_buffer);
+    add_viewport_source("Lighting", lightpass_output);
+    add_viewport_source("DDGI Irradiance", ddgi_irradiance);
+    add_viewport_source("DDGI Depth", ddgi_depth_atlas);
+    add_viewport_source("SMAA Edges", smaa_edges);
+    add_viewport_source("RT Reflection", rt_reflection_buffer);
+    add_viewport_source("RT Shadows", directional_shadow_buffer);
+    add_viewport_source("Bloom Buffer", bloom_buffer);
+
+    std::string editor_viewport_source = "Anti-Aliased Composite";
+
     uint32_t frame_count = 0;
     uint32_t frame_index = 0;
 
-    float delta_time      = 0.0f;
+    glm::vec4 viewport_pos_size = glm::vec4();
+
     auto  frame_timestamp = std::chrono::high_resolution_clock::now();
-
-    float time_passed = 0.0f;
-
-    float total_time = 0.0;
+    float delta_time      = 0.0f;
+    float time_passed     = 0.0f;
+    float total_time      = 0.0;
 
     uint32_t accumulated_fps = 0;
     uint32_t fps             = 0;
@@ -2022,8 +2053,7 @@ int main(int argc, char* argv[]) {
     bool debug_frustum   = false;
     bool disable_culling = false;
 
-    bool use_smaa = true;
-    bool running  = true;
+    bool running = true;
 
     int   bloom_levels               = glm::max(5ul, bloom_mip_views.size() - 5);
     float bloom_upscale_sample_scale = 2.5f;
@@ -5199,24 +5229,11 @@ int main(int argc, char* argv[]) {
 
     auto& blit_ui_pass =
         framegraph.add_pass("Final blit + UI").render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-            auto& blit_source = use_smaa ? smaa_output : composite_output;
-
-            image_pipeline_barrier(
-                blit_source,
-                command_buffer,
-                use_smaa ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                VK_ACCESS_2_TRANSFER_READ_BIT
-            );
-
             image_pipeline_barrier(
                 swapchain.images[swapchain_image_index],
                 command_buffer,
                 VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                editor_mode ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 0,
                 VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -5230,104 +5247,100 @@ int main(int argc, char* argv[]) {
                 }
             );
 
-            VkImageBlit blit_region = {
-                .srcSubresource =
-                    {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
-                .srcOffsets =
-                    {
-                        {0, 0, 0},
+            if (!editor_mode) {
+                auto& blit_source = smaa_output;
+                image_pipeline_barrier(
+                    blit_source,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT
+                );
+
+                VkImageBlit blit_region = {
+                    .srcSubresource =
+                        {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
+                    .srcOffsets =
+                        {
+                            {0, 0, 0},
+                            {static_cast<int32_t>(swapchain.width), static_cast<int32_t>(swapchain.height), 1},
+                        },
+                    .dstSubresource =
+                        {
+                            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                            .mipLevel       = 0,
+                            .baseArrayLayer = 0,
+                            .layerCount     = 1,
+                        },
+                    .dstOffsets = {
+                        {},
                         {static_cast<int32_t>(swapchain.width), static_cast<int32_t>(swapchain.height), 1},
                     },
-                .dstSubresource =
-                    {
-                        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .mipLevel       = 0,
-                        .baseArrayLayer = 0,
-                        .layerCount     = 1,
-                    },
-                .dstOffsets = {
-                    {},
-                    {static_cast<int32_t>(swapchain.width), static_cast<int32_t>(swapchain.height), 1},
-                },
-            };
+                };
 
-            vkCmdBlitImage(
-                command_buffer,
-                blit_source.handle,
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                swapchain.images[swapchain_image_index],
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                1,
-                &blit_region,
-                VK_FILTER_LINEAR
-            );
+                vkCmdBlitImage(
+                    command_buffer,
+                    blit_source.handle,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    swapchain.images[swapchain_image_index],
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1,
+                    &blit_region,
+                    VK_FILTER_LINEAR
+                );
 
-            image_pipeline_barrier(
-                blit_source,
-                command_buffer,
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                VK_IMAGE_LAYOUT_GENERAL,
-                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                VK_ACCESS_2_TRANSFER_READ_BIT,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
-            );
+                image_pipeline_barrier(
+                    blit_source,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                );
+            } else {
+                VkRenderingAttachmentInfo swapchain_attachment_info = {
+                    .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                    .pNext              = nullptr,
+                    .imageView          = swapchain.image_views[swapchain_image_index],
+                    .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    .resolveMode        = VK_RESOLVE_MODE_NONE,
+                    .resolveImageView   = VK_NULL_HANDLE,
+                    .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .loadOp             = editor_mode ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+                    .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                    .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                };
 
-            image_pipeline_barrier(
-                swapchain.images[swapchain_image_index],
-                command_buffer,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                VK_ACCESS_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                }
-            );
-
-            VkRenderingAttachmentInfo swapchain_attachment_info = {
-                .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .pNext              = nullptr,
-                .imageView          = swapchain.image_views[swapchain_image_index],
-                .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                .resolveMode        = VK_RESOLVE_MODE_NONE,
-                .resolveImageView   = VK_NULL_HANDLE,
-                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
-                .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-                .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
-            };
-
-            VkRenderingInfo imgui_rendering_info = {
-                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .renderArea =
-                    {
-                        .offset = {.x = 0, .y = 0},
-                        .extent = {.width = swapchain.width, .height = swapchain.height},
-                    },
-                .layerCount           = 1,
-                .viewMask             = 0,
-                .colorAttachmentCount = 1,
-                .pColorAttachments    = &swapchain_attachment_info,
-                .pDepthAttachment     = nullptr,
-                .pStencilAttachment   = nullptr
-            };
-            vkCmdBeginRendering(command_buffer, &imgui_rendering_info);
-            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
-            vkCmdEndRendering(command_buffer);
+                VkRenderingInfo imgui_rendering_info = {
+                    .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .renderArea =
+                        {
+                            .offset = {.x = 0, .y = 0},
+                            .extent = {.width = swapchain.width, .height = swapchain.height},
+                        },
+                    .layerCount           = 1,
+                    .viewMask             = 0,
+                    .colorAttachmentCount = 1,
+                    .pColorAttachments    = &swapchain_attachment_info,
+                    .pDepthAttachment     = nullptr,
+                    .pStencilAttachment   = nullptr
+                };
+                vkCmdBeginRendering(command_buffer, &imgui_rendering_info);
+                ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
+                vkCmdEndRendering(command_buffer);
+            }
 
             image_pipeline_barrier(
                 swapchain.images[swapchain_image_index],
                 command_buffer,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                editor_mode ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -5344,6 +5357,16 @@ int main(int argc, char* argv[]) {
         });
 
     framegraph.build();
+
+    auto screen_pos_to_scene_vewport = [&](glm::vec2 pos) -> glm::vec2 {
+        return {pos.x - viewport_pos_size.x, pos.y - viewport_pos_size.y};
+    };
+
+    auto coords_in_scene_viewport = [&](glm::vec2 pos) -> bool {
+        auto coords = screen_pos_to_scene_vewport(pos);
+
+        return coords.x >= 0.0 && coords.x <= viewport_pos_size.z && coords.y >= 0.0 && coords.y <= viewport_pos_size.w;
+    };
 
     int pick_frame = UINT32_MAX;
     while (running) {
@@ -5396,7 +5419,7 @@ int main(int argc, char* argv[]) {
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 pressed_buttons[window_event.button.button] = true;
 
-                if (window_event.button.button == SDL_BUTTON_RIGHT) {
+                if (window_event.button.button == SDL_BUTTON_RIGHT && coords_in_scene_viewport(mouse_pos)) {
                     SDL_SetWindowMouseGrab(window, true);
                     SDL_SetWindowRelativeMouseMode(window, true);
 
@@ -5407,7 +5430,7 @@ int main(int argc, char* argv[]) {
                 pressed_buttons[window_event.button.button]  = false;
                 released_buttons[window_event.button.button] = true;
 
-                if (window_event.button.button == SDL_BUTTON_RIGHT) {
+                if (window_event.button.button == SDL_BUTTON_RIGHT && capturing_mouse) {
                     SDL_SetWindowMouseGrab(window, false);
                     SDL_SetWindowRelativeMouseMode(window, false);
 
@@ -5424,7 +5447,6 @@ int main(int argc, char* argv[]) {
                 mouse_pos = {x, y};
 
                 if (capturing_mouse) {
-
                     camera.orientation =
                         glm::rotate(
                             glm::quat(0, 0, 0, 1), float(-xrel * camera_mouse_sensitivity), glm::vec3(0, 1, 0)
@@ -5475,10 +5497,6 @@ int main(int argc, char* argv[]) {
             velocity.y = 1;
         }
 
-        if (pressed_keys[SDL_SCANCODE_ESCAPE]) {
-            running = false;
-        }
-
         if (pressed_keys[SDL_SCANCODE_G] && released_keys[SDL_SCANCODE_G]) {
             player_physics = !player_physics;
 
@@ -5489,6 +5507,14 @@ int main(int argc, char* argv[]) {
 
         if (pressed_keys[SDL_SCANCODE_P] && released_keys[SDL_SCANCODE_P]) {
             visualize_probes = !visualize_probes;
+        }
+
+        if (pressed_keys[SDL_SCANCODE_F5] && released_keys[SDL_SCANCODE_F5]) {
+            editor_mode = !editor_mode;
+        }
+
+        if (pressed_keys[SDL_SCANCODE_ESCAPE]) {
+            running = false;
         }
 
         while (physics_time_accumulator >= physics_delta_time) {
@@ -5621,9 +5647,47 @@ int main(int argc, char* argv[]) {
         ImGui::NewFrame();
         ImGuizmo::BeginFrame();
 
-        bool open = true;
-        ImGui::Begin("Scene", &open, ImGuiWindowFlags_NoTitleBar);
+        ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+        if (editor_mode) {
+            ImGui::Begin("Scene Viewport", nullptr, ImGuiWindowFlags_MenuBar);
+            if (ImGui::BeginMenuBar()) {
+                if (ImGui::BeginMenu("Viewport Source")) {
+                    for (auto [name, handle] : editor_viewport_source_handles) {
+                        if (ImGui::MenuItem(name.c_str(), nullptr, editor_viewport_source.compare(name) == 0)) {
+                            editor_viewport_source = name;
+                        }
+                    }
+                    ImGui::EndMenu();
+                }
 
+                ImGui::Text(": %s", editor_viewport_source.c_str());
+                ImGui::EndMenuBar();
+            }
+
+            auto region = ImGui::GetContentRegionAvail();
+            auto cursor = ImGui::GetCursorScreenPos();
+
+            if (editor_viewport_source_handles.contains(editor_viewport_source)) {
+                auto source = editor_viewport_source_handles[editor_viewport_source];
+
+                float aspect_ratio = (float)source.image.width / (float)source.image.height;
+
+                ImVec2 size = ImVec2(region.y * aspect_ratio, region.y);
+                if (size.x > region.x) {
+                    size = ImVec2(region.x, region.x / aspect_ratio);
+                }
+
+                viewport_pos_size = glm::vec4(cursor.x, cursor.y, size.x, size.y);
+
+                ImGui::Image(source.descriptor_set, size);
+                ImGui::End();
+            }
+
+        } else {
+            viewport_pos_size = glm::vec4(0, 0, swapchain.width, swapchain.height);
+        }
+
+        ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_NoTitleBar);
         ImGui::Checkbox("Enable Transform Snap", &enable_transform_snap);
         if (ImGui::InputFloat("Transform Snap", &transform_snap.x, 1.0f)) {
             transform_snap = glm::vec3(transform_snap.x);
@@ -5663,7 +5727,7 @@ int main(int argc, char* argv[]) {
         }
         ImGui::End();
 
-        ImGui::Begin("Assets", &open, ImGuiWindowFlags_NoTitleBar);
+        ImGui::Begin("Assets", nullptr, ImGuiWindowFlags_NoTitleBar);
         if (ImGui::TreeNode("Textures")) {
             int images_per_row = 6;
             int row_id         = 0;
@@ -5686,7 +5750,7 @@ int main(int argc, char* argv[]) {
         }
         ImGui::End();
 
-        ImGui::Begin("Debug", &open, ImGuiWindowFlags_NoTitleBar);
+        ImGui::Begin("Debug", nullptr, ImGuiWindowFlags_NoTitleBar);
 
         ImGui::SeparatorText("Info");
         ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
@@ -5798,7 +5862,6 @@ int main(int argc, char* argv[]) {
             ImGui::SliderFloat("Adaptation Speed", &adaption_speed, 0.1f, 5.0f, "%.2f");
             ImGui::Separator();
             ImGui::Checkbox("Use GT5 tonemapping", (bool*)&composite_push_constants.tonemapping_type);
-            ImGui::Checkbox("Apply SMAA", (bool*)&use_smaa);
             ImGui::TreePop();
         }
         ImGui::End();
@@ -5823,8 +5886,8 @@ int main(int argc, char* argv[]) {
 
             glm::mat4 delta_mat;
 
-            auto& io = ImGui::GetIO();
-            ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
+            ImGuizmo::SetRect(viewport_pos_size.x, viewport_pos_size.y, viewport_pos_size.z, viewport_pos_size.w);
+            ImGuizmo::SetAlternativeWindow(ImGui::FindWindowByName("Scene Viewport"));
             if (ImGuizmo::Manipulate(
                     &view[0].x,
                     &projection[0].x,
@@ -6008,19 +6071,18 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (pressed_keys[SDL_SCANCODE_C] && !capturing_mouse) {
+        if (pressed_keys[SDL_SCANCODE_C] && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
             if (pressed_buttons[SDL_BUTTON_LEFT] && released_buttons[SDL_BUTTON_LEFT]) {
                 if (grabbed_mesh != -1) {
-                    int w;
-                    int h;
-                    SDL_GetWindowSizeInPixels(window, &w, &h);
+                    glm::vec2 pos  = screen_pos_to_scene_vewport(mouse_pos);
+                    glm::vec2 frac = pos / glm::vec2(viewport_pos_size.z, viewport_pos_size.w);
 
-                    glm::vec4 mouse_near = {(mouse_pos / glm::vec2(w, h)) * 2.0f - 1.0f, 1, 1.0};
+                    glm::vec4 mouse_near = {frac * 2.0f - 1.0f, 1, 1.0};
                     mouse_near.y *= -1;
                     mouse_near = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_near;
                     glm::vec3 near = glm::vec3(mouse_near) / mouse_near.w;
 
-                    glm::vec4 mouse_far = {(mouse_pos / glm::vec2(w, h)) * 2.0f - 1.0f, 0.01, 1.0};
+                    glm::vec4 mouse_far = {frac * 2.0f - 1.0f, 0.01, 1.0};
                     mouse_far.y *= -1;
                     mouse_far = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_far;
                     glm::vec3 far = glm::vec3(mouse_far) / mouse_far.w;
@@ -6239,14 +6301,13 @@ int main(int argc, char* argv[]) {
 
         framegraph.execute(command_buffer, frame_index);
 
-        if (pressed_keys[SDL_SCANCODE_LSHIFT] && !capturing_mouse) {
+        if (pressed_keys[SDL_SCANCODE_LSHIFT] && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
             if (pressed_buttons[SDL_BUTTON_LEFT] && released_buttons[SDL_BUTTON_LEFT]) {
-                int w;
-                int h;
-                SDL_GetWindowSizeInPixels(window, &w, &h);
+                glm::vec2 pos  = screen_pos_to_scene_vewport(mouse_pos);
+                glm::vec2 frac = pos / glm::vec2(viewport_pos_size.z, viewport_pos_size.w);
 
-                int mouse_x = glm::clamp((int)mouse_pos.x, 0, w);
-                int mouse_y = glm::clamp((int)mouse_pos.y, 0, h);
+                int mouse_x = glm::floor(frac.x * gbuffer_id.width);
+                int mouse_y = glm::floor(frac.y * gbuffer_id.height);
 
                 VkBufferImageCopy region = {
                     .bufferOffset      = 0,
