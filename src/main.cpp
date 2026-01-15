@@ -1847,6 +1847,8 @@ int main(int argc, char* argv[]) {
     );
     bool player_physics = false;
 
+    float physics_fling_modifier = 100.0f;
+
     const float physics_delta_time       = 1.0f / 60.0f;
     float       physics_time_accumulator = 0.0f;
 
@@ -5646,6 +5648,8 @@ int main(int argc, char* argv[]) {
         }
 
         if (ImGui::CollapsingHeader("Physics")) {
+            ImGui::InputFloat("Physics Fling Modifier", &physics_fling_modifier);
+
             if (ImGui::Checkbox("Enable Player Physics", &player_physics)) {
                 if (player_physics) {
                     player_character->SetPosition(JPH::RVec3(camera.position.x, camera.position.y, camera.position.z));
@@ -5878,36 +5882,60 @@ int main(int argc, char* argv[]) {
                     inst.scale *= scale.x;
                 }
 
+                JPH::BodyID body_id;
+                bool        is_dynamic = false;
+
                 for (auto& body : scene.static_bodies) {
                     if (body.drawcall_id == grabbed_mesh) {
-
-                        if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
-                            physics_body_interface.SetPosition(
-                                body.body_id,
-                                JPH::Vec3(inst.position.x, inst.position.y, inst.position.z),
-                                JPH::EActivation::DontActivate
-                            );
-                        }
-
-                        if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
-                            physics_body_interface.SetRotation(
-                                body.body_id,
-                                JPH::Quat(inst.rotation.x, inst.rotation.y, inst.rotation.z, inst.rotation.w),
-                                JPH::EActivation::DontActivate
-                            );
-                        }
-
-                        if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
-                            auto shape     = physics_body_interface.GetShape(body.body_id);
-                            auto new_shape = shape->ScaleShape(JPH::Vec3(scale.x, scale.x, scale.x));
-                            if (new_shape.IsValid()) {
-                                physics_body_interface.SetShape(
-                                    body.body_id, new_shape.Get(), false, JPH::EActivation::DontActivate
-                                );
-                            }
-                        }
-
+                        body_id    = body.body_id;
+                        is_dynamic = false;
                         break;
+                    }
+                }
+
+                for (auto& body : scene.dynamic_bodies) {
+                    if (body.drawcall_id == grabbed_mesh) {
+                        body_id    = body.body_id;
+                        is_dynamic = true;
+                        break;
+                    }
+                }
+
+                if (!body_id.IsInvalid()) {
+                    JPH::EActivation activation =
+                        is_dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
+
+                    auto last_position = physics_body_interface.GetPosition(body_id);
+                    auto new_position  = JPH::Vec3(
+                        last_position.GetX() + position.x,
+                        last_position.GetY() + position.y,
+                        last_position.GetZ() + position.z
+                    );
+
+                    if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
+                        physics_body_interface.SetPosition(body_id, new_position, activation);
+                        if (is_dynamic) {
+                            auto velocity = new_position - last_position;
+                            velocity *= physics_fling_modifier;
+
+                            physics_body_interface.SetLinearVelocity(body_id, velocity);
+                        }
+                    }
+
+                    if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
+                        physics_body_interface.SetRotation(
+                            body_id,
+                            JPH::Quat(inst.rotation.x, inst.rotation.y, inst.rotation.z, inst.rotation.w),
+                            activation
+                        );
+                    }
+
+                    if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
+                        auto shape     = physics_body_interface.GetShape(body_id);
+                        auto new_shape = shape->ScaleShape(JPH::Vec3(scale.x, scale.x, scale.x));
+                        if (new_shape.IsValid()) {
+                            physics_body_interface.SetShape(body_id, new_shape.Get(), false, activation);
+                        }
                     }
                 }
             }
