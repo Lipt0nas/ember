@@ -40,28 +40,10 @@ struct EditorViewportSource {
     VkDescriptorSet descriptor_set;
 };
 
-void draw_pass_timings_lines(const std::vector<std::pair<std::string, PassTiming>>& passes) {
-    ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.25f);
-    if (ImPlot::BeginPlot("Pass Timings", ImVec2(-1, 300))) {
-        ImPlot::SetupAxes("Sample", "Time (ms)");
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0, PASS_TIMING_COUNT, ImGuiCond_Always);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 10, ImGuiCond_Once);
-
-        for (const auto& [name, timing] : passes) {
-            ImPlot::PlotShaded(name.c_str(), timing.timings.data(), PASS_TIMING_COUNT);
-        }
-
-        ImPlot::EndPlot();
-    }
-    ImPlot::PopStyleVar();
-}
-
 void draw_pass_stats(const std::vector<std::pair<std::string, PassTiming>>& passes) {
-    if (ImGui::BeginTable("PassStats", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Sortable)) {
+    if (ImGui::BeginTable("PassStats", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Sortable)) {
         ImGui::TableSetupColumn("Pass");
         ImGui::TableSetupColumn("Avg (ms)");
-        ImGui::TableSetupColumn("Min (ms)");
-        ImGui::TableSetupColumn("Max (ms)");
         ImGui::TableSetupColumn("% of Frame");
         ImGui::TableHeadersRow();
 
@@ -76,13 +58,6 @@ void draw_pass_stats(const std::vector<std::pair<std::string, PassTiming>>& pass
         }
 
         for (const auto& [name, timing] : passes) {
-            float min_time = FLT_MAX;
-            float max_time = 0.0f;
-
-            for (float t : timing.timings) {
-                min_time = std::min(min_time, t);
-                max_time = std::max(max_time, t);
-            }
             float avg        = timing.get_avg_timing_ms();
             float percentage = (avg / total_avg) * 100.0f;
 
@@ -101,10 +76,6 @@ void draw_pass_stats(const std::vector<std::pair<std::string, PassTiming>>& pass
             ImGui::TableNextColumn();
             ImGui::Text("%.3f", avg);
             ImGui::TableNextColumn();
-            ImGui::Text("%.3f", min_time);
-            ImGui::TableNextColumn();
-            ImGui::Text("%.3f", max_time);
-            ImGui::TableNextColumn();
             ImGui::Text("%.2f%%", percentage);
         }
 
@@ -114,11 +85,7 @@ void draw_pass_stats(const std::vector<std::pair<std::string, PassTiming>>& pass
         ImGui::TableNextColumn();
         ImGui::TextColored(ImVec4(1, 1, 0, 1), "%.3f", total_avg);
         ImGui::TableNextColumn();
-        ImGui::Text("---");
-        ImGui::TableNextColumn();
-        ImGui::Text("---");
-        ImGui::TableNextColumn();
-        ImGui::TextColored(ImVec4(1, 1, 0, 1), "%.2f Theoretical FPS", 1000.0f / total_avg);
+        ImGui::TextColored(ImVec4(1, 1, 0, 1), "%.2f GPU Time FPS", 1000.0f / total_avg);
         ImGui::EndTable();
 
         ImGui::SeparatorText("Percentage:");
@@ -132,24 +99,6 @@ void draw_pass_stats(const std::vector<std::pair<std::string, PassTiming>>& pass
                 (std::format("{}: {:.1f}%", passes[i].first, percentage)).c_str()
             );
         }
-    }
-}
-
-void draw_pass_profiler(const std::vector<std::pair<std::string, PassTiming>>& passes) {
-    if (ImGui::BeginTabBar("ProfilerTabs")) {
-        if (ImGui::BeginTabItem("Stats")) {
-            draw_pass_stats(passes);
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Lines")) {
-            draw_pass_timings_lines(passes);
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Demo")) {
-            ImPlot::ShowDemoWindow();
-            ImGui::EndTabItem();
-        }
-        ImGui::EndTabBar();
     }
 }
 
@@ -5688,12 +5637,23 @@ int main(int argc, char* argv[]) {
         }
 
         ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_NoTitleBar);
-        ImGui::Checkbox("Enable Transform Snap", &enable_transform_snap);
-        if (ImGui::InputFloat("Transform Snap", &transform_snap.x, 1.0f)) {
-            transform_snap = glm::vec3(transform_snap.x);
+        if (ImGui::CollapsingHeader("Transform Gizmo")) {
+            ImGui::Checkbox("Enable Transform Snap", &enable_transform_snap);
+
+            if (ImGui::InputFloat("Transform Snap", &transform_snap.x, 1.0f)) {
+                transform_snap = glm::vec3(transform_snap.x);
+            }
         }
 
-        if (ImGui::TreeNode("Mesh Material")) {
+        if (ImGui::CollapsingHeader("Physics")) {
+            if (ImGui::Checkbox("Enable Player Physics", &player_physics)) {
+                if (player_physics) {
+                    player_character->SetPosition(JPH::RVec3(camera.position.x, camera.position.y, camera.position.z));
+                }
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Material")) {
             if (grabbed_mesh != -1) {
                 auto& material = scene.materials[scene.instances[grabbed_mesh].material_id];
 
@@ -5715,21 +5675,21 @@ int main(int argc, char* argv[]) {
 
                 ImGui::NewLine();
 
-                ImGui::SliderFloat("Roughness factor", &material.roughness_factor, 0.0, 1.0f);
-                ImGui::SliderFloat("Metallic factor", &material.metallic_factor, 0.0, 1.0f);
-                ImGui::SliderFloat("Normal scale", &material.normal_scale, 0.0, 1.0f);
+                ImGui::SliderFloat("Roughness Factor", &material.roughness_factor, 0.0, 1.0f);
+                ImGui::SliderFloat("Metallic Factor", &material.metallic_factor, 0.0, 1.0f);
+                ImGui::SliderFloat("Normal Scale", &material.normal_scale, 0.0, 1.0f);
 
-                ImGui::ColorEdit4("Albedo factor", &material.albedo_factor.x);
-                ImGui::ColorEdit3("Emissive factor", &material.emissive_factor.x);
+                ImGui::ColorEdit4("Albedo Factor", &material.albedo_factor.x);
+                ImGui::ColorEdit3(
+                    "Emissive Factor", &material.emissive_factor.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR
+                );
             }
-
-            ImGui::TreePop();
         }
         ImGui::End();
 
-        ImGui::Begin("Assets", nullptr, ImGuiWindowFlags_NoTitleBar);
+        ImGui::Begin("Assets");
         if (ImGui::TreeNode("Textures")) {
-            int images_per_row = 6;
+            int images_per_row = (ImGui::GetContentRegionAvail().x) / 50 - 1;
             int row_id         = 0;
             for (auto& [slot, handle] : imgui_material_image_handles) {
                 ImGui::Image(handle, ImVec2(50, 50));
@@ -5750,36 +5710,33 @@ int main(int argc, char* argv[]) {
         }
         ImGui::End();
 
-        ImGui::Begin("Debug", nullptr, ImGuiWindowFlags_NoTitleBar);
-
-        ImGui::SeparatorText("Info");
-        ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
-        ImGui::Text("Objects: %lu", scene.instances.size());
-        ImGui::Text("FPS: %u", fps);
-        ImGui::Text("Camera Position: %s", glm::to_string(camera.position).c_str());
-        ImGui::Text("Camera Orientation: %s", glm::to_string(camera.orientation).c_str());
-        ImGui::Text("Triangles Rendered: %.3fM", (double(pipeline_stats[0]) / 1'000'000.0));
-        ImGui::Text("Fragment shader invocations: %.3fM", (double(pipeline_stats[1]) / 1'000'000.0));
-        ImGui::NewLine();
-
-        if (ImGui::Checkbox("Player Physics", &player_physics)) {
-            if (player_physics) {
-                player_character->SetPosition(JPH::RVec3(camera.position.x, camera.position.y, camera.position.z));
-            }
+        ImGui::Begin("Performance");
+        std::vector<std::pair<std::string, PassTiming>> pass_timings = {};
+        for (const auto& pass : framegraph.passes) {
+            pass_timings.push_back(std::make_pair(pass.name, framegraph.get_pass_timing(pass.name)));
         }
 
-        if (ImGui::TreeNode("Performance")) {
-            std::vector<std::pair<std::string, PassTiming>> pass_timings = {};
-            for (const auto& pass : framegraph.passes) {
-                pass_timings.push_back(std::make_pair(pass.name, framegraph.get_pass_timing(pass.name)));
-            }
+        draw_pass_stats(pass_timings);
+        ImGui::End();
 
-            draw_pass_profiler(pass_timings);
-            ImGui::TreePop();
+        ImGui::Begin("Configuration");
+        if (ImGui::CollapsingHeader("Renderer Info", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
+            ImGui::Text("Objects: %lu", scene.instances.size());
+            ImGui::Text("FPS: %u", fps);
+            ImGui::Text("Camera Position: %.3f, %.3f, %.3f", camera.position.x, camera.position.y, camera.position.z);
+            ImGui::Text(
+                "Camera Orientation: %.3f, %.3f, %.3f, %.3f",
+                camera.orientation.x,
+                camera.orientation.y,
+                camera.orientation.z,
+                camera.orientation.w
+            );
+            ImGui::Text("Triangles Rendered: %.3fM", (double(pipeline_stats[0]) / 1'000'000.0));
+            ImGui::Text("Fragment shader invocations: %.3fM", (double(pipeline_stats[1]) / 1'000'000.0));
         }
 
-        if (ImGui::TreeNode("Config")) {
-            ImGui::SeparatorText("Cull");
+        if (ImGui::CollapsingHeader("Culling & LOD's")) {
             if (ImGui::Checkbox("Freeze frustum", &debug_frustum)) {
                 frozen_view       = camera.view_matrix;
                 frozen_frustum[0] = frustum_x.x;
@@ -5801,27 +5758,30 @@ int main(int argc, char* argv[]) {
             ImGui::Checkbox(
                 "Disable small triangle cull (mesh)", (bool*)&gpass_push_constants.disable_small_triangle_cull
             );
+        }
 
-            ImGui::SeparatorText("Light");
-            ImGui::DragFloat3("Light direction", &lighting_data.light_direction.x, 0.01, -1.0, 1.0);
+        if (ImGui::CollapsingHeader("Rendering")) {
+            ImGui::SeparatorText("Directional Light");
+            ImGui::DragFloat3("Direction", &lighting_data.light_direction.x, 0.01, -1.0, 1.0);
             ImGui::ColorEdit3(
-                "Light color", &lighting_data.light_color.x, ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float
+                "Color", &lighting_data.light_color.x, ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float
             );
-            ImGui::SliderFloat("Light intensity", &lighting_data.light_color.w, 0.0, 100.0);
+            ImGui::SliderFloat("Intensity", &lighting_data.light_color.w, 0.0, 100.0);
 
+            ImGui::SeparatorText("Sky");
             ImGui::ColorEdit3(
-                "Sky Hemisphere Top",
+                "Top Hemisphere",
                 &lighting_data.sky_hemisphere_top.x,
                 ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float
             );
             ImGui::ColorEdit3(
-                "Sky Hemisphere Bottom",
+                "Bottom Hemisphere",
                 &lighting_data.sky_hemisphere_bottom.x,
                 ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float
             );
 
             ImGui::SeparatorText("DDGI");
-            if (ImGui::BeginCombo("DDGI Rays Per Probe", std::to_string(lighting_data.rays_per_probe).c_str())) {
+            if (ImGui::BeginCombo("Rays Per Probe", std::to_string(lighting_data.rays_per_probe).c_str())) {
                 for (int i = 0; i < IM_ARRAYSIZE(ray_per_probe_values); i++) {
                     bool is_selected = (lighting_data.rays_per_probe == ray_per_probe_values[i]);
                     if (ImGui::Selectable(std::to_string(ray_per_probe_values[i]).c_str(), is_selected)) {
@@ -5838,10 +5798,11 @@ int main(int argc, char* argv[]) {
             ImGui::DragFloat("Probe Spacing", &lighting_data.probe_spacing, 0.01, 0.1, 10.0);
             ImGui::DragFloat3("Grid Origin", &lighting_data.grid_origin.x, 0.03, -100.0, 100.0);
             ImGui::Checkbox("Visualize Probes", (bool*)&visualize_probes);
-            ImGui::SameLine();
             ImGui::Checkbox("Cull Innactive Probes", (bool*)&debug_renderer_constants.cull_innactive_probes);
             ImGui::Checkbox("Multibounce Diffuse", (bool*)&lighting_data.multibounce);
             ImGui::Checkbox("Use Probe State", (bool*)&lighting_data.use_probe_state);
+
+            ImGui::SeparatorText("Light Pass");
             ImGui::Checkbox("Use Bent Normals", (bool*)&lighting_data.use_bent_normals);
             ImGui::Checkbox("Remove Visibility Checks", (bool*)&lighting_data.remove_visibility_checks);
             ImGui::Checkbox("Compensate Specular", (bool*)&lighting_data.compensate_specular);
@@ -5849,10 +5810,10 @@ int main(int argc, char* argv[]) {
 
             ImGui::SeparatorText("Bloom");
             ImGui::SliderFloat("Bloom Upscale radius", &bloom_upscale_sample_scale, 0.0, 5.0);
-            ImGui::SliderFloat("Bloom strength", &composite_push_constants.bloom_strength, 0.0, 1.0);
-            ImGui::SliderInt("Bloom levels", &bloom_levels, 0, bloom_buffer.levels);
+            ImGui::SliderFloat("Bloom Strength", &composite_push_constants.bloom_strength, 0.0, 1.0);
+            ImGui::SliderInt("Bloom Levels", &bloom_levels, 0, bloom_buffer.levels);
 
-            ImGui::SeparatorText("Post process");
+            ImGui::SeparatorText("Post Process");
             ImGui::Checkbox("Auto Exposure", (bool*)&composite_push_constants.enable_auto_exposure);
             ImGui::SliderFloat("Min Log Luminance", &min_log_lum, -16.0f, 0.0f, "%.1f");
             ImGui::SliderFloat("Max Log Luminance", &max_log_lum, 0.0f, 8.0f, "%.1f");
@@ -5860,9 +5821,7 @@ int main(int argc, char* argv[]) {
             ImGui::SliderFloat("Min Exposure", &composite_push_constants.min_exposure, 0.05f, 20.0f, "%.2f");
             ImGui::SliderFloat("Max Exposure", &composite_push_constants.max_exposure, 0.05f, 50.0f, "%.2f");
             ImGui::SliderFloat("Adaptation Speed", &adaption_speed, 0.1f, 5.0f, "%.2f");
-            ImGui::Separator();
             ImGui::Checkbox("Use GT5 tonemapping", (bool*)&composite_push_constants.tonemapping_type);
-            ImGui::TreePop();
         }
         ImGui::End();
 
