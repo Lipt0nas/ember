@@ -1734,14 +1734,6 @@ int main(int argc, char* argv[]) {
         descriptor_pool
     );
 
-    VkDeviceSize meshlet_buffer_offset                   = 0;
-    VkDeviceSize meshlet_vertex_indices_offset           = 0;
-    VkDeviceSize meshlet_vertex_primitive_indices_offset = 0;
-    VkDeviceSize meshlet_bounds_buffer_offset            = 0;
-
-    VkDeviceSize indirect_vertex_buffer_offset = 0;
-    VkDeviceSize indirect_index_buffer_offset  = 0;
-
     VkDescriptorSetLayout global_texture_descriptor_layout = create_descriptor_set_layout(
         device,
         VK_SHADER_STAGE_ALL,
@@ -1850,17 +1842,6 @@ int main(int argc, char* argv[]) {
         graphics_queue,
         vma_allocator,
         command_buffers[0]
-    );
-
-    spdlog::info(
-        "Buffer usage:\n\tVertex: {}MB\n\tIndex: {}MB\n\tMeshlet: {}MB\n\tMeshlet Vertex: {}MB\n\tMeshlet Index: "
-        "{}MB\n\tMeshlet Bounds: {}MB",
-        indirect_vertex_buffer_offset / 1024 / 1024,
-        indirect_index_buffer_offset / 1024 / 1024,
-        meshlet_buffer_offset / 1024 / 1024,
-        meshlet_vertex_indices_offset / 1024 / 1024,
-        meshlet_vertex_primitive_indices_offset / 1024 / 1024,
-        meshlet_bounds_buffer_offset / 1024 / 1024
     );
 
     populate_materials(scene, global_texture_descriptor_set, device);
