@@ -20,11 +20,23 @@ layout(push_constant, std430) uniform pc {
     float bloom_strength;
     uint tonemapping_type;
 
-    float key_value;
-    float min_exposure;
-    float max_exposure;
+    float min_ev100;
+    float max_ev100;
     uint enable_auto_exposure;
+
+    float manual_ev100;
+    float exposure_compensation;
 } push;
+
+float ev100_from_average_luminance(float lum) {
+    return log2(lum * 100.0f / 12.5f);
+}
+
+float ev100_to_exposure(float ev100) {
+    float max_luminance = 1.2f * pow(2.0f, ev100);
+
+    return 1.0f / max_luminance;
+}
 
 void main() {
     ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
@@ -38,17 +50,20 @@ void main() {
 
     vec3 scene = texture(scene_texture, uv).rgb;
     vec3 bloom = texture(bloom_texture, uv).rgb;
-    float luminance = imageLoad(average_luminance_texture, ivec2(0, 0)).x;
-
     vec3 color = mix(scene, bloom, push.bloom_strength);
 
+    float ev100 = 0.0;
     if (push.enable_auto_exposure == 1) {
-        float exposure = push.key_value / max(luminance, 0.001);
-        exposure = clamp(exposure, push.min_exposure, push.max_exposure);
+        float luminance = imageLoad(average_luminance_texture, ivec2(0, 0)).x;
 
-        color *= exposure;
+        ev100 = ev100_from_average_luminance(luminance);
+    } else {
+        ev100 = push.manual_ev100 - 14.0;
     }
 
+    float exposure = ev100_to_exposure(ev100 - push.exposure_compensation);
+
+    color *= exposure;
     vec3 tonemapped = vec3(0.0);
     if (push.tonemapping_type == 0) {
         tonemapped = aces_film(color);

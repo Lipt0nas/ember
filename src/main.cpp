@@ -411,10 +411,12 @@ struct CompositePushConstants {
     float    bloom_strength;
     uint32_t tonemapping_type;
 
-    float key_value;
-    float min_exposure;
-    float max_exposure;
+    float min_ev100;
+    float max_ev100;
     uint  enable_auto_exposure;
+
+    float manual_ev100;
+    float exposure_compensation;
 };
 
 struct BloomPushConstants {
@@ -1903,6 +1905,10 @@ int main(int argc, char* argv[]) {
     float camera_speed_mod         = 2.5f;
     float camera_speed             = base_camera_speed;
 
+    float camera_aperture     = 8.0f;
+    float camera_shutter_time = 1.0f / 60.0f;
+    float camera_iso          = 100.0f;
+
     bool      capturing_mouse = false;
     glm::vec2 mouse_pos       = {};
 
@@ -2436,12 +2442,13 @@ int main(int argc, char* argv[]) {
         allocate_descriptor_sets(device, descriptor_pool, composite_pipeline);
 
     CompositePushConstants composite_push_constants{
-        .bloom_strength       = 0.04f,
-        .tonemapping_type     = 1,
-        .key_value            = 0.18f,
-        .min_exposure         = 0.1f,
-        .max_exposure         = 10.0f,
-        .enable_auto_exposure = true,
+        .bloom_strength        = 0.04f,
+        .tonemapping_type      = 1,
+        .min_ev100             = -4.0f,
+        .max_ev100             = 16.0f,
+        .enable_auto_exposure  = true,
+        .manual_ev100          = 0.0f,
+        .exposure_compensation = 0.0f,
     };
 
     std::vector<uint32_t> dynamic_offsets;
@@ -4926,6 +4933,10 @@ int main(int argc, char* argv[]) {
             .reads_storage_image(average_luminance_image, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(composite_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                float manual_ev100 =
+                    glm::log2((camera_aperture * camera_aperture) / camera_shutter_time * 100.0 / camera_iso);
+                composite_push_constants.manual_ev100 = manual_ev100;
+
                 vkCmdBindPipeline(command_buffer, composite_pipeline.bind_point, composite_pipeline.pipeline_handle);
                 vkCmdBindDescriptorSets(
                     command_buffer,
@@ -5786,13 +5797,49 @@ int main(int argc, char* argv[]) {
             ImGui::SliderInt("Bloom Levels", &bloom_levels, 0, bloom_buffer.levels);
 
             ImGui::SeparatorText("Post Process");
-            ImGui::Checkbox("Auto Exposure", (bool*)&composite_push_constants.enable_auto_exposure);
-            ImGui::SliderFloat("Min Log Luminance", &min_log_lum, -16.0f, 0.0f, "%.1f");
-            ImGui::SliderFloat("Max Log Luminance", &max_log_lum, 0.0f, 8.0f, "%.1f");
-            ImGui::SliderFloat("Key Value", &composite_push_constants.key_value, 0.05f, 2.0f, "%.2f");
-            ImGui::SliderFloat("Min Exposure", &composite_push_constants.min_exposure, 0.05f, 20.0f, "%.2f");
-            ImGui::SliderFloat("Max Exposure", &composite_push_constants.max_exposure, 0.05f, 50.0f, "%.2f");
-            ImGui::SliderFloat("Adaptation Speed", &adaption_speed, 0.1f, 5.0f, "%.2f");
+
+            ImGui::Checkbox("Enable Auto Exposure", (bool*)&composite_push_constants.enable_auto_exposure);
+            ImGui::SliderFloat(
+                "EV Compensation", &composite_push_constants.exposure_compensation, -3.0f, 3.0f, "%.2f EV"
+            );
+
+            if (!composite_push_constants.enable_auto_exposure) {
+                ImGui::Separator();
+                ImGui::Text("Manual Exposure Settings");
+
+                if (ImGui::SliderFloat("Aperture", &camera_aperture, 1.0f, 22.0f, "f/%.1f")) {
+                    const float f_stops[] = {1.4f, 2.0f, 2.8f, 4.0f, 5.6f, 8.0f, 11.0f, 16.0f, 22.0f};
+                    float       closest   = f_stops[0];
+                    float       min_dist  = fabsf(camera_aperture - closest);
+                    for (float stop : f_stops) {
+                        float dist = fabsf(camera_aperture - stop);
+                        if (dist < min_dist) {
+                            min_dist = dist;
+                            closest  = stop;
+                        }
+                    }
+                    if (min_dist < 0.2f) {
+                        camera_aperture = closest;
+                    }
+                }
+
+                float shutter_log = -log2f(camera_shutter_time);
+                if (ImGui::SliderFloat(
+                        "Shutter Speed", &shutter_log, 0.0f, 13.0f, "1/%.0f", ImGuiSliderFlags_Logarithmic
+                    )) {
+                    camera_shutter_time = powf(2.0f, -shutter_log);
+                }
+
+                ImGui::SliderFloat("ISO", &camera_iso, 100.0f, 6400.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+            } else {
+                ImGui::SliderFloat("Min Log Luminance", &min_log_lum, -16.0f, 0.0f, "%.1f");
+                ImGui::SliderFloat("Max Log Luminance", &max_log_lum, 0.0f, 8.0f, "%.1f");
+
+                ImGui::SliderFloat("Min EV100", &composite_push_constants.min_ev100, -10.0f, 10.0f, "%.1f");
+                ImGui::SliderFloat("Max EV100", &composite_push_constants.max_ev100, -5.0f, 20.0f, "%.1f");
+                ImGui::SliderFloat("Adaptation Speed", &adaption_speed, 0.1f, 10.0f, "%.1f");
+            }
+
             ImGui::Checkbox("Use GT5 tonemapping", (bool*)&composite_push_constants.tonemapping_type);
         }
         ImGui::End();
