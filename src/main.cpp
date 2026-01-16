@@ -1819,7 +1819,10 @@ int main(int argc, char* argv[]) {
     );
     bool player_physics = false;
 
-    float physics_fling_modifier = 100.0f;
+    float physics_spawn_mass        = 0.2f;
+    float physics_spawn_restitution = 0.2f;
+    float physics_spawn_friction    = 0.3f;
+    float physics_fling_modifier    = 100.0f;
 
     const float physics_delta_time       = 1.0f / 60.0f;
     float       physics_time_accumulator = 0.0f;
@@ -5628,6 +5631,9 @@ int main(int argc, char* argv[]) {
 
         if (ImGui::CollapsingHeader("Physics")) {
             ImGui::InputFloat("Physics Fling Modifier", &physics_fling_modifier);
+            ImGui::InputFloat("Physics Spawn Mass", &physics_spawn_mass);
+            ImGui::SliderFloat("Physics Spawn Restitution", &physics_spawn_restitution, 0.0f, 1.0f);
+            ImGui::SliderFloat("Physics Spawn Friction", &physics_spawn_friction, 0.0f, 1.0f);
 
             if (ImGui::Checkbox("Enable Player Physics", &player_physics)) {
                 if (player_physics) {
@@ -6196,12 +6202,13 @@ int main(int argc, char* argv[]) {
                     }
 
                     body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
-                    body_settings.mMassPropertiesOverride.mMass = 0.2f;
+                    body_settings.mMassPropertiesOverride.mMass = physics_spawn_mass;
 
                     JPH::BodyID body_id =
                         physics_body_interface.CreateAndAddBody(body_settings, JPH::EActivation::Activate);
                     physics_body_interface.SetLinearVelocity(body_id, JPH::Vec3(ray_dir.x, ray_dir.y, ray_dir.z) * 10);
-                    physics_body_interface.SetFriction(body_id, 1.0f);
+                    physics_body_interface.SetFriction(body_id, physics_spawn_mass);
+                    physics_body_interface.SetRestitution(body_id, physics_spawn_restitution);
 
                     scene.instances.push_back(new_instance);
                     scene.dynamic_bodies.push_back(
