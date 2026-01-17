@@ -57,7 +57,7 @@ void copy_buffer(
     size_t          data_size,
     VkDeviceSize    dst_buffer_offset
 ) {
-    if (data_size + dst_buffer_offset >= dst_buffer.size) {
+    if (data_size + dst_buffer_offset > dst_buffer.size) {
         spdlog::error(
             "Attempted out of bounds buffer write, size={}, remaining space={}",
             data_size,

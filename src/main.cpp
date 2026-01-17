@@ -1141,7 +1141,7 @@ int main(int argc, char* argv[]) {
         VK_FORMAT_R16G16B16A16_SFLOAT,
         swapchain.width,
         swapchain.height,
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
         false,
         vma_allocator,
@@ -1722,6 +1722,51 @@ int main(int argc, char* argv[]) {
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
 
+    const int particle_count           = 10000;
+    Buffer    particle_position_buffer = create_buffer(
+        sizeof(glm::vec3) * particle_count,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        vma_allocator
+    );
+    Buffer particle_velocity_buffer = create_buffer(
+        sizeof(glm::vec3) * particle_count,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        vma_allocator
+    );
+
+    {
+        std::vector<glm::vec3> positions(particle_count);
+        std::vector<glm::vec3> velocities(particle_count);
+        for (int i = 0; i < positions.size(); i++) {
+            positions[i]  = glm::ballRand(20.0f);
+            velocities[i] = glm::ballRand(20.0f);
+        }
+
+        copy_to_buffer(staging_buffer, vma_allocator, positions.data(), sizeof(glm::vec3) * positions.size());
+        copy_buffer(
+            staging_buffer,
+            particle_position_buffer,
+            command_buffers[0],
+            graphics_queue,
+            device,
+            nullptr,
+            sizeof(glm::vec3) * positions.size(),
+            0
+        );
+
+        copy_to_buffer(staging_buffer, vma_allocator, velocities.data(), sizeof(glm::vec3) * velocities.size());
+        copy_buffer(
+            staging_buffer,
+            particle_velocity_buffer,
+            command_buffers[0],
+            graphics_queue,
+            device,
+            nullptr,
+            sizeof(glm::vec3) * velocities.size(),
+            0
+        );
+    }
+
     DebugRendererConstants debug_renderer_constants = {};
     DebugRenderer          debug_renderer           = create_debug_renderer(
         lighting_ubo_buffer,
@@ -1927,6 +1972,8 @@ int main(int argc, char* argv[]) {
     glm::vec3 transform_snap        = glm::vec3(1.0f);
     int       grabbed_mesh          = -1;
     glm::vec2 grab_origin           = {};
+
+    bool enable_partices = false;
 
     bool                                        editor_mode = true;
     std::map<std::string, EditorViewportSource> editor_viewport_source_handles;
@@ -4439,6 +4486,173 @@ int main(int argc, char* argv[]) {
                 vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
             });
 
+    Pipeline particle_update_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/particle_update.comp.spv"),
+        {
+            DescriptorLayout{
+                .bindings = {
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                        .write_info = DescriptorInfo(particle_position_buffer.handle)
+                    },
+                    DescriptorBinding{
+                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                        .write_info = DescriptorInfo(particle_velocity_buffer.handle)
+                    },
+                },
+            },
+        }
+    );
+    std::vector<VkDescriptorSet> particle_update_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, particle_update_pipeline);
+
+    auto& particle_update_pass =
+        framegraph.add_pass("particle update")
+            .writes_buffer(
+                particle_velocity_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+            )
+            .reads_buffer(
+                particle_position_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+            )
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                if (!enable_partices) {
+                    return;
+                }
+
+                const Pipeline& pipeline = particle_update_pipeline;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    particle_update_descriptor_sets.size(),
+                    particle_update_descriptor_sets.data(),
+                    0,
+                    nullptr
+                );
+                vkCmdPushConstants(command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, 0, nullptr);
+
+                vkCmdDispatch(command_buffer, (particle_count + 255) / 256, 1, 1);
+            });
+
+    Pipeline particle_render_pipeline = create_graphics_pipeline(
+        device,
+        {
+            shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/particle_render.vert.spv"),
+            shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/particle_render.frag.spv"),
+        },
+        {
+            scene_data_layout,
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(particle_position_buffer.handle)
+                        },
+                    }
+            },
+
+        },
+        {
+            lightpass_output.format,
+        },
+        depth_buffer.format
+    );
+
+    std::vector<VkDescriptorSet> particle_render_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, particle_render_pipeline);
+
+    auto& particle_render_pass =
+        framegraph.add_pass("particle render")
+            .writes_color_attachment(lightpass_output)
+            .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT)
+            .reads_buffer_dynamic(
+                scene_ubo_buffer,
+                VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer(
+                particle_position_buffer,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT
+            )
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                if (!enable_partices) {
+                    return;
+                }
+
+                std::array<uint32_t, 1> offsets = {dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)]};
+
+                auto& pipeline = particle_render_pipeline;
+
+                VkRenderingAttachmentInfo color_attachment = {
+                    .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                    .pNext              = nullptr,
+                    .imageView          = lightpass_output.view,
+                    .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    .resolveMode        = VK_RESOLVE_MODE_NONE,
+                    .resolveImageView   = VK_NULL_HANDLE,
+                    .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
+                    .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                    .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                };
+
+                VkRenderingAttachmentInfo depth_attachment = {
+                    .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                    .pNext              = nullptr,
+                    .imageView          = depth_buffer.view,
+                    .imageLayout        = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    .resolveMode        = VK_RESOLVE_MODE_NONE,
+                    .resolveImageView   = VK_NULL_HANDLE,
+                    .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
+                    .storeOp            = VK_ATTACHMENT_STORE_OP_NONE,
+                    .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                };
+
+                VkRenderingInfo rendering_info = {
+                    .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .renderArea =
+                        {
+                            .offset = {.x = 0, .y = 0},
+                            .extent = {.width = swapchain.width, .height = swapchain.height},
+                        },
+                    .layerCount           = 1,
+                    .viewMask             = 0,
+                    .colorAttachmentCount = 1,
+                    .pColorAttachments    = &color_attachment,
+                    .pDepthAttachment     = &depth_attachment,
+                    .pStencilAttachment   = nullptr
+                };
+
+                vkCmdBeginRendering(command_buffer, &rendering_info);
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    pipeline.bind_point,
+                    pipeline.pipeline_layout,
+                    0,
+                    particle_render_descriptor_sets.size(),
+                    particle_render_descriptor_sets.data(),
+                    offsets.size(),
+                    offsets.data()
+                );
+
+                vkCmdDraw(command_buffer, particle_count * 6, 1, 0, 0);
+
+                vkCmdEndRendering(command_buffer);
+            });
+
     Pipeline luminance_histogram_pipeline = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/luminance_histogram.comp.spv"),
@@ -5709,6 +5923,7 @@ int main(int argc, char* argv[]) {
         ImGui::End();
 
         ImGui::Begin("Configuration");
+        ImGui::Checkbox("Enable Particles", &enable_partices);
         if (ImGui::CollapsingHeader("Renderer Info", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
             ImGui::Text("Objects: %lu", scene.instances.size());
