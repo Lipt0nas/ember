@@ -1903,9 +1903,6 @@ int main(int argc, char* argv[]) {
         auto view = scene.entity_registry.view<components::Mesh>();
         for (auto& e : view) {
             auto& c = view.get<components::Mesh>(e);
-
-            spdlog::info("? {}", c.mesh.mesh_id);
-
             mesh_instances.push_back(c.mesh);
             mesh_instance_entities.push_back(e);
         }
@@ -5876,28 +5873,7 @@ int main(int argc, char* argv[]) {
             viewport_pos_size = glm::vec4(0, 0, swapchain.width, swapchain.height);
         }
 
-        ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_NoTitleBar);
-        if (ImGui::CollapsingHeader("Transform Gizmo")) {
-            ImGui::Checkbox("Enable Transform Snap", &enable_transform_snap);
-
-            if (ImGui::InputFloat("Transform Snap", &transform_snap.x, 1.0f)) {
-                transform_snap = glm::vec3(transform_snap.x);
-            }
-        }
-
-        if (ImGui::CollapsingHeader("Physics")) {
-            ImGui::InputFloat("Physics Fling Modifier", &physics_fling_modifier);
-            ImGui::InputFloat("Physics Spawn Mass", &physics_spawn_mass);
-            ImGui::SliderFloat("Physics Spawn Restitution", &physics_spawn_restitution, 0.0f, 1.0f);
-            ImGui::SliderFloat("Physics Spawn Friction", &physics_spawn_friction, 0.0f, 1.0f);
-
-            if (ImGui::Checkbox("Enable Player Physics", &player_physics)) {
-                if (player_physics) {
-                    player_character->SetPosition(JPH::RVec3(camera.position.x, camera.position.y, camera.position.z));
-                }
-            }
-        }
-
+        ImGui::Begin("Node Properties");
         if (selected_entity != entt::null) {
             auto* m = scene_get_component<components::Mesh>(scene, selected_entity);
 
@@ -6069,7 +6045,7 @@ int main(int argc, char* argv[]) {
             ImGui::SliderInt("Bloom Levels", &bloom_levels, 0, bloom_buffer.levels);
 
             ImGui::SeparatorText("Post Process");
-
+            ImGui::Checkbox("Use GT5 tonemapping", (bool*)&composite_push_constants.tonemapping_type);
             ImGui::Checkbox("Enable Auto Exposure", (bool*)&composite_push_constants.enable_auto_exposure);
             ImGui::SliderFloat(
                 "EV Compensation", &composite_push_constants.exposure_compensation, -3.0f, 3.0f, "%.2f EV"
@@ -6111,8 +6087,60 @@ int main(int argc, char* argv[]) {
                 ImGui::SliderFloat("Max EV100", &composite_push_constants.max_ev100, -5.0f, 20.0f, "%.1f");
                 ImGui::SliderFloat("Adaptation Speed", &adaption_speed, 0.1f, 10.0f, "%.1f");
             }
+        }
 
-            ImGui::Checkbox("Use GT5 tonemapping", (bool*)&composite_push_constants.tonemapping_type);
+        if (ImGui::CollapsingHeader("Transform Gizmo")) {
+            ImGui::Checkbox("Enable Transform Snap", &enable_transform_snap);
+
+            if (ImGui::InputFloat("Transform Snap", &transform_snap.x, 1.0f)) {
+                transform_snap = glm::vec3(transform_snap.x);
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Physics")) {
+            ImGui::InputFloat("Fling Modifier", &physics_fling_modifier);
+            ImGui::InputFloat("Spawn Mass", &physics_spawn_mass);
+            ImGui::SliderFloat("Spawn Restitution", &physics_spawn_restitution, 0.0f, 1.0f);
+            ImGui::SliderFloat("Spawn Friction", &physics_spawn_friction, 0.0f, 1.0f);
+
+            if (ImGui::Checkbox("Enable Player Physics", &player_physics)) {
+                if (player_physics) {
+                    player_character->SetPosition(JPH::RVec3(camera.position.x, camera.position.y, camera.position.z));
+                }
+            }
+        }
+        ImGui::End();
+
+        ImGui::Begin("Scene Hierarchy");
+        if (ImGui::BeginPopupContextItem()) {
+            if (ImGui::MenuItem("Create Node")) {
+                scene_create_entity(scene, "New Node");
+            }
+            ImGui::EndPopup();
+        }
+
+        auto view = scene.entity_registry.view<components::Transform, components::Name>();
+        for (auto [e, t, n] : view.each()) {
+            ImGuiTreeNodeFlags flags =
+                ((selected_entity == e) ? ImGuiTreeNodeFlags_Selected : 0) | ImGuiTreeNodeFlags_OpenOnArrow;
+            flags |= ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnDoubleClick;
+            flags |= ImGuiTreeNodeFlags_Leaf;
+
+            ImGui::PushID((uint64_t)e);
+            bool opened = ImGui::TreeNodeEx(&e, flags, "%s", n.name.c_str());
+            ImGui::PopID();
+
+            if (ImGui::IsItemClicked()) {
+                selected_entity = e;
+            }
+
+            if (opened) {
+                ImGui::TreePop();
+            }
+        }
+
+        if (ImGui::IsMouseDown(0) && ImGui::IsWindowHovered()) {
+            selected_entity = entt::null;
         }
         ImGui::End();
 
