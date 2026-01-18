@@ -80,7 +80,8 @@ void generate_tangents(std::vector<Vertex>& vertices, const std::vector<uint32_t
     }
 }
 
-Scene load_scene(
+void load_scene(
+    Scene&                       scene,
     const std::filesystem::path& path,
     const Buffer&                staging_buffer,
     const Buffer&                vertex_buffer,
@@ -129,13 +130,10 @@ Scene load_scene(
     std::map<uint32_t, int> local_texture_cache;
     std::map<uint32_t, int> local_sampler_cache;
 
-    std::vector<ImageResource> loaded_images;
-    std::vector<Sampler>       samplers;
-    std::vector<Material>      materials(model.materials.size());
-    std::vector<Mesh>          meshes;
+    scene.materials.resize(model.materials.size());
 
     spdlog::info("Loading {} samplers", model.samplers.size());
-    samplers.push_back(create_sampler(
+    scene.samplers.push_back(create_sampler(
         VK_FILTER_LINEAR,
         VK_FILTER_LINEAR,
         VK_SAMPLER_MIPMAP_MODE_LINEAR,
@@ -198,14 +196,13 @@ Scene load_scene(
         auto vk_wrap_s = to_vk_wrap(wrap_s);
         auto vk_wrap_t = to_vk_wrap(wrap_t);
 
-        local_sampler_cache.insert({i, samplers.size()});
-        samplers.push_back(create_sampler(
+        local_sampler_cache.insert({i, scene.samplers.size()});
+        scene.samplers.push_back(create_sampler(
             vk_mag, vk_min, mipmap_mode, vk_wrap_s, vk_wrap_t, VK_SAMPLER_ADDRESS_MODE_REPEAT, 16.0f, device
         ));
     }
 
-    spdlog::info("Loading {} materials", materials.size());
-
+    spdlog::info("Loading {} materials", scene.materials.size());
     void* staging_buffer_ptr = nullptr;
     VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
     for (int i = 0; i < model.materials.size(); i++) {
@@ -259,7 +256,7 @@ Scene load_scene(
                 copy_image(staging_buffer, image, true, command_buffer, queue, device);
 
                 local_texture_cache.insert({image_index, local_texture_cache.size() + 1});
-                loaded_images.push_back(
+                scene.images.push_back(
                     ImageResource{
                         .image         = image,
                         .sampler_index = sampler_index,
@@ -277,20 +274,21 @@ Scene load_scene(
         uint32_t normals_index  = upload_texture(mat.normalTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
         uint32_t emissive_index = upload_texture(mat.emissiveTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
 
-        materials[i].albedo_index     = albedo_index;
-        materials[i].normals_index    = normals_index;
-        materials[i].material_index   = material_index;
-        materials[i].emissive_index   = emissive_index;
-        materials[i].roughness_factor = mat.pbrMetallicRoughness.roughnessFactor;
-        materials[i].metallic_factor  = mat.pbrMetallicRoughness.metallicFactor;
-        materials[i].emissive_factor  = glm::vec3(mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
-        materials[i].albedo_factor    = glm::vec4(
+        scene.materials[i].albedo_index     = albedo_index;
+        scene.materials[i].normals_index    = normals_index;
+        scene.materials[i].material_index   = material_index;
+        scene.materials[i].emissive_index   = emissive_index;
+        scene.materials[i].roughness_factor = mat.pbrMetallicRoughness.roughnessFactor;
+        scene.materials[i].metallic_factor  = mat.pbrMetallicRoughness.metallicFactor;
+        scene.materials[i].emissive_factor =
+            glm::vec3(mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
+        scene.materials[i].albedo_factor = glm::vec4(
             mat.pbrMetallicRoughness.baseColorFactor[0],
             mat.pbrMetallicRoughness.baseColorFactor[1],
             mat.pbrMetallicRoughness.baseColorFactor[2],
             mat.pbrMetallicRoughness.baseColorFactor[3]
         );
-        materials[i].normal_scale = mat.normalTexture.scale;
+        scene.materials[i].normal_scale = mat.normalTexture.scale;
     }
 
     int                         current_entry = 0;
@@ -798,7 +796,7 @@ Scene load_scene(
 
             spdlog::debug("Loaded mesh {} with vertices={}, indices={}", m, vertices.size(), indices.size());
 
-            meshes.push_back(mesh);
+            scene.meshes.push_back(mesh);
 
             current_entry++;
         }
@@ -806,17 +804,13 @@ Scene load_scene(
 
     vmaUnmapMemory(allocator, staging_buffer.allocation);
 
-    std::vector<MeshInstance>  instances;
-    std::vector<PhysicsObject> static_bodies;
-    std::vector<PhysicsObject> dynamic_bodies;
-
     spdlog::info("Scene count: {}", model.scenes.size());
     int scene_id = model.defaultScene >= 0 ? model.defaultScene : (model.scenes.size() >= 1 ? 0 : -1);
     if (scene_id != -1) {
         spdlog::info("Constructing scene");
-        const tinygltf::Scene& scene = model.scenes[scene_id];
+        const tinygltf::Scene& gltf_scene = model.scenes[scene_id];
 
-        for (int node_id : scene.nodes) {
+        for (int node_id : gltf_scene.nodes) {
             ZoneScopedN("Parse Scene Node");
             const auto& node = model.nodes[node_id];
             if (node.mesh <= -1)
@@ -848,14 +842,20 @@ Scene load_scene(
             for (int i = 0; i < mesh.primitives.size(); i++) {
                 int mesh_id = mesh_primitive_offsets[node.mesh] + i;
 
-                MeshInstance instance = {
-                    .mesh_id     = mesh_id,
-                    .material_id = mesh.primitives[i].material,
-                    .position    = position,
-                    .scale       = scale,
-                    .rotation    = rotation,
+                auto entity         = scene_create_entity(scene, node.name);
+                auto transform      = scene_get_component<components::Transform>(scene, entity);
+                transform->position = position;
+                transform->scale    = scale;
+                transform->rotation = rotation;
+
+                auto& mesh_component = scene_add_component<components::Mesh>(scene, entity);
+                mesh_component.mesh  = {
+                     .mesh_id     = mesh_id,
+                     .material_id = mesh.primitives[i].material,
+                     .position    = position,
+                     .scale       = scale,
+                     .rotation    = rotation,
                 };
-                instances.push_back(instance);
 
                 JPH::ShapeRefC final_shape;
                 if (scale != 1.0f) {
@@ -878,49 +878,25 @@ Scene load_scene(
                 JPH::Body* body = body_interface.CreateBody(body_settings);
                 if (body) {
                     body_interface.AddBody(body->GetID(), JPH::EActivation::DontActivate);
-                    static_bodies.push_back(
-                        PhysicsObject{
-                            .body_id     = body->GetID(),
-                            .drawcall_id = static_cast<int>(instances.size() - 1),
-                        }
-                    );
-                }
-            }
-        }
 
-        if (instances.size() == 0) {
-            for (int m = 0; m < model.meshes.size(); m++) {
-                auto& mesh = model.meshes[m];
-                for (int i = 0; i < mesh.primitives.size(); i++) {
-                    int mesh_id = mesh_primitive_offsets[m] + i;
-
-                    auto rot = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0));
-                    rot *= glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
-
-                    MeshInstance instance = {
-                        .mesh_id     = mesh_id,
-                        .material_id = mesh.primitives[i].material,
-                        .position    = {0, 0, 0},
-                        .scale       = 0.01,
-                        .rotation    = rot,
-                    };
-                    instances.push_back(instance);
+                    auto& physics     = scene_add_component<components::Physics>(scene, entity);
+                    physics.body_id   = body->GetID();
+                    physics.is_static = true;
                 }
             }
         }
     } else {
-        spdlog::warn("No eligibles scenes found");
+        spdlog::warn("Could not find a scene to load instances from");
     }
+}
 
-    return Scene{
-        .meshes         = meshes,
-        .images         = loaded_images,
-        .samplers       = samplers,
-        .materials      = materials,
-        .instances      = instances,
-        .static_bodies  = static_bodies,
-        .dynamic_bodies = dynamic_bodies,
-    };
+Entity scene_create_entity(Scene& scene, const std::string& name) {
+    Entity e = scene.entity_registry.create();
+
+    scene.entity_registry.emplace<components::Name>(e, name);
+    scene.entity_registry.emplace<components::Transform>(e);
+
+    return e;
 }
 
 void destroy_scene(const Scene& scene, VkDevice device, VmaAllocator allocator) {

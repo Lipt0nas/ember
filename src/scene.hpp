@@ -1,5 +1,6 @@
 #pragma once
 
+#include "components.hpp"
 #include "ember.hpp"
 #include "geometry.hpp"
 #include "physics.hpp"
@@ -12,19 +13,29 @@ struct ImageResource {
     int   sampler_index;
 };
 
+using Entity = entt::entity;
+
 struct Scene {
     std::vector<Mesh>          meshes;
     std::vector<ImageResource> images;
     std::vector<Sampler>       samplers;
     std::vector<Material>      materials;
 
-    std::vector<MeshInstance> instances;
-
-    std::vector<PhysicsObject> static_bodies;
-    std::vector<PhysicsObject> dynamic_bodies;
+    entt::registry entity_registry;
 };
 
-Scene load_scene(
+Entity scene_create_entity(Scene& scene, const std::string& name = "");
+
+template <typename T, typename... Args> T& scene_add_component(Scene& scene, Entity entity, Args&&... args) {
+    return scene.entity_registry.emplace<T>(entity, std::forward<Args>(args)...);
+}
+
+template <typename T> T* scene_get_component(Scene& scene, Entity entity) {
+    return scene.entity_registry.try_get<T>(entity);
+}
+
+void load_scene(
+    Scene&                       scene,
     const std::filesystem::path& path,
     const Buffer&                staging_buffer,
     const Buffer&                vertex_buffer,

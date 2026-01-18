@@ -147,9 +147,17 @@ FetchContent_Declare(
         JoltPhysics
         GIT_REPOSITORY "https://github.com/jrouwe/JoltPhysics"
         GIT_TAG "v5.5.0"
+        GIT_SHALLOW TRUE
 		SOURCE_SUBDIR "Build"
 )
 FetchContent_MakeAvailable(JoltPhysics)
+
+FetchContent_Declare(
+  entt
+  GIT_REPOSITORY https://github.com/skypjack/entt
+  GIT_TAG v3.16.0 
+  GIT_SHALLOW TRUE
+)
 
 FetchContent_MakeAvailable(
     glm
@@ -165,6 +173,7 @@ FetchContent_MakeAvailable(
     implot
     tracy
     JoltPhysics
+    entt
 )
 
 add_library(imgui STATIC
@@ -235,6 +244,7 @@ target_link_libraries(Ember PRIVATE
     imguizmo
     TracyClient
     Jolt
+    EnTT::EnTT
 )
 
 # TODO: temporary convenience
