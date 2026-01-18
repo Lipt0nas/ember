@@ -1876,7 +1876,9 @@ int main(int argc, char* argv[]) {
 
     std::string load_path = args.get_arg<std::string>("s", "data/models/room2.glb");
 
-    Scene scene = load_scene(
+    Scene scene = {};
+    load_scene(
+        scene,
         load_path,
         staging_buffer,
         global_vertex_buffer,
@@ -1894,6 +1896,21 @@ int main(int argc, char* argv[]) {
         command_buffers[0]
     );
 
+    // This is updated by a system at the beginning of a frame
+    std::vector<MeshInstance> mesh_instances;
+    std::vector<Entity>       mesh_instance_entities;
+    {
+        auto view = scene.entity_registry.view<components::Mesh>();
+        for (auto& e : view) {
+            auto& c = view.get<components::Mesh>(e);
+
+            spdlog::info("? {}", c.mesh.mesh_id);
+
+            mesh_instances.push_back(c.mesh);
+            mesh_instance_entities.push_back(e);
+        }
+    }
+
     populate_materials(scene, global_texture_descriptor_set, device);
 
     RTScene rt_scene = {};
@@ -1909,7 +1926,7 @@ int main(int argc, char* argv[]) {
             10000,
             FRAMES_IN_FLIGHT,
             scene.meshes,
-            scene.instances,
+            mesh_instances,
             get_buffer_device_address(global_vertex_buffer, device),
             get_buffer_device_address(global_index_buffer, device)
         );
@@ -1928,7 +1945,7 @@ int main(int argc, char* argv[]) {
 
     std::unordered_map<uint32_t, VkDescriptorSet> imgui_material_image_handles;
     {
-        uint32_t slot = 0;
+        uint32_t slot = 1;
         for (auto& image : scene.images) {
             imgui_material_image_handles.insert({slot++, imgui_image_handle(image.image, nearest_sampler)});
         }
@@ -1970,7 +1987,7 @@ int main(int argc, char* argv[]) {
 
     bool      enable_transform_snap = false;
     glm::vec3 transform_snap        = glm::vec3(1.0f);
-    int       grabbed_mesh          = -1;
+    Entity    selected_entity       = entt::null;
     glm::vec2 grab_origin           = {};
 
     bool enable_partices = false;
@@ -2538,7 +2555,7 @@ int main(int argc, char* argv[]) {
         framegraph.add_pass("RT structure rebuild")
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 rebuild_tlas(
-                    rt_scene, device, vma_allocator, command_buffer, frame_index, scene.meshes, scene.instances
+                    rt_scene, device, vma_allocator, command_buffer, frame_index, scene.meshes, mesh_instances
                 );
             });
 
@@ -2590,7 +2607,7 @@ int main(int argc, char* argv[]) {
                     offsets.data()
                 );
 
-                cull_push_constants.draw_count = static_cast<uint32_t>(scene.instances.size());
+                cull_push_constants.draw_count = static_cast<uint32_t>(mesh_instances.size());
                 vkCmdPushConstants(
                     command_buffer,
                     cull_pipeline.pipeline_layout,
@@ -2600,7 +2617,7 @@ int main(int argc, char* argv[]) {
                     &cull_push_constants
                 );
 
-                vkCmdDispatch(command_buffer, (scene.instances.size() + 255) / 256, 1, 1);
+                vkCmdDispatch(command_buffer, (mesh_instances.size() + 255) / 256, 1, 1);
             });
 
     auto gbuffer_pass =
@@ -2787,7 +2804,7 @@ int main(int argc, char* argv[]) {
                         offsets[1] + sizeof(uint32_t),
                         indirect_command_buffer.handle,
                         offsets[1],
-                        scene.instances.size(),
+                        mesh_instances.size(),
                         sizeof(MeshIndirectDrawCommand)
                     );
                 } else {
@@ -2799,7 +2816,7 @@ int main(int argc, char* argv[]) {
                         offsets[1] + sizeof(uint32_t),
                         indirect_command_buffer.handle,
                         offsets[1],
-                        scene.instances.size(),
+                        mesh_instances.size(),
                         sizeof(VkDrawIndexedIndirectCommand) + sizeof(uint32_t)
                     );
                 }
@@ -5664,50 +5681,75 @@ int main(int argc, char* argv[]) {
             running = false;
         }
 
-        while (physics_time_accumulator >= physics_delta_time) {
-            for (auto& body : scene.dynamic_bodies) {
-                JPH::Vec3 p;
-                JPH::Quat r;
-                physics_body_interface.GetPositionAndRotation(body.body_id, p, r);
-
-                body.last_position = p;
-                body.last_rotation = r;
+        {
+            mesh_instances.clear();
+            mesh_instance_entities.clear();
+            auto view = scene.entity_registry.view<components::Mesh>();
+            for (auto& e : view) {
+                auto& c = view.get<components::Mesh>(e);
+                mesh_instances.push_back(c.mesh);
+                mesh_instance_entities.push_back(e);
             }
-
-            physics_system.Update(physics_delta_time, 1, &physics_temp_allocator, &physics_job_system);
-            physics_time_accumulator -= physics_delta_time;
         }
 
-        float physics_alpha = physics_time_accumulator / physics_delta_time;
-        for (const auto& body : scene.dynamic_bodies) {
-            if (body.drawcall_id == -1) {
-                continue;
+        {
+            auto update_view = scene.entity_registry.view<components::Transform, components::Physics>();
+
+            while (physics_time_accumulator >= physics_delta_time) {
+                for (auto [entity, transform, physics] : update_view.each()) {
+                    JPH::Vec3 p;
+                    JPH::Quat r;
+                    physics_body_interface.GetPositionAndRotation(physics.body_id, p, r);
+
+                    physics.last_position = p;
+                    physics.last_rotation = r;
+                }
+
+                physics_system.Update(physics_delta_time, 1, &physics_temp_allocator, &physics_job_system);
+                physics_time_accumulator -= physics_delta_time;
             }
 
-            JPH::Vec3 p;
-            JPH::Quat r;
-            physics_body_interface.GetPositionAndRotation(body.body_id, p, r);
+            auto interpolate_view =
+                scene.entity_registry.view<components::Transform, components::Physics, components::Mesh>();
+            float physics_alpha = physics_time_accumulator / physics_delta_time;
+            for (auto [entity, transform, physics, m] : interpolate_view.each()) {
+                if (physics.is_static) {
+                    continue;
+                }
 
-            glm::vec3 new_pos = glm::vec3(p.GetX(), p.GetY(), p.GetZ());
-            glm::quat new_rot = glm::quat(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
+                JPH::Vec3 p;
+                JPH::Quat r;
+                physics_body_interface.GetPositionAndRotation(physics.body_id, p, r);
 
-            glm::vec3 old_pos =
-                glm::vec3(body.last_position.GetX(), body.last_position.GetY(), body.last_position.GetZ());
-            glm::quat old_rot = glm::quat(
-                body.last_rotation.GetX(),
-                body.last_rotation.GetY(),
-                body.last_rotation.GetZ(),
-                body.last_rotation.GetW()
-            );
+                glm::vec3 new_pos = glm::vec3(p.GetX(), p.GetY(), p.GetZ());
+                glm::quat new_rot = glm::quat(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
 
-            MeshInstance& instance = scene.instances[body.drawcall_id];
-            Mesh          mesh     = scene.meshes[instance.mesh_id];
+                glm::vec3 old_pos =
+                    glm::vec3(physics.last_position.GetX(), physics.last_position.GetY(), physics.last_position.GetZ());
+                glm::quat old_rot = glm::quat(
+                    physics.last_rotation.GetX(),
+                    physics.last_rotation.GetY(),
+                    physics.last_rotation.GetZ(),
+                    physics.last_rotation.GetW()
+                );
 
-            glm::vec3 center = (mesh.bounds_max + mesh.bounds_min) * 0.5f;
-            glm::vec3 offset = new_rot * (center * instance.scale);
+                Mesh& geometry = scene.meshes[m.mesh.mesh_id];
 
-            instance.position = glm::mix(old_pos, new_pos, physics_alpha) - offset;
-            instance.rotation = glm::slerp(old_rot, new_rot, physics_alpha);
+                glm::vec3 center = (geometry.bounds_max + geometry.bounds_min) * 0.5f;
+                glm::vec3 offset = new_rot * (center * m.mesh.scale);
+
+                transform.position = glm::mix(old_pos, new_pos, physics_alpha) - offset;
+                transform.rotation = glm::slerp(old_rot, new_rot, physics_alpha);
+            }
+        }
+
+        {
+            auto view = scene.entity_registry.view<components::Transform, components::Mesh>();
+            for (auto [e, t, m] : view.each()) {
+                m.mesh.position = t.position;
+                m.mesh.scale    = t.scale;
+                m.mesh.rotation = t.rotation;
+            }
         }
 
         if (!player_physics) {
@@ -5768,10 +5810,10 @@ int main(int argc, char* argv[]) {
             void* ptr;
             VK_CHECK(vmaMapMemory(vma_allocator, pick_buffer.allocation, &ptr));
             uint32_t mesh_id = *reinterpret_cast<uint32_t*>(ptr);
-            if (mesh_id == UINT32_MAX || mesh_id >= scene.instances.size()) {
-                grabbed_mesh = -1;
+            if (mesh_id == UINT32_MAX || mesh_id >= mesh_instance_entities.size()) {
+                selected_entity = entt::null;
             } else {
-                grabbed_mesh = mesh_id;
+                selected_entity = mesh_instance_entities[mesh_id];
             }
 
             vmaUnmapMemory(vma_allocator, pick_buffer.allocation);
@@ -5856,36 +5898,45 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (ImGui::CollapsingHeader("Material")) {
-            if (grabbed_mesh != -1) {
-                auto& material = scene.materials[scene.instances[grabbed_mesh].material_id];
+        if (selected_entity != entt::null) {
+            auto* m = scene_get_component<components::Mesh>(scene, selected_entity);
 
-                std::vector<uint32_t*> material_indices = {
-                    &material.albedo_index, &material.normals_index, &material.material_index, &material.emissive_index
-                };
+            if (m) {
+                if (ImGui::CollapsingHeader("Material")) {
+                    auto& material = scene.materials[m->mesh.material_id];
 
-                for (auto id : material_indices) {
-                    ImGui::Image(imgui_material_image_handles[*id], ImVec2(50, 50));
-                    if (ImGui::BeginDragDropTarget()) {
-                        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("texture_id");
-                        if (payload) {
-                            *id = *(uint32_t*)payload->Data;
+                    std::vector<uint32_t*> material_indices = {
+                        &material.albedo_index,
+                        &material.normals_index,
+                        &material.material_index,
+                        &material.emissive_index
+                    };
+
+                    for (auto id : material_indices) {
+                        ImGui::Image(imgui_material_image_handles[*id], ImVec2(50, 50));
+                        if (ImGui::BeginDragDropTarget()) {
+                            const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("texture_id");
+                            if (payload) {
+                                *id = *(uint32_t*)payload->Data;
+                            }
+                            ImGui::EndDragDropTarget();
                         }
-                        ImGui::EndDragDropTarget();
+                        ImGui::SameLine();
                     }
-                    ImGui::SameLine();
+
+                    ImGui::NewLine();
+
+                    ImGui::SliderFloat("Roughness Factor", &material.roughness_factor, 0.0, 1.0f);
+                    ImGui::SliderFloat("Metallic Factor", &material.metallic_factor, 0.0, 1.0f);
+                    ImGui::SliderFloat("Normal Scale", &material.normal_scale, 0.0, 1.0f);
+
+                    ImGui::ColorEdit4("Albedo Factor", &material.albedo_factor.x);
+                    ImGui::ColorEdit3(
+                        "Emissive Factor",
+                        &material.emissive_factor.x,
+                        ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR
+                    );
                 }
-
-                ImGui::NewLine();
-
-                ImGui::SliderFloat("Roughness Factor", &material.roughness_factor, 0.0, 1.0f);
-                ImGui::SliderFloat("Metallic Factor", &material.metallic_factor, 0.0, 1.0f);
-                ImGui::SliderFloat("Normal Scale", &material.normal_scale, 0.0, 1.0f);
-
-                ImGui::ColorEdit4("Albedo Factor", &material.albedo_factor.x);
-                ImGui::ColorEdit3(
-                    "Emissive Factor", &material.emissive_factor.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR
-                );
             }
         }
         ImGui::End();
@@ -5926,7 +5977,7 @@ int main(int argc, char* argv[]) {
         ImGui::Checkbox("Enable Particles", &enable_partices);
         if (ImGui::CollapsingHeader("Renderer Info", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
-            ImGui::Text("Objects: %lu", scene.instances.size());
+            ImGui::Text("Objects: %lu", mesh_instances.size());
             ImGui::Text("FPS: %u", fps);
             ImGui::Text("Camera Position: %.3f, %.3f, %.3f", camera.position.x, camera.position.y, camera.position.z);
             ImGui::Text(
@@ -6065,13 +6116,12 @@ int main(int argc, char* argv[]) {
         }
         ImGui::End();
 
-        if (grabbed_mesh != -1) {
-            auto& inst = scene.instances[grabbed_mesh];
-            auto  mesh = scene.meshes[inst.mesh_id];
+        if (selected_entity != entt::null) {
+            auto t = scene_get_component<components::Transform>(scene, selected_entity);
 
-            glm::mat4 transform = glm::translate(glm::mat4(1.0f), inst.position);
-            transform           = transform * glm::mat4_cast(inst.rotation);
-            transform           = glm::scale(transform, glm::vec3(inst.scale));
+            glm::mat4 transform = glm::translate(glm::mat4(1.0f), t->position);
+            transform           = transform * glm::mat4_cast(t->rotation);
+            transform           = glm::scale(transform, glm::vec3(t->scale));
 
             auto      angle      = glm::normalize(glm::eulerAngles(camera.orientation));
             glm::mat4 view       = glm::mat4_cast(camera.orientation);
@@ -6102,46 +6152,31 @@ int main(int argc, char* argv[]) {
                 ImGuizmo::DecomposeMatrixToComponents(&delta_mat[0].x, &position.x, &rotation.x, &scale.x);
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
-                    inst.position += position;
+                    t->position += position;
                 }
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
-                    inst.rotation = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.x), glm::vec3(1, 0, 0)) *
-                                    inst.rotation;
-                    inst.rotation = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.y), glm::vec3(0, 1, 0)) *
-                                    inst.rotation;
-                    inst.rotation = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.z), glm::vec3(0, 0, 1)) *
-                                    inst.rotation;
+                    t->rotation =
+                        glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.x), glm::vec3(1, 0, 0)) * t->rotation;
+                    t->rotation =
+                        glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.y), glm::vec3(0, 1, 0)) * t->rotation;
+                    t->rotation =
+                        glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.z), glm::vec3(0, 0, 1)) * t->rotation;
                 }
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
-                    inst.scale *= scale.x;
+                    t->scale *= scale.x;
                 }
 
-                JPH::BodyID body_id;
-                bool        is_dynamic = false;
+                auto p = scene_get_component<components::Physics>(scene, selected_entity);
 
-                for (auto& body : scene.static_bodies) {
-                    if (body.drawcall_id == grabbed_mesh) {
-                        body_id    = body.body_id;
-                        is_dynamic = false;
-                        break;
-                    }
-                }
+                if (p) {
+                    bool is_dynamic = !p->is_static;
 
-                for (auto& body : scene.dynamic_bodies) {
-                    if (body.drawcall_id == grabbed_mesh) {
-                        body_id    = body.body_id;
-                        is_dynamic = true;
-                        break;
-                    }
-                }
-
-                if (!body_id.IsInvalid()) {
                     JPH::EActivation activation =
                         is_dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
 
-                    auto last_position = physics_body_interface.GetPosition(body_id);
+                    auto last_position = physics_body_interface.GetPosition(p->body_id);
                     auto new_position  = JPH::Vec3(
                         last_position.GetX() + position.x,
                         last_position.GetY() + position.y,
@@ -6149,28 +6184,28 @@ int main(int argc, char* argv[]) {
                     );
 
                     if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
-                        physics_body_interface.SetPosition(body_id, new_position, activation);
+                        physics_body_interface.SetPosition(p->body_id, new_position, activation);
                         if (is_dynamic) {
                             auto velocity = new_position - last_position;
                             velocity *= physics_fling_modifier;
 
-                            physics_body_interface.SetLinearVelocity(body_id, velocity);
+                            physics_body_interface.SetLinearVelocity(p->body_id, velocity);
                         }
                     }
 
                     if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
                         physics_body_interface.SetRotation(
-                            body_id,
-                            JPH::Quat(inst.rotation.x, inst.rotation.y, inst.rotation.z, inst.rotation.w),
+                            p->body_id,
+                            JPH::Quat(t->rotation.x, t->rotation.y, t->rotation.z, t->rotation.w),
                             activation
                         );
                     }
 
                     if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
-                        auto shape     = physics_body_interface.GetShape(body_id);
+                        auto shape     = physics_body_interface.GetShape(p->body_id);
                         auto new_shape = shape->ScaleShape(JPH::Vec3(scale.x, scale.x, scale.x));
                         if (new_shape.IsValid()) {
-                            physics_body_interface.SetShape(body_id, new_shape.Get(), false, activation);
+                            physics_body_interface.SetShape(p->body_id, new_shape.Get(), false, activation);
                         }
                     }
                 }
@@ -6296,139 +6331,156 @@ int main(int argc, char* argv[]) {
 
         if (pressed_keys[SDL_SCANCODE_C] && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
             if (pressed_buttons[SDL_BUTTON_LEFT] && released_buttons[SDL_BUTTON_LEFT]) {
-                if (grabbed_mesh != -1) {
-                    glm::vec2 pos  = screen_pos_to_scene_vewport(mouse_pos);
-                    glm::vec2 frac = pos / glm::vec2(viewport_pos_size.z, viewport_pos_size.w);
+                if (selected_entity != entt::null) {
+                    auto t = scene_get_component<components::Transform>(scene, selected_entity);
+                    auto m = scene_get_component<components::Mesh>(scene, selected_entity);
+                    auto n = scene_get_component<components::Name>(scene, selected_entity);
 
-                    glm::vec4 mouse_near = {frac * 2.0f - 1.0f, 1, 1.0};
-                    mouse_near.y *= -1;
-                    mouse_near = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_near;
-                    glm::vec3 near = glm::vec3(mouse_near) / mouse_near.w;
+                    if (t && m && n) {
+                        glm::vec2 pos  = screen_pos_to_scene_vewport(mouse_pos);
+                        glm::vec2 frac = pos / glm::vec2(viewport_pos_size.z, viewport_pos_size.w);
 
-                    glm::vec4 mouse_far = {frac * 2.0f - 1.0f, 0.01, 1.0};
-                    mouse_far.y *= -1;
-                    mouse_far = glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_far;
-                    glm::vec3 far = glm::vec3(mouse_far) / mouse_far.w;
+                        glm::vec4 mouse_near = {frac * 2.0f - 1.0f, 1, 1.0};
+                        mouse_near.y *= -1;
+                        mouse_near =
+                            glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_near;
+                        glm::vec3 near = glm::vec3(mouse_near) / mouse_near.w;
 
-                    glm::vec3 origin  = camera.position;
-                    glm::vec3 ray_dir = glm::normalize(far - near);
+                        glm::vec4 mouse_far = {frac * 2.0f - 1.0f, 0.01, 1.0};
+                        mouse_far.y *= -1;
+                        mouse_far =
+                            glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_far;
+                        glm::vec3 far = glm::vec3(mouse_far) / mouse_far.w;
 
-                    MeshInstance new_instance = scene.instances[grabbed_mesh];
-                    Mesh         mesh         = scene.meshes[new_instance.mesh_id];
+                        glm::vec3 origin  = camera.position;
+                        glm::vec3 ray_dir = glm::normalize(far - near);
 
-                    glm::vec3 half_extent = (mesh.bounds_max - mesh.bounds_min) * 0.5f;
-                    half_extent *= new_instance.scale;
+                        Mesh& mesh = scene.meshes[m->mesh.mesh_id];
 
-                    float radius = glm::max(half_extent.x, glm::max(half_extent.y, half_extent.z));
+                        glm::vec3 half_extent = (mesh.bounds_max - mesh.bounds_min) * 0.5f;
+                        half_extent *= t->scale;
 
-                    float ratios[3];
-                    for (int i = 0; i < 3; i++) {
-                        ratios[i] = half_extent[i] / radius;
-                    }
+                        float radius = glm::max(half_extent.x, glm::max(half_extent.y, half_extent.z));
 
-                    enum class Shape {
-                        SPHERE,
-                        BOX,
-                        CAPSULE,
-                    };
-
-                    Shape shape = Shape::SPHERE;
-
-                    const float capsule_ratio     = 0.6;
-                    const float similar_threshold = 1.3;
-                    int         capsule_axis      = -1;
-
-                    bool is_capsule = false;
-                    for (int dominant = 0; dominant < 3; dominant++) {
-                        int other1 = (dominant + 1) % 3;
-                        int other2 = (dominant + 2) % 3;
-
-                        if (ratios[dominant] > capsule_ratio && ratios[dominant] * capsule_ratio > ratios[other1] &&
-                            ratios[dominant] * capsule_ratio > ratios[other2] &&
-                            glm::max(ratios[other1], ratios[other2]) / glm::min(ratios[other1], ratios[other2]) <
-                                similar_threshold) {
-                            is_capsule   = true;
-                            capsule_axis = dominant;
-                            break;
-                        }
-                    }
-
-                    if (is_capsule) {
-                        shape = Shape::CAPSULE;
-                    } else {
+                        float ratios[3];
                         for (int i = 0; i < 3; i++) {
-                            if (ratios[i] < 0.85) {
-                                shape = Shape::BOX;
+                            ratios[i] = half_extent[i] / radius;
+                        }
+
+                        enum class Shape {
+                            SPHERE,
+                            BOX,
+                            CAPSULE,
+                        };
+
+                        Shape shape = Shape::SPHERE;
+
+                        const float capsule_ratio     = 0.6;
+                        const float similar_threshold = 1.3;
+                        int         capsule_axis      = -1;
+
+                        bool is_capsule = false;
+                        for (int dominant = 0; dominant < 3; dominant++) {
+                            int other1 = (dominant + 1) % 3;
+                            int other2 = (dominant + 2) % 3;
+
+                            if (ratios[dominant] > capsule_ratio && ratios[dominant] * capsule_ratio > ratios[other1] &&
+                                ratios[dominant] * capsule_ratio > ratios[other2] &&
+                                glm::max(ratios[other1], ratios[other2]) / glm::min(ratios[other1], ratios[other2]) <
+                                    similar_threshold) {
+                                is_capsule   = true;
+                                capsule_axis = dominant;
                                 break;
                             }
                         }
-                    }
 
-                    glm::vec3 spawn_point = origin + ray_dir * radius * 2.0f;
-
-                    auto physics_spawn_point = JPH::RVec3(spawn_point.x, spawn_point.y, spawn_point.z);
-                    auto physics_rotation    = JPH::Quat::sIdentity();
-
-                    JPH::BodyCreationSettings body_settings;
-                    switch (shape) {
-                    case Shape::SPHERE:
-                        body_settings = JPH::BodyCreationSettings(
-                            new JPH::SphereShape(radius),
-                            physics_spawn_point,
-                            physics_rotation,
-                            JPH::EMotionType::Dynamic,
-                            Layers::MOVING
-                        );
-                        break;
-                    case Shape::BOX:
-                        body_settings = JPH::BodyCreationSettings(
-                            new JPH::BoxShape(JPH::RVec3(half_extent.x, half_extent.y, half_extent.z)),
-                            physics_spawn_point,
-                            physics_rotation,
-                            JPH::EMotionType::Dynamic,
-                            Layers::MOVING
-                        );
-                        break;
-                    case Shape::CAPSULE:
-                        float height = half_extent[capsule_axis];
-
-                        int   other1     = (capsule_axis + 1) % 3;
-                        int   other2     = (capsule_axis + 2) % 3;
-                        float cap_radius = glm::max(half_extent[other1], half_extent[other2]);
-
-                        JPH::Quat rotation = JPH::Quat::sIdentity();
-                        if (capsule_axis == 0) {
-                            rotation = JPH::Quat::sRotation(JPH::Vec3::sAxisZ(), JPH::DegreesToRadians(90));
-                        } else if (capsule_axis == 2) {
-                            rotation = JPH::Quat::sRotation(JPH::Vec3::sAxisX(), JPH::DegreesToRadians(90));
+                        if (is_capsule) {
+                            shape = Shape::CAPSULE;
+                        } else {
+                            for (int i = 0; i < 3; i++) {
+                                if (ratios[i] < 0.85) {
+                                    shape = Shape::BOX;
+                                    break;
+                                }
+                            }
                         }
-                        JPH::CapsuleShape*           capsule = new JPH::CapsuleShape(height, cap_radius);
-                        JPH::RotatedTranslatedShape* rotated_capsule =
-                            new JPH::RotatedTranslatedShape(JPH::Vec3::sZero(), rotation, capsule);
 
-                        body_settings = JPH::BodyCreationSettings(
-                            rotated_capsule,
-                            physics_spawn_point,
-                            physics_rotation,
-                            JPH::EMotionType::Dynamic,
-                            Layers::MOVING
+                        glm::vec3 spawn_point = origin + ray_dir * radius * 2.0f;
+
+                        auto physics_spawn_point = JPH::RVec3(spawn_point.x, spawn_point.y, spawn_point.z);
+                        auto physics_rotation    = JPH::Quat::sIdentity();
+
+                        JPH::BodyCreationSettings body_settings;
+                        switch (shape) {
+                        case Shape::SPHERE:
+                            body_settings = JPH::BodyCreationSettings(
+                                new JPH::SphereShape(radius),
+                                physics_spawn_point,
+                                physics_rotation,
+                                JPH::EMotionType::Dynamic,
+                                Layers::MOVING
+                            );
+                            break;
+                        case Shape::BOX:
+                            body_settings = JPH::BodyCreationSettings(
+                                new JPH::BoxShape(JPH::RVec3(half_extent.x, half_extent.y, half_extent.z)),
+                                physics_spawn_point,
+                                physics_rotation,
+                                JPH::EMotionType::Dynamic,
+                                Layers::MOVING
+                            );
+                            break;
+                        case Shape::CAPSULE:
+                            float height = half_extent[capsule_axis];
+
+                            int   other1     = (capsule_axis + 1) % 3;
+                            int   other2     = (capsule_axis + 2) % 3;
+                            float cap_radius = glm::max(half_extent[other1], half_extent[other2]);
+
+                            JPH::Quat rotation = JPH::Quat::sIdentity();
+                            if (capsule_axis == 0) {
+                                rotation = JPH::Quat::sRotation(JPH::Vec3::sAxisZ(), JPH::DegreesToRadians(90));
+                            } else if (capsule_axis == 2) {
+                                rotation = JPH::Quat::sRotation(JPH::Vec3::sAxisX(), JPH::DegreesToRadians(90));
+                            }
+                            JPH::CapsuleShape*           capsule = new JPH::CapsuleShape(height, cap_radius);
+                            JPH::RotatedTranslatedShape* rotated_capsule =
+                                new JPH::RotatedTranslatedShape(JPH::Vec3::sZero(), rotation, capsule);
+
+                            body_settings = JPH::BodyCreationSettings(
+                                rotated_capsule,
+                                physics_spawn_point,
+                                physics_rotation,
+                                JPH::EMotionType::Dynamic,
+                                Layers::MOVING
+                            );
+                            break;
+                        }
+
+                        body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
+                        body_settings.mMassPropertiesOverride.mMass = physics_spawn_mass;
+
+                        JPH::BodyID body_id =
+                            physics_body_interface.CreateAndAddBody(body_settings, JPH::EActivation::Activate);
+                        physics_body_interface.SetLinearVelocity(
+                            body_id, JPH::Vec3(ray_dir.x, ray_dir.y, ray_dir.z) * 10
                         );
-                        break;
+                        physics_body_interface.SetFriction(body_id, physics_spawn_mass);
+                        physics_body_interface.SetRestitution(body_id, physics_spawn_restitution);
+
+                        Entity new_entity       = scene_create_entity(scene, n->name + "_copy");
+                        auto   new_transform    = scene_get_component<components::Transform>(scene, new_entity);
+                        new_transform->position = spawn_point;
+                        new_transform->scale    = t->scale;
+                        new_transform->rotation = t->rotation;
+
+                        auto& new_mesh = scene_add_component<components::Mesh>(scene, new_entity);
+                        new_mesh.mesh  = m->mesh;
+
+                        auto& new_physics     = scene_add_component<components::Physics>(scene, new_entity);
+                        new_physics.body_id   = body_id;
+                        new_physics.is_static = false;
                     }
-
-                    body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
-                    body_settings.mMassPropertiesOverride.mMass = physics_spawn_mass;
-
-                    JPH::BodyID body_id =
-                        physics_body_interface.CreateAndAddBody(body_settings, JPH::EActivation::Activate);
-                    physics_body_interface.SetLinearVelocity(body_id, JPH::Vec3(ray_dir.x, ray_dir.y, ray_dir.z) * 10);
-                    physics_body_interface.SetFriction(body_id, physics_spawn_mass);
-                    physics_body_interface.SetRestitution(body_id, physics_spawn_restitution);
-
-                    scene.instances.push_back(new_instance);
-                    scene.dynamic_bodies.push_back(
-                        PhysicsObject{body_id, static_cast<int>(scene.instances.size() - 1)}
-                    );
                 }
             }
         }
@@ -6439,8 +6491,8 @@ int main(int argc, char* argv[]) {
             VK_CHECK(vmaMapMemory(vma_allocator, drawcall_buffer.allocation, &ptr));
             memcpy(
                 reinterpret_cast<char*>(ptr) + frame_offset,
-                scene.instances.data(),
-                sizeof(MeshInstance) * scene.instances.size()
+                mesh_instances.data(),
+                sizeof(MeshInstance) * mesh_instances.size()
             );
             vmaUnmapMemory(vma_allocator, drawcall_buffer.allocation);
             VK_CHECK(vmaFlushAllocation(vma_allocator, drawcall_buffer.allocation, frame_offset, drawcall_buffer.size));
@@ -6641,10 +6693,13 @@ int main(int argc, char* argv[]) {
 
         last_frame_view_proj = camera.combined_matrix;
 
-        for (auto& draw : scene.instances) {
-            draw.last_position = draw.position;
-            draw.last_scale    = draw.scale;
-            draw.last_rotation = draw.rotation;
+        {
+            auto view = scene.entity_registry.view<components::Transform, components::Mesh>();
+            for (auto [e, t, m] : view.each()) {
+                m.mesh.last_position = m.mesh.position;
+                m.mesh.last_scale    = m.mesh.scale;
+                m.mesh.last_rotation = m.mesh.rotation;
+            }
         }
 
         for (int i = 0; i < pressed_keys.size(); i++) {
