@@ -3,6 +3,7 @@
 #include "args.hpp"
 #include "camera.hpp"
 #include "device.hpp"
+#include "embedded.hpp"
 #include "framegraph.hpp"
 #include "geometry.hpp"
 #include "imgui_internal.h"
@@ -5835,9 +5836,9 @@ int main(int argc, char* argv[]) {
 
         ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
         if (editor_mode) {
-            ImGui::Begin("Scene Viewport", nullptr, ImGuiWindowFlags_MenuBar);
+            ImGui::Begin(ICON_FA_VIDEO " Scene Viewport", nullptr, ImGuiWindowFlags_MenuBar);
             if (ImGui::BeginMenuBar()) {
-                if (ImGui::BeginMenu("Viewport Source")) {
+                if (ImGui::BeginMenu(ICON_FA_ARROW_CIRCLE_RIGHT " Viewport Source")) {
                     for (auto [name, handle] : editor_viewport_source_handles) {
                         if (ImGui::MenuItem(name.c_str(), nullptr, editor_viewport_source.compare(name) == 0)) {
                             editor_viewport_source = name;
@@ -5873,7 +5874,7 @@ int main(int argc, char* argv[]) {
             viewport_pos_size = glm::vec4(0, 0, swapchain.width, swapchain.height);
         }
 
-        ImGui::Begin("Node Properties");
+        ImGui::Begin(ICON_FA_WRENCH " Node Properties");
         if (selected_entity != entt::null) {
             auto* m = scene_get_component<components::Mesh>(scene, selected_entity);
 
@@ -5917,7 +5918,7 @@ int main(int argc, char* argv[]) {
         }
         ImGui::End();
 
-        ImGui::Begin("Assets");
+        ImGui::Begin(ICON_FA_FILE " Assets");
         if (ImGui::TreeNode("Textures")) {
             int images_per_row = (ImGui::GetContentRegionAvail().x) / 50 - 1;
             int row_id         = 0;
@@ -5940,7 +5941,7 @@ int main(int argc, char* argv[]) {
         }
         ImGui::End();
 
-        ImGui::Begin("Performance");
+        ImGui::Begin(ICON_FA_CLOCK " Performance");
         std::vector<std::pair<std::string, PassTiming>> pass_timings = {};
         for (const auto& pass : framegraph.passes) {
             pass_timings.push_back(std::make_pair(pass.name, framegraph.get_pass_timing(pass.name)));
@@ -5949,7 +5950,7 @@ int main(int argc, char* argv[]) {
         draw_pass_stats(pass_timings);
         ImGui::End();
 
-        ImGui::Begin("Configuration");
+        ImGui::Begin(ICON_FA_COGS " Configuration");
         ImGui::Checkbox("Enable Particles", &enable_partices);
         if (ImGui::CollapsingHeader("Renderer Info", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
@@ -6111,7 +6112,7 @@ int main(int argc, char* argv[]) {
         }
         ImGui::End();
 
-        ImGui::Begin("Scene Hierarchy");
+        ImGui::Begin(ICON_FA_SITEMAP " Scene Hierarchy");
         if (ImGui::BeginPopupContextItem()) {
             if (ImGui::MenuItem("Create Node")) {
                 scene_create_entity(scene, "New Node");
@@ -6164,7 +6165,7 @@ int main(int argc, char* argv[]) {
             glm::mat4 delta_mat;
 
             ImGuizmo::SetRect(viewport_pos_size.x, viewport_pos_size.y, viewport_pos_size.z, viewport_pos_size.w);
-            ImGuizmo::SetAlternativeWindow(ImGui::FindWindowByName("Scene Viewport"));
+            ImGuizmo::SetAlternativeWindow(ImGui::FindWindowByName(ICON_FA_VIDEO " Scene Viewport"));
             if (ImGuizmo::Manipulate(
                     &view[0].x,
                     &projection[0].x,
