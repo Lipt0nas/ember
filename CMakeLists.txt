@@ -226,6 +226,7 @@ set(SOURCES
     "src/framegraph.cpp"
     "src/geometry.cpp"
     "src/scene.cpp"
+    "src/embedded.cpp"
 )
 add_executable(Ember ${SOURCES})
 

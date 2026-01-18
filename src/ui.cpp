@@ -1,5 +1,7 @@
 #include "ui.hpp"
 
+#include "embedded.hpp"
+
 PFN_vkVoidFunction imgui_load_function(const char* function_name, void* user_data) {
     return vkGetInstanceProcAddr((VkInstance)user_data, function_name);
 }
@@ -142,6 +144,16 @@ VkDescriptorPool imgui_init(
         style.WindowRounding              = 0.0f;
         style.Colors[ImGuiCol_WindowBg].w = 1.0f;
     }
+
+    ImFontConfig config;
+    io.Fonts->AddFontFromMemoryTTF((void*)&embedded::roboto_font[0], embedded::roboto_font_size, 13.0f, &config);
+
+    config.MergeMode              = true;
+    config.GlyphMinAdvanceX       = 13.0f;
+    static ImWchar glyph_ranges[] = {ICON_MIN_FA, ICON_MAX_16_FA, 0};
+    io.Fonts->AddFontFromMemoryTTF(
+        (void*)&embedded::icon_font[0], embedded::icon_font_size, 13.0f, &config, glyph_ranges
+    );
 
     VkPipelineRenderingCreateInfo imgui_rendering_info = {
         .sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
