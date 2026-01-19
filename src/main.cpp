@@ -6305,6 +6305,42 @@ int main(int argc, char* argv[]) {
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
                     t->scale *= scale.x;
                 }
+
+                auto p = scene_get_component<components::Physics>(scene, selected_entity);
+                if (p && !p->is_static) {
+                    JPH::EActivation activation = JPH::EActivation::Activate;
+
+                    auto last_position = physics_body_interface.GetPosition(p->body_id);
+                    auto new_position  = JPH::Vec3(
+                        last_position.GetX() + position.x,
+                        last_position.GetY() + position.y,
+                        last_position.GetZ() + position.z
+                    );
+
+                    if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
+                        physics_body_interface.SetPosition(p->body_id, new_position, activation);
+                        auto velocity = new_position - last_position;
+                        velocity *= physics_fling_modifier;
+
+                        physics_body_interface.SetLinearVelocity(p->body_id, velocity);
+                    }
+
+                    if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
+                        physics_body_interface.SetRotation(
+                            p->body_id,
+                            JPH::Quat(t->rotation.x, t->rotation.y, t->rotation.z, t->rotation.w),
+                            activation
+                        );
+                    }
+
+                    if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
+                        auto shape     = physics_body_interface.GetShape(p->body_id);
+                        auto new_shape = shape->ScaleShape(JPH::Vec3(scale.x, scale.x, scale.x));
+                        if (new_shape.IsValid()) {
+                            physics_body_interface.SetShape(p->body_id, new_shape.Get(), false, activation);
+                        }
+                    }
+                }
             }
         }
 
