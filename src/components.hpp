@@ -4,12 +4,25 @@
 #include "geometry.hpp"
 #include "physics.hpp"
 
+#include <vector>
+
 namespace components {
     struct Transform {
-        glm::vec3 position;
-        float     scale;
+        glm::vec3 position = {};
+        float     scale    = 1.0f;
+        glm::quat rotation = {0, 0, 0, 1};
 
-        glm::quat rotation;
+        glm::vec3 world_position;
+        float     world_scale;
+        glm::quat world_rotation;
+    };
+
+    struct Parent {
+        entt::entity parent;
+    };
+
+    struct Children {
+        std::vector<entt::entity> children;
     };
 
     struct Name {
@@ -27,5 +40,7 @@ namespace components {
         // NOTE: used for interpolation, though maybe this could be moved to transform?
         JPH::Vec3 last_position;
         JPH::Quat last_rotation;
+
+        float last_scale = 1.0f;
     };
 } // namespace components

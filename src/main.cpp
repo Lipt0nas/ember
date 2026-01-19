@@ -285,6 +285,37 @@ void initialize_clear_image(const Image& image, VkImageLayout new_layout, VkComm
     );
 }
 
+void draw_node_in_hierarchy(Scene& scene, Entity e, Entity& selected_entity) {
+    auto children = scene_get_component<components::Children>(scene, e);
+    auto name     = scene_get_component<components::Name>(scene, e);
+
+    ImGuiTreeNodeFlags flags =
+        ((selected_entity == e) ? ImGuiTreeNodeFlags_Selected : 0) | ImGuiTreeNodeFlags_OpenOnArrow;
+    flags |= ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnDoubleClick;
+
+    if (!children) {
+        flags |= ImGuiTreeNodeFlags_Leaf;
+    }
+
+    ImGui::PushID((uint64_t)e);
+    bool opened = ImGui::TreeNodeEx(&e, flags, "%s", name->name.c_str());
+    ImGui::PopID();
+
+    if (ImGui::IsItemClicked()) {
+        selected_entity = e;
+    }
+
+    if (opened) {
+        if (children) {
+            for (auto& child : children->children) {
+                draw_node_in_hierarchy(scene, child, selected_entity);
+            }
+        }
+
+        ImGui::TreePop();
+    }
+};
+
 struct MeshIndirectDrawCommand {
     uint32_t group_count_x;
     uint32_t group_count_y;
@@ -5691,6 +5722,46 @@ int main(int argc, char* argv[]) {
         }
 
         {
+            auto view = scene.entity_registry.view<components::Transform, components::Physics>();
+            for (auto [entity, transform, physics] : view.each()) {
+                JPH::EActivation activation =
+                    physics.is_static ? JPH::EActivation::DontActivate : JPH::EActivation::Activate;
+
+                if (transform.world_scale != physics.last_scale && transform.world_scale != 0.0f) {
+                    float scale_delta = transform.world_scale / physics.last_scale;
+                    auto  shape       = physics_body_interface.GetShape(physics.body_id);
+                    auto  new_shape   = shape->ScaleShape(JPH::Vec3(scale_delta, scale_delta, scale_delta));
+                    if (new_shape.IsValid()) {
+                        physics_body_interface.SetShape(physics.body_id, new_shape.Get(), false, activation);
+                    }
+
+                    physics.last_scale = transform.world_scale;
+                }
+
+                if (!physics.is_static) {
+                    continue;
+                }
+
+                physics_body_interface.SetPosition(
+                    physics.body_id,
+                    JPH::Vec3(transform.world_position.x, transform.world_position.y, transform.world_position.z),
+                    activation
+                );
+
+                physics_body_interface.SetRotation(
+                    physics.body_id,
+                    JPH::Quat(
+                        transform.world_rotation.x,
+                        transform.world_rotation.y,
+                        transform.world_rotation.z,
+                        transform.world_rotation.w
+                    ),
+                    activation
+                );
+            }
+        }
+
+        {
             auto update_view = scene.entity_registry.view<components::Transform, components::Physics>();
 
             while (physics_time_accumulator >= physics_delta_time) {
@@ -5742,11 +5813,50 @@ int main(int argc, char* argv[]) {
         }
 
         {
+            auto root_view = scene.entity_registry.view<components::Transform>(entt::exclude<components::Parent>);
+            for (auto [e, t] : root_view.each()) {
+                t.world_position = t.position;
+                t.world_scale    = t.scale;
+                t.world_rotation = t.rotation;
+            }
+
+            bool                       has_updates = true;
+            std::unordered_set<Entity> processed;
+
+            for (auto e : root_view) {
+                processed.insert(e);
+            }
+
+            while (has_updates) {
+                has_updates = false;
+
+                auto child_view = scene.entity_registry.view<components::Transform, components::Parent>();
+                for (auto [e, ct, p] : child_view.each()) {
+                    if (processed.contains(e)) {
+                        continue;
+                    }
+
+                    if (!processed.contains(p.parent)) {
+                        continue;
+                    }
+
+                    auto& parent_transform = scene.entity_registry.get<components::Transform>(p.parent);
+
+                    ct.world_rotation = parent_transform.world_rotation * ct.rotation;
+                    ct.world_scale    = parent_transform.world_scale * ct.scale;
+                    ct.world_position = parent_transform.world_position +
+                                        (parent_transform.world_rotation * (ct.position * parent_transform.scale));
+
+                    processed.insert(e);
+                    has_updates = true;
+                }
+            }
+
             auto view = scene.entity_registry.view<components::Transform, components::Mesh>();
             for (auto [e, t, m] : view.each()) {
-                m.mesh.position = t.position;
-                m.mesh.scale    = t.scale;
-                m.mesh.rotation = t.rotation;
+                m.mesh.position = t.world_position;
+                m.mesh.scale    = t.world_scale;
+                m.mesh.rotation = t.world_rotation;
             }
         }
 
@@ -5876,6 +5986,19 @@ int main(int argc, char* argv[]) {
 
         ImGui::Begin(ICON_FA_WRENCH " Node Properties");
         if (selected_entity != entt::null) {
+            auto* t = scene_get_component<components::Transform>(scene, selected_entity);
+            if (t) {
+                ImGui::Text("%s", "Local Transform");
+                ImGui::Text("Pos: %s", glm::to_string(t->position).c_str());
+                ImGui::Text("Scale: %.2f", t->scale);
+                ImGui::Text("Rotation: %s", glm::to_string(t->rotation).c_str());
+
+                ImGui::Text("%s", "World Transform");
+                ImGui::Text("Pos: %s", glm::to_string(t->world_position).c_str());
+                ImGui::Text("Scale: %.2f", t->world_scale);
+                ImGui::Text("Rotation: %s", glm::to_string(t->world_rotation).c_str());
+            }
+
             auto* m = scene_get_component<components::Mesh>(scene, selected_entity);
 
             if (m) {
@@ -6120,24 +6243,10 @@ int main(int argc, char* argv[]) {
             ImGui::EndPopup();
         }
 
-        auto view = scene.entity_registry.view<components::Transform, components::Name>();
+        auto view =
+            scene.entity_registry.view<components::Transform, components::Name>(entt::exclude<components::Parent>);
         for (auto [e, t, n] : view.each()) {
-            ImGuiTreeNodeFlags flags =
-                ((selected_entity == e) ? ImGuiTreeNodeFlags_Selected : 0) | ImGuiTreeNodeFlags_OpenOnArrow;
-            flags |= ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnDoubleClick;
-            flags |= ImGuiTreeNodeFlags_Leaf;
-
-            ImGui::PushID((uint64_t)e);
-            bool opened = ImGui::TreeNodeEx(&e, flags, "%s", n.name.c_str());
-            ImGui::PopID();
-
-            if (ImGui::IsItemClicked()) {
-                selected_entity = e;
-            }
-
-            if (opened) {
-                ImGui::TreePop();
-            }
+            draw_node_in_hierarchy(scene, e, selected_entity);
         }
 
         if (ImGui::IsMouseDown(0) && ImGui::IsWindowHovered()) {
@@ -6148,9 +6257,9 @@ int main(int argc, char* argv[]) {
         if (selected_entity != entt::null) {
             auto t = scene_get_component<components::Transform>(scene, selected_entity);
 
-            glm::mat4 transform = glm::translate(glm::mat4(1.0f), t->position);
-            transform           = transform * glm::mat4_cast(t->rotation);
-            transform           = glm::scale(transform, glm::vec3(t->scale));
+            glm::mat4 transform = glm::translate(glm::mat4(1.0f), t->world_position);
+            transform           = transform * glm::mat4_cast(t->world_rotation);
+            transform           = glm::scale(transform, glm::vec3(t->world_scale));
 
             auto      angle      = glm::normalize(glm::eulerAngles(camera.orientation));
             glm::mat4 view       = glm::mat4_cast(camera.orientation);
@@ -6195,48 +6304,6 @@ int main(int argc, char* argv[]) {
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
                     t->scale *= scale.x;
-                }
-
-                auto p = scene_get_component<components::Physics>(scene, selected_entity);
-
-                if (p) {
-                    bool is_dynamic = !p->is_static;
-
-                    JPH::EActivation activation =
-                        is_dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
-
-                    auto last_position = physics_body_interface.GetPosition(p->body_id);
-                    auto new_position  = JPH::Vec3(
-                        last_position.GetX() + position.x,
-                        last_position.GetY() + position.y,
-                        last_position.GetZ() + position.z
-                    );
-
-                    if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
-                        physics_body_interface.SetPosition(p->body_id, new_position, activation);
-                        if (is_dynamic) {
-                            auto velocity = new_position - last_position;
-                            velocity *= physics_fling_modifier;
-
-                            physics_body_interface.SetLinearVelocity(p->body_id, velocity);
-                        }
-                    }
-
-                    if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
-                        physics_body_interface.SetRotation(
-                            p->body_id,
-                            JPH::Quat(t->rotation.x, t->rotation.y, t->rotation.z, t->rotation.w),
-                            activation
-                        );
-                    }
-
-                    if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
-                        auto shape     = physics_body_interface.GetShape(p->body_id);
-                        auto new_shape = shape->ScaleShape(JPH::Vec3(scale.x, scale.x, scale.x));
-                        if (new_shape.IsValid()) {
-                            physics_body_interface.SetShape(p->body_id, new_shape.Get(), false, activation);
-                        }
-                    }
                 }
             }
         }
@@ -6506,9 +6573,10 @@ int main(int argc, char* argv[]) {
                         auto& new_mesh = scene_add_component<components::Mesh>(scene, new_entity);
                         new_mesh.mesh  = m->mesh;
 
-                        auto& new_physics     = scene_add_component<components::Physics>(scene, new_entity);
-                        new_physics.body_id   = body_id;
-                        new_physics.is_static = false;
+                        auto& new_physics      = scene_add_component<components::Physics>(scene, new_entity);
+                        new_physics.body_id    = body_id;
+                        new_physics.is_static  = false;
+                        new_physics.last_scale = new_transform->scale;
                     }
                 }
             }

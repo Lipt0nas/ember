@@ -34,6 +34,9 @@ template <typename T> T* scene_get_component(Scene& scene, Entity entity) {
     return scene.entity_registry.try_get<T>(entity);
 }
 
+void scene_set_node_parent(Scene& scene, Entity child, Entity parent);
+void scene_remove_node_parent(Scene& scene, Entity child);
+
 void load_scene(
     Scene&                       scene,
     const std::filesystem::path& path,

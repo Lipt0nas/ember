@@ -804,11 +804,15 @@ void load_scene(
 
     vmaUnmapMemory(allocator, staging_buffer.allocation);
 
+    auto root_node = scene_create_entity(scene, "Root Node");
+
     spdlog::info("Scene count: {}", model.scenes.size());
     int scene_id = model.defaultScene >= 0 ? model.defaultScene : (model.scenes.size() >= 1 ? 0 : -1);
     if (scene_id != -1) {
         spdlog::info("Constructing scene");
         const tinygltf::Scene& gltf_scene = model.scenes[scene_id];
+
+        scene_get_component<components::Name>(scene, root_node)->name = gltf_scene.name;
 
         for (int node_id : gltf_scene.nodes) {
             ZoneScopedN("Parse Scene Node");
@@ -848,6 +852,8 @@ void load_scene(
                 transform->scale    = scale;
                 transform->rotation = rotation;
 
+                scene_set_node_parent(scene, entity, root_node);
+
                 auto& mesh_component = scene_add_component<components::Mesh>(scene, entity);
                 mesh_component.mesh  = {
                      .mesh_id     = mesh_id,
@@ -879,9 +885,10 @@ void load_scene(
                 if (body) {
                     body_interface.AddBody(body->GetID(), JPH::EActivation::DontActivate);
 
-                    auto& physics     = scene_add_component<components::Physics>(scene, entity);
-                    physics.body_id   = body->GetID();
-                    physics.is_static = true;
+                    auto& physics      = scene_add_component<components::Physics>(scene, entity);
+                    physics.body_id    = body->GetID();
+                    physics.is_static  = true;
+                    physics.last_scale = scale;
                 }
             }
         }
@@ -907,4 +914,36 @@ void destroy_scene(const Scene& scene, VkDevice device, VmaAllocator allocator) 
     for (auto sampler : scene.samplers) {
         destroy_sampler(sampler, device);
     }
+}
+
+void scene_set_node_parent(Scene& scene, Entity child, Entity parent) {
+    if (scene.entity_registry.all_of<components::Parent>(child)) {
+        auto old_parent = scene.entity_registry.get<components::Parent>(child).parent;
+        if (scene.entity_registry.valid(old_parent) && scene.entity_registry.all_of<components::Children>(old_parent)) {
+            auto& children = scene.entity_registry.get<components::Children>(old_parent).children;
+            children.erase(std::remove(children.begin(), children.end(), child), children.end());
+        }
+    }
+
+    scene.entity_registry.emplace_or_replace<components::Parent>(child, parent);
+
+    if (!scene.entity_registry.all_of<components::Children>(parent)) {
+        scene.entity_registry.emplace<components::Children>(parent);
+    }
+
+    scene.entity_registry.get<components::Children>(parent).children.push_back(child);
+}
+
+void scene_remove_node_parent(Scene& scene, Entity child) {
+    if (!scene.entity_registry.all_of<components::Parent>(child)) {
+        return;
+    }
+
+    auto parent = scene.entity_registry.get<components::Parent>(child).parent;
+    if (scene.entity_registry.valid(parent) && scene.entity_registry.all_of<components::Children>(parent)) {
+        auto& children = scene.entity_registry.get<components::Children>(parent).children;
+        children.erase(std::remove(children.begin(), children.end(), child), children.end());
+    }
+
+    scene.entity_registry.remove<components::Parent>(child);
 }
