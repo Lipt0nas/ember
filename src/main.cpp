@@ -286,8 +286,8 @@ void initialize_clear_image(const Image& image, VkImageLayout new_layout, VkComm
 }
 
 void draw_node_in_hierarchy(Scene& scene, Entity e, Entity& selected_entity) {
-    auto children = scene_get_component<components::Children>(scene, e);
-    auto name     = scene_get_component<components::Name>(scene, e);
+    auto children = scene.get_component<components::Children>(e);
+    auto name     = scene.get_component<components::Name>(e);
 
     ImGuiTreeNodeFlags flags =
         ((selected_entity == e) ? ImGuiTreeNodeFlags_Selected : 0) | ImGuiTreeNodeFlags_OpenOnArrow;
@@ -1909,8 +1909,7 @@ int main(int argc, char* argv[]) {
     std::string load_path = args.get_arg<std::string>("s", "data/models/room2.glb");
 
     Scene scene = {};
-    load_scene(
-        scene,
+    scene.load_scene(
         load_path,
         staging_buffer,
         global_vertex_buffer,
@@ -5986,7 +5985,7 @@ int main(int argc, char* argv[]) {
 
         ImGui::Begin(ICON_FA_WRENCH " Node Properties");
         if (selected_entity != entt::null) {
-            auto* t = scene_get_component<components::Transform>(scene, selected_entity);
+            auto* t = scene.get_component<components::Transform>(selected_entity);
             if (t) {
                 ImGui::Text("%s", "Local Transform");
                 ImGui::Text("Pos: %s", glm::to_string(t->position).c_str());
@@ -5999,7 +5998,7 @@ int main(int argc, char* argv[]) {
                 ImGui::Text("Rotation: %s", glm::to_string(t->world_rotation).c_str());
             }
 
-            auto* m = scene_get_component<components::Mesh>(scene, selected_entity);
+            auto* m = scene.get_component<components::Mesh>(selected_entity);
 
             if (m) {
                 if (ImGui::CollapsingHeader("Material")) {
@@ -6238,7 +6237,7 @@ int main(int argc, char* argv[]) {
         ImGui::Begin(ICON_FA_SITEMAP " Scene Hierarchy");
         if (ImGui::BeginPopupContextItem()) {
             if (ImGui::MenuItem("Create Node")) {
-                scene_create_entity(scene, "New Node");
+                scene.create_entity("New Node");
             }
             ImGui::EndPopup();
         }
@@ -6255,7 +6254,7 @@ int main(int argc, char* argv[]) {
         ImGui::End();
 
         if (selected_entity != entt::null) {
-            auto t = scene_get_component<components::Transform>(scene, selected_entity);
+            auto t = scene.get_component<components::Transform>(selected_entity);
 
             glm::mat4 transform = glm::translate(glm::mat4(1.0f), t->world_position);
             transform           = transform * glm::mat4_cast(t->world_rotation);
@@ -6306,7 +6305,7 @@ int main(int argc, char* argv[]) {
                     t->scale *= scale.x;
                 }
 
-                auto p = scene_get_component<components::Physics>(scene, selected_entity);
+                auto p = scene.get_component<components::Physics>(selected_entity);
                 if (p && !p->is_static) {
                     JPH::EActivation activation = JPH::EActivation::Activate;
 
@@ -6464,9 +6463,9 @@ int main(int argc, char* argv[]) {
         if (pressed_keys[SDL_SCANCODE_C] && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
             if (pressed_buttons[SDL_BUTTON_LEFT] && released_buttons[SDL_BUTTON_LEFT]) {
                 if (selected_entity != entt::null) {
-                    auto t = scene_get_component<components::Transform>(scene, selected_entity);
-                    auto m = scene_get_component<components::Mesh>(scene, selected_entity);
-                    auto n = scene_get_component<components::Name>(scene, selected_entity);
+                    auto t = scene.get_component<components::Transform>(selected_entity);
+                    auto m = scene.get_component<components::Mesh>(selected_entity);
+                    auto n = scene.get_component<components::Name>(selected_entity);
 
                     if (t && m && n) {
                         glm::vec2 pos  = screen_pos_to_scene_vewport(mouse_pos);
@@ -6600,16 +6599,16 @@ int main(int argc, char* argv[]) {
                         physics_body_interface.SetFriction(body_id, physics_spawn_mass);
                         physics_body_interface.SetRestitution(body_id, physics_spawn_restitution);
 
-                        Entity new_entity       = scene_create_entity(scene, n->name + "_copy");
-                        auto   new_transform    = scene_get_component<components::Transform>(scene, new_entity);
+                        Entity new_entity       = scene.create_entity(n->name + "_copy");
+                        auto   new_transform    = scene.get_component<components::Transform>(new_entity);
                         new_transform->position = spawn_point;
                         new_transform->scale    = t->scale;
                         new_transform->rotation = t->rotation;
 
-                        auto& new_mesh = scene_add_component<components::Mesh>(scene, new_entity);
+                        auto& new_mesh = scene.add_component<components::Mesh>(new_entity);
                         new_mesh.mesh  = m->mesh;
 
-                        auto& new_physics      = scene_add_component<components::Physics>(scene, new_entity);
+                        auto& new_physics      = scene.add_component<components::Physics>(new_entity);
                         new_physics.body_id    = body_id;
                         new_physics.is_static  = false;
                         new_physics.last_scale = new_transform->scale;
@@ -6855,7 +6854,7 @@ int main(int argc, char* argv[]) {
 
     framegraph.destroy(device);
 
-    destroy_scene(scene, device, vma_allocator);
+    scene.destroy_scene(device, vma_allocator);
 
     destroy_swapchain(swapchain, window, instance, device);
     destroy_buffer(staging_buffer, device, vma_allocator);

@@ -80,8 +80,7 @@ void generate_tangents(std::vector<Vertex>& vertices, const std::vector<uint32_t
     }
 }
 
-void load_scene(
-    Scene&                       scene,
+void Scene::load_scene(
     const std::filesystem::path& path,
     const Buffer&                staging_buffer,
     const Buffer&                vertex_buffer,
@@ -130,10 +129,10 @@ void load_scene(
     std::map<uint32_t, int> local_texture_cache;
     std::map<uint32_t, int> local_sampler_cache;
 
-    scene.materials.resize(model.materials.size());
+    materials.resize(model.materials.size());
 
     spdlog::info("Loading {} samplers", model.samplers.size());
-    scene.samplers.push_back(create_sampler(
+    samplers.push_back(create_sampler(
         VK_FILTER_LINEAR,
         VK_FILTER_LINEAR,
         VK_SAMPLER_MIPMAP_MODE_LINEAR,
@@ -196,13 +195,13 @@ void load_scene(
         auto vk_wrap_s = to_vk_wrap(wrap_s);
         auto vk_wrap_t = to_vk_wrap(wrap_t);
 
-        local_sampler_cache.insert({i, scene.samplers.size()});
-        scene.samplers.push_back(create_sampler(
+        local_sampler_cache.insert({i, samplers.size()});
+        samplers.push_back(create_sampler(
             vk_mag, vk_min, mipmap_mode, vk_wrap_s, vk_wrap_t, VK_SAMPLER_ADDRESS_MODE_REPEAT, 16.0f, device
         ));
     }
 
-    spdlog::info("Loading {} materials", scene.materials.size());
+    spdlog::info("Loading {} materials", materials.size());
     void* staging_buffer_ptr = nullptr;
     VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
     for (int i = 0; i < model.materials.size(); i++) {
@@ -256,7 +255,7 @@ void load_scene(
                 copy_image(staging_buffer, image, true, command_buffer, queue, device);
 
                 local_texture_cache.insert({image_index, local_texture_cache.size() + 1});
-                scene.images.push_back(
+                images.push_back(
                     ImageResource{
                         .image         = image,
                         .sampler_index = sampler_index,
@@ -274,21 +273,20 @@ void load_scene(
         uint32_t normals_index  = upload_texture(mat.normalTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
         uint32_t emissive_index = upload_texture(mat.emissiveTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
 
-        scene.materials[i].albedo_index     = albedo_index;
-        scene.materials[i].normals_index    = normals_index;
-        scene.materials[i].material_index   = material_index;
-        scene.materials[i].emissive_index   = emissive_index;
-        scene.materials[i].roughness_factor = mat.pbrMetallicRoughness.roughnessFactor;
-        scene.materials[i].metallic_factor  = mat.pbrMetallicRoughness.metallicFactor;
-        scene.materials[i].emissive_factor =
-            glm::vec3(mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
-        scene.materials[i].albedo_factor = glm::vec4(
+        materials[i].albedo_index     = albedo_index;
+        materials[i].normals_index    = normals_index;
+        materials[i].material_index   = material_index;
+        materials[i].emissive_index   = emissive_index;
+        materials[i].roughness_factor = mat.pbrMetallicRoughness.roughnessFactor;
+        materials[i].metallic_factor  = mat.pbrMetallicRoughness.metallicFactor;
+        materials[i].emissive_factor  = glm::vec3(mat.emissiveFactor[0], mat.emissiveFactor[1], mat.emissiveFactor[2]);
+        materials[i].albedo_factor    = glm::vec4(
             mat.pbrMetallicRoughness.baseColorFactor[0],
             mat.pbrMetallicRoughness.baseColorFactor[1],
             mat.pbrMetallicRoughness.baseColorFactor[2],
             mat.pbrMetallicRoughness.baseColorFactor[3]
         );
-        scene.materials[i].normal_scale = mat.normalTexture.scale;
+        materials[i].normal_scale = mat.normalTexture.scale;
     }
 
     int                         current_entry = 0;
@@ -796,7 +794,7 @@ void load_scene(
 
             spdlog::debug("Loaded mesh {} with vertices={}, indices={}", m, vertices.size(), indices.size());
 
-            scene.meshes.push_back(mesh);
+            meshes.push_back(mesh);
 
             current_entry++;
         }
@@ -804,7 +802,7 @@ void load_scene(
 
     vmaUnmapMemory(allocator, staging_buffer.allocation);
 
-    auto root_node = scene_create_entity(scene, "Root Node");
+    auto root_node = create_entity("Root Node");
 
     spdlog::info("Scene count: {}", model.scenes.size());
     int scene_id = model.defaultScene >= 0 ? model.defaultScene : (model.scenes.size() >= 1 ? 0 : -1);
@@ -812,7 +810,7 @@ void load_scene(
         spdlog::info("Constructing scene");
         const tinygltf::Scene& gltf_scene = model.scenes[scene_id];
 
-        scene_get_component<components::Name>(scene, root_node)->name = gltf_scene.name;
+        get_component<components::Name>(root_node)->name = gltf_scene.name;
 
         for (int node_id : gltf_scene.nodes) {
             ZoneScopedN("Parse Scene Node");
@@ -846,15 +844,15 @@ void load_scene(
             for (int i = 0; i < mesh.primitives.size(); i++) {
                 int mesh_id = mesh_primitive_offsets[node.mesh] + i;
 
-                auto entity         = scene_create_entity(scene, node.name);
-                auto transform      = scene_get_component<components::Transform>(scene, entity);
+                auto entity         = create_entity(node.name);
+                auto transform      = get_component<components::Transform>(entity);
                 transform->position = position;
                 transform->scale    = scale;
                 transform->rotation = rotation;
 
-                scene_set_node_parent(scene, entity, root_node);
+                set_node_parent(entity, root_node);
 
-                auto& mesh_component = scene_add_component<components::Mesh>(scene, entity);
+                auto& mesh_component = add_component<components::Mesh>(entity);
                 mesh_component.mesh  = {
                      .mesh_id     = mesh_id,
                      .material_id = mesh.primitives[i].material,
@@ -885,7 +883,7 @@ void load_scene(
                 if (body) {
                     body_interface.AddBody(body->GetID(), JPH::EActivation::DontActivate);
 
-                    auto& physics      = scene_add_component<components::Physics>(scene, entity);
+                    auto& physics      = add_component<components::Physics>(entity);
                     physics.body_id    = body->GetID();
                     physics.is_static  = true;
                     physics.last_scale = scale;
@@ -897,53 +895,53 @@ void load_scene(
     }
 }
 
-Entity scene_create_entity(Scene& scene, const std::string& name) {
-    Entity e = scene.entity_registry.create();
+Entity Scene::create_entity(const std::string& name) {
+    Entity e = entity_registry.create();
 
-    scene.entity_registry.emplace<components::Name>(e, name);
-    scene.entity_registry.emplace<components::Transform>(e);
+    entity_registry.emplace<components::Name>(e, name);
+    entity_registry.emplace<components::Transform>(e);
 
     return e;
 }
 
-void destroy_scene(const Scene& scene, VkDevice device, VmaAllocator allocator) {
-    for (auto image : scene.images) {
+void Scene::destroy_scene(VkDevice device, VmaAllocator allocator) {
+    for (auto image : images) {
         destroy_image(image.image, device, allocator);
     }
 
-    for (auto sampler : scene.samplers) {
+    for (auto sampler : samplers) {
         destroy_sampler(sampler, device);
     }
 }
 
-void scene_set_node_parent(Scene& scene, Entity child, Entity parent) {
-    if (scene.entity_registry.all_of<components::Parent>(child)) {
-        auto old_parent = scene.entity_registry.get<components::Parent>(child).parent;
-        if (scene.entity_registry.valid(old_parent) && scene.entity_registry.all_of<components::Children>(old_parent)) {
-            auto& children = scene.entity_registry.get<components::Children>(old_parent).children;
+void Scene::set_node_parent(Entity child, Entity parent) {
+    if (entity_registry.all_of<components::Parent>(child)) {
+        auto old_parent = entity_registry.get<components::Parent>(child).parent;
+        if (entity_registry.valid(old_parent) && entity_registry.all_of<components::Children>(old_parent)) {
+            auto& children = entity_registry.get<components::Children>(old_parent).children;
             children.erase(std::remove(children.begin(), children.end(), child), children.end());
         }
     }
 
-    scene.entity_registry.emplace_or_replace<components::Parent>(child, parent);
+    entity_registry.emplace_or_replace<components::Parent>(child, parent);
 
-    if (!scene.entity_registry.all_of<components::Children>(parent)) {
-        scene.entity_registry.emplace<components::Children>(parent);
+    if (!entity_registry.all_of<components::Children>(parent)) {
+        entity_registry.emplace<components::Children>(parent);
     }
 
-    scene.entity_registry.get<components::Children>(parent).children.push_back(child);
+    entity_registry.get<components::Children>(parent).children.push_back(child);
 }
 
-void scene_remove_node_parent(Scene& scene, Entity child) {
-    if (!scene.entity_registry.all_of<components::Parent>(child)) {
+void Scene::remove_node_parent(Entity child) {
+    if (!entity_registry.all_of<components::Parent>(child)) {
         return;
     }
 
-    auto parent = scene.entity_registry.get<components::Parent>(child).parent;
-    if (scene.entity_registry.valid(parent) && scene.entity_registry.all_of<components::Children>(parent)) {
-        auto& children = scene.entity_registry.get<components::Children>(parent).children;
+    auto parent = entity_registry.get<components::Parent>(child).parent;
+    if (entity_registry.valid(parent) && entity_registry.all_of<components::Children>(parent)) {
+        auto& children = entity_registry.get<components::Children>(parent).children;
         children.erase(std::remove(children.begin(), children.end(), child), children.end());
     }
 
-    scene.entity_registry.remove<components::Parent>(child);
+    entity_registry.remove<components::Parent>(child);
 }
