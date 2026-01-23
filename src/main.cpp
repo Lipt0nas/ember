@@ -3,6 +3,7 @@
 #include "args.hpp"
 #include "camera.hpp"
 #include "device.hpp"
+#include "editor.hpp"
 #include "embedded.hpp"
 #include "framegraph.hpp"
 #include "geometry.hpp"
@@ -12,6 +13,7 @@
 #include "resources.hpp"
 #include "rt_scene.hpp"
 #include "scene.hpp"
+#include "script_system.hpp"
 #include "swapchain.hpp"
 #include "ui.hpp"
 
@@ -40,68 +42,6 @@ struct EditorViewportSource {
     Image           image;
     VkDescriptorSet descriptor_set;
 };
-
-void draw_pass_stats(const std::vector<std::pair<std::string, PassTiming>>& passes) {
-    if (ImGui::BeginTable("PassStats", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Sortable)) {
-        ImGui::TableSetupColumn("Pass");
-        ImGui::TableSetupColumn("Avg (ms)");
-        ImGui::TableSetupColumn("% of Frame");
-        ImGui::TableHeadersRow();
-
-        float              total_avg = 0.0f;
-        std::vector<float> avg_timings;
-
-        for (const auto& [name, timing] : passes) {
-            float avg = timing.get_avg_timing_ms();
-
-            avg_timings.push_back(avg);
-            total_avg += avg;
-        }
-
-        for (const auto& [name, timing] : passes) {
-            float avg        = timing.get_avg_timing_ms();
-            float percentage = (avg / total_avg) * 100.0f;
-
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-
-            ImVec4 color = ImVec4(1, 1, 1, 1);
-            if (percentage > 40.0f)
-                color = ImVec4(1, 0.3f, 0.3f, 1);
-            else if (percentage > 20.0f)
-                color = ImVec4(1, 1, 0, 1);
-            else
-                color = ImVec4(0.3f, 1, 0.3f, 1);
-
-            ImGui::TextColored(color, "%s", name.c_str());
-            ImGui::TableNextColumn();
-            ImGui::Text("%.3f", avg);
-            ImGui::TableNextColumn();
-            ImGui::Text("%.2f%%", percentage);
-        }
-
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextColored(ImVec4(1, 1, 0, 1), "TOTAL");
-        ImGui::TableNextColumn();
-        ImGui::TextColored(ImVec4(1, 1, 0, 1), "%.3f", total_avg);
-        ImGui::TableNextColumn();
-        ImGui::TextColored(ImVec4(1, 1, 0, 1), "%.2f GPU Time FPS", 1000.0f / total_avg);
-        ImGui::EndTable();
-
-        ImGui::SeparatorText("Percentage:");
-        for (size_t i = 0; i < passes.size(); i++) {
-            float percentage = (avg_timings[i] / total_avg) * 100.0f;
-            ImGui::Text("%s", passes[i].first.c_str());
-            ImGui::SameLine(200);
-            ImGui::ProgressBar(
-                avg_timings[i] / total_avg,
-                ImVec2(-1, 0),
-                (std::format("{}: {:.1f}%", passes[i].first, percentage)).c_str()
-            );
-        }
-    }
-}
 
 #define XEGTAO_HILBERT_LEVEL 6U
 #define XEGTAO_HILBERT_WIDTH ((1U << XEGTAO_HILBERT_LEVEL))
@@ -284,37 +224,6 @@ void initialize_clear_image(const Image& image, VkImageLayout new_layout, VkComm
         command_buffer
     );
 }
-
-void draw_node_in_hierarchy(Scene& scene, Entity e, Entity& selected_entity) {
-    auto children = scene.get_component<components::Children>(e);
-    auto name     = scene.get_component<components::Name>(e);
-
-    ImGuiTreeNodeFlags flags =
-        ((selected_entity == e) ? ImGuiTreeNodeFlags_Selected : 0) | ImGuiTreeNodeFlags_OpenOnArrow;
-    flags |= ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnDoubleClick;
-
-    if (!children) {
-        flags |= ImGuiTreeNodeFlags_Leaf;
-    }
-
-    ImGui::PushID((uint64_t)e);
-    bool opened = ImGui::TreeNodeEx(&e, flags, "%s", name->name.c_str());
-    ImGui::PopID();
-
-    if (ImGui::IsItemClicked()) {
-        selected_entity = e;
-    }
-
-    if (opened) {
-        if (children) {
-            for (auto& child : children->children) {
-                draw_node_in_hierarchy(scene, child, selected_entity);
-            }
-        }
-
-        ImGui::TreePop();
-    }
-};
 
 struct MeshIndirectDrawCommand {
     uint32_t group_count_x;
@@ -1906,11 +1815,12 @@ int main(int argc, char* argv[]) {
 
     physics_system.OptimizeBroadPhase();
 
-    std::string load_path = args.get_arg<std::string>("s", "data/models/room2.glb");
+    std::string scene_load_path  = args.get_arg<std::string>("s", "data/models/room2.glb");
+    std::string script_load_path = args.get_arg<std::string>("scripts", "");
 
     Scene scene = {};
     scene.load_scene(
-        load_path,
+        scene_load_path,
         staging_buffer,
         global_vertex_buffer,
         global_index_buffer,
@@ -1926,6 +1836,13 @@ int main(int argc, char* argv[]) {
         vma_allocator,
         command_buffers[0]
     );
+
+    spdlog::info("Initializing script system");
+    bool         run_scripts = false;
+    ScriptSystem script_system(scene, physics_system);
+    if (!script_load_path.empty()) {
+        script_system.load_scripts(script_load_path);
+    }
 
     // This is updated by a system at the beginning of a frame
     std::vector<MeshInstance> mesh_instances;
@@ -2015,10 +1932,9 @@ int main(int argc, char* argv[]) {
 
     bool      enable_transform_snap = false;
     glm::vec3 transform_snap        = glm::vec3(1.0f);
-    Entity    selected_entity       = entt::null;
     glm::vec2 grab_origin           = {};
 
-    bool enable_partices = false;
+    bool enable_particles = false;
 
     bool                                        editor_mode = true;
     std::map<std::string, EditorViewportSource> editor_viewport_source_handles;
@@ -2026,6 +1942,9 @@ int main(int argc, char* argv[]) {
     auto add_viewport_source = [&](const std::string& name, Image& image) {
         editor_viewport_source_handles.insert({name, {image, imgui_image_handle(image, linear_sampler)}});
     };
+
+    bool simulate_lower_fps = false;
+    int  simulated_fps      = 60;
 
     add_viewport_source("Anti-Aliased Composite", smaa_output);
     add_viewport_source("Composite", composite_output);
@@ -4561,7 +4480,7 @@ int main(int argc, char* argv[]) {
                 particle_position_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                if (!enable_partices) {
+                if (!enable_particles) {
                     return;
                 }
 
@@ -4628,7 +4547,7 @@ int main(int argc, char* argv[]) {
                 VK_ACCESS_2_SHADER_READ_BIT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                if (!enable_partices) {
+                if (!enable_particles) {
                     return;
                 }
 
@@ -5561,8 +5480,24 @@ int main(int argc, char* argv[]) {
     };
 
     int pick_frame = UINT32_MAX;
+
+    Editor editor;
+
     while (running) {
         FrameMark;
+
+        if (simulate_lower_fps) {
+            auto time       = std::chrono::high_resolution_clock::now();
+            auto delta_time = std::chrono::duration<float>(time - frame_timestamp).count();
+
+            while (delta_time < 1.0f / simulated_fps) {
+                using namespace std::chrono_literals;
+                std::this_thread::sleep_for(1ms);
+
+                time       = std::chrono::high_resolution_clock::now();
+                delta_time = std::chrono::duration<float>(time - frame_timestamp).count();
+            }
+        }
 
         auto time       = std::chrono::high_resolution_clock::now();
         auto delta_time = std::chrono::duration<float>(time - frame_timestamp).count();
@@ -5764,6 +5699,13 @@ int main(int argc, char* argv[]) {
             auto update_view = scene.entity_registry.view<components::Transform, components::Physics>();
 
             while (physics_time_accumulator >= physics_delta_time) {
+                if (run_scripts) {
+                    auto script_view = scene.entity_registry.view<components::Script>();
+                    for (auto [e, s] : script_view.each()) {
+                        script_system.call_on_fixed_update(s, physics_delta_time);
+                    }
+                }
+
                 for (auto [entity, transform, physics] : update_view.each()) {
                     JPH::Vec3 p;
                     JPH::Quat r;
@@ -5808,6 +5750,13 @@ int main(int argc, char* argv[]) {
 
                 transform.position = glm::mix(old_pos, new_pos, physics_alpha) - offset;
                 transform.rotation = glm::slerp(old_rot, new_rot, physics_alpha);
+            }
+        }
+
+        if (run_scripts) {
+            auto script_view = scene.entity_registry.view<components::Script>();
+            for (auto [e, s] : script_view.each()) {
+                script_system.call_on_update(s, delta_time);
             }
         }
 
@@ -5918,9 +5867,9 @@ int main(int argc, char* argv[]) {
             VK_CHECK(vmaMapMemory(vma_allocator, pick_buffer.allocation, &ptr));
             uint32_t mesh_id = *reinterpret_cast<uint32_t*>(ptr);
             if (mesh_id == UINT32_MAX || mesh_id >= mesh_instance_entities.size()) {
-                selected_entity = entt::null;
+                editor.set_selected_entity(entt::null);
             } else {
-                selected_entity = mesh_instance_entities[mesh_id];
+                editor.set_selected_entity(mesh_instance_entities[mesh_id]);
             }
 
             vmaUnmapMemory(vma_allocator, pick_buffer.allocation);
@@ -5957,6 +5906,15 @@ int main(int argc, char* argv[]) {
                 }
 
                 ImGui::Text(": %s", editor_viewport_source.c_str());
+
+                if (ImGui::Checkbox("Run Scripts", &run_scripts)) {
+                    if (run_scripts) {
+                        auto view = scene.entity_registry.view<components::Script>();
+                        for (auto [e, s] : view.each()) {
+                            script_system.initialize(s);
+                        }
+                    }
+                }
                 ImGui::EndMenuBar();
             }
 
@@ -5983,62 +5941,7 @@ int main(int argc, char* argv[]) {
             viewport_pos_size = glm::vec4(0, 0, swapchain.width, swapchain.height);
         }
 
-        ImGui::Begin(ICON_FA_WRENCH " Node Properties");
-        if (selected_entity != entt::null) {
-            auto* t = scene.get_component<components::Transform>(selected_entity);
-            if (t) {
-                ImGui::Text("%s", "Local Transform");
-                ImGui::Text("Pos: %s", glm::to_string(t->position).c_str());
-                ImGui::Text("Scale: %.2f", t->scale);
-                ImGui::Text("Rotation: %s", glm::to_string(t->rotation).c_str());
-
-                ImGui::Text("%s", "World Transform");
-                ImGui::Text("Pos: %s", glm::to_string(t->world_position).c_str());
-                ImGui::Text("Scale: %.2f", t->world_scale);
-                ImGui::Text("Rotation: %s", glm::to_string(t->world_rotation).c_str());
-            }
-
-            auto* m = scene.get_component<components::Mesh>(selected_entity);
-
-            if (m) {
-                if (ImGui::CollapsingHeader("Material")) {
-                    auto& material = scene.materials[m->mesh.material_id];
-
-                    std::vector<uint32_t*> material_indices = {
-                        &material.albedo_index,
-                        &material.normals_index,
-                        &material.material_index,
-                        &material.emissive_index
-                    };
-
-                    for (auto id : material_indices) {
-                        ImGui::Image(imgui_material_image_handles[*id], ImVec2(50, 50));
-                        if (ImGui::BeginDragDropTarget()) {
-                            const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("texture_id");
-                            if (payload) {
-                                *id = *(uint32_t*)payload->Data;
-                            }
-                            ImGui::EndDragDropTarget();
-                        }
-                        ImGui::SameLine();
-                    }
-
-                    ImGui::NewLine();
-
-                    ImGui::SliderFloat("Roughness Factor", &material.roughness_factor, 0.0, 1.0f);
-                    ImGui::SliderFloat("Metallic Factor", &material.metallic_factor, 0.0, 1.0f);
-                    ImGui::SliderFloat("Normal Scale", &material.normal_scale, 0.0, 1.0f);
-
-                    ImGui::ColorEdit4("Albedo Factor", &material.albedo_factor.x);
-                    ImGui::ColorEdit3(
-                        "Emissive Factor",
-                        &material.emissive_factor.x,
-                        ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR
-                    );
-                }
-            }
-        }
-        ImGui::End();
+        editor.render_scene_node_property_window(scene, script_system, imgui_material_image_handles);
 
         ImGui::Begin(ICON_FA_FILE " Assets");
         if (ImGui::TreeNode("Textures")) {
@@ -6063,17 +5966,16 @@ int main(int argc, char* argv[]) {
         }
         ImGui::End();
 
-        ImGui::Begin(ICON_FA_CLOCK " Performance");
         std::vector<std::pair<std::string, PassTiming>> pass_timings = {};
         for (const auto& pass : framegraph.passes) {
             pass_timings.push_back(std::make_pair(pass.name, framegraph.get_pass_timing(pass.name)));
         }
-
-        draw_pass_stats(pass_timings);
-        ImGui::End();
+        editor.render_performance_window(pass_timings);
 
         ImGui::Begin(ICON_FA_COGS " Configuration");
-        ImGui::Checkbox("Enable Particles", &enable_partices);
+        ImGui::Checkbox("Enable Particles", &enable_particles);
+        ImGui::InputInt("Simulate Target FPS", &simulated_fps);
+        ImGui::Checkbox("Simulate FPS", &simulate_lower_fps);
         if (ImGui::CollapsingHeader("Renderer Info", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
             ImGui::Text("Objects: %lu", mesh_instances.size());
@@ -6234,27 +6136,10 @@ int main(int argc, char* argv[]) {
         }
         ImGui::End();
 
-        ImGui::Begin(ICON_FA_SITEMAP " Scene Hierarchy");
-        if (ImGui::BeginPopupContextItem()) {
-            if (ImGui::MenuItem("Create Node")) {
-                scene.create_entity("New Node");
-            }
-            ImGui::EndPopup();
-        }
+        editor.render_scene_hierarchy_window(scene);
 
-        auto view =
-            scene.entity_registry.view<components::Transform, components::Name>(entt::exclude<components::Parent>);
-        for (auto [e, t, n] : view.each()) {
-            draw_node_in_hierarchy(scene, e, selected_entity);
-        }
-
-        if (ImGui::IsMouseDown(0) && ImGui::IsWindowHovered()) {
-            selected_entity = entt::null;
-        }
-        ImGui::End();
-
-        if (selected_entity != entt::null) {
-            auto t = scene.get_component<components::Transform>(selected_entity);
+        if (editor.get_selected_entity() != entt::null) {
+            auto t = scene.get_component<components::Transform>(editor.get_selected_entity());
 
             glm::mat4 transform = glm::translate(glm::mat4(1.0f), t->world_position);
             transform           = transform * glm::mat4_cast(t->world_rotation);
@@ -6305,7 +6190,7 @@ int main(int argc, char* argv[]) {
                     t->scale *= scale.x;
                 }
 
-                auto p = scene.get_component<components::Physics>(selected_entity);
+                auto p = scene.get_component<components::Physics>(editor.get_selected_entity());
                 if (p && !p->is_static) {
                     JPH::EActivation activation = JPH::EActivation::Activate;
 
@@ -6462,10 +6347,10 @@ int main(int argc, char* argv[]) {
 
         if (pressed_keys[SDL_SCANCODE_C] && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
             if (pressed_buttons[SDL_BUTTON_LEFT] && released_buttons[SDL_BUTTON_LEFT]) {
-                if (selected_entity != entt::null) {
-                    auto t = scene.get_component<components::Transform>(selected_entity);
-                    auto m = scene.get_component<components::Mesh>(selected_entity);
-                    auto n = scene.get_component<components::Name>(selected_entity);
+                if (editor.get_selected_entity() != entt::null) {
+                    auto t = scene.get_component<components::Transform>(editor.get_selected_entity());
+                    auto m = scene.get_component<components::Mesh>(editor.get_selected_entity());
+                    auto n = scene.get_component<components::Name>(editor.get_selected_entity());
 
                     if (t && m && n) {
                         glm::vec2 pos  = screen_pos_to_scene_vewport(mouse_pos);

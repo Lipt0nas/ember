@@ -43,4 +43,11 @@ namespace components {
 
         float last_scale = 1.0f;
     };
+
+    struct Script {
+        uint32_t script_id;
+
+        // NOTE: maybe script system could just keep the instances
+        void* object = nullptr;
+    };
 } // namespace components
