@@ -41,8 +41,8 @@ struct alignas(16) Mesh {
 };
 
 struct MeshInstance {
-    int mesh_id;
-    int material_id;
+    int mesh_id     = 0;
+    int material_id = 0;
 
     glm::vec3 position = {};
     float     scale    = 1.0f;

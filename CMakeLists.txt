@@ -159,6 +159,14 @@ FetchContent_Declare(
   GIT_SHALLOW TRUE
 )
 
+FetchContent_Declare(
+  angelscript
+  GIT_REPOSITORY  https://github.com/anjo76/angelscript
+  GIT_TAG v2.38.0 
+  GIT_SHALLOW TRUE
+  SOURCE_SUBDIR sdk/angelscript/projects/cmake
+)
+
 FetchContent_MakeAvailable(
     glm
     sdl
@@ -174,7 +182,33 @@ FetchContent_MakeAvailable(
     tracy
     JoltPhysics
     entt
+    angelscript
 )
+
+set(AS_ADDON_DIR "${angelscript_SOURCE_DIR}/sdk/add_on")
+
+add_library(angelscript_addons STATIC
+    ${AS_ADDON_DIR}/scriptbuilder/scriptbuilder.cpp
+    ${AS_ADDON_DIR}/scriptstdstring/scriptstdstring.cpp
+    ${AS_ADDON_DIR}/scriptstdstring/scriptstdstring_utils.cpp
+    ${AS_ADDON_DIR}/scriptarray/scriptarray.cpp
+    ${AS_ADDON_DIR}/scripthandle/scripthandle.cpp
+    ${AS_ADDON_DIR}/weakref/weakref.cpp
+    ${AS_ADDON_DIR}/scriptdictionary/scriptdictionary.cpp
+    ${AS_ADDON_DIR}/scriptgrid/scriptgrid.cpp
+)
+
+target_include_directories(angelscript_addons PUBLIC
+    ${AS_ADDON_DIR}/scriptbuilder
+    ${AS_ADDON_DIR}/scriptstdstring
+    ${AS_ADDON_DIR}/scriptarray
+    ${AS_ADDON_DIR}/scripthandle
+    ${AS_ADDON_DIR}/weakref
+    ${AS_ADDON_DIR}/scriptdictionary
+    ${AS_ADDON_DIR}/scriptgrid
+)
+
+target_link_libraries(angelscript_addons PUBLIC angelscript)
 
 add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -227,6 +261,8 @@ set(SOURCES
     "src/geometry.cpp"
     "src/scene.cpp"
     "src/embedded.cpp"
+    "src/script_system.cpp"
+    "src/editor.cpp"
 )
 add_executable(Ember ${SOURCES})
 
@@ -246,6 +282,8 @@ target_link_libraries(Ember PRIVATE
     TracyClient
     Jolt
     EnTT::EnTT
+    angelscript
+    angelscript_addons
 )
 
 # TODO: temporary convenience
