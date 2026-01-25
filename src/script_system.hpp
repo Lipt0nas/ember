@@ -49,8 +49,8 @@ private:
 
     std::unordered_map<uint32_t, Script> scripts;
 
-    void   clone_node(const std::string& name, float x, float y, float z);
-    Entity clone_node_internal(Entity e, float x, float y, float z);
+    Entity clone_node(const std::string& name);
+    Entity clone_node_internal(Entity e);
     Entity get_node(const std::string& name);
 
     bool cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance, float& t, uint32_t& entity);
@@ -60,6 +60,8 @@ private:
 
     glm::vec3 get_node_position(Entity entity);
     float     get_node_scale(Entity entity);
+
+    void set_node_physics_body_box(Entity entity, glm::vec3 half_extents);
 
     glm::vec3 player_pos;
     glm::vec3 get_player_position() {

@@ -825,10 +825,7 @@ ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, Inp
 
     engine->SetDefaultNamespace("World");
     engine->RegisterGlobalFunction(
-        "void clone_node(string &in, float, float, float)",
-        asMETHOD(ScriptSystem, ScriptSystem::clone_node),
-        asCALL_THISCALL_ASGLOBAL,
-        this
+        "uint clone_node(string &in)", asMETHOD(ScriptSystem, ScriptSystem::clone_node), asCALL_THISCALL_ASGLOBAL, this
     );
 
     engine->RegisterGlobalFunction(
@@ -876,6 +873,13 @@ ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, Inp
     engine->RegisterGlobalFunction(
         "void set_node_scale(uint, float)",
         asMETHOD(ScriptSystem, ScriptSystem::set_node_scale),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
+        "void set_node_physics_body_box(uint, vec3)",
+        asMETHOD(ScriptSystem, ScriptSystem::set_node_physics_body_box),
         asCALL_THISCALL_ASGLOBAL,
         this
     );
@@ -1061,19 +1065,20 @@ void ScriptSystem::call_on_fixed_update(const components::Script& s, float delta
     }
 }
 
-void ScriptSystem::clone_node(const std::string& name, float x, float y, float z) {
+Entity ScriptSystem::clone_node(const std::string& name) {
     Entity base = get_node(name);
 
     if (base != entt::null) {
-        clone_node_internal(base, x, y, z);
+        return clone_node_internal(base);
     }
+
+    return entt::null;
 }
 
-Entity ScriptSystem::clone_node_internal(Entity e, float x, float y, float z) {
+Entity ScriptSystem::clone_node_internal(Entity e) {
     auto src_name = scene.get_component<components::Name>(e);
 
-    Entity new_entity                                                = scene.create_entity(src_name->name + "_clone");
-    scene.get_component<components::Transform>(new_entity)->position = glm::vec3(x, y, z);
+    Entity new_entity = scene.create_entity(src_name->name + "_clone");
 
     auto src_physics = scene.get_component<components::Physics>(e);
     if (src_physics) {
@@ -1120,7 +1125,7 @@ Entity ScriptSystem::clone_node_internal(Entity e, float x, float y, float z) {
     auto src_children = scene.get_component<components::Children>(e);
     if (src_children) {
         for (Entity child : src_children->children) {
-            Entity new_child = clone_node_internal(child, x, y, z);
+            Entity new_child = clone_node_internal(child);
             scene.set_node_parent(new_child, new_entity);
         }
     }
@@ -1187,4 +1192,36 @@ glm::vec3 ScriptSystem::get_node_position(Entity entity) {
 
 float ScriptSystem::get_node_scale(Entity entity) {
     return scene.get_component<components::Transform>(entity)->scale;
+}
+
+void ScriptSystem::set_node_physics_body_box(Entity entity, glm::vec3 half_extents) {
+    auto p = scene.get_component<components::Physics>(entity);
+
+    if (!p) {
+        return;
+    }
+
+    auto t = scene.get_component<components::Transform>(entity);
+
+    if (!p->body_id.IsInvalid()) {
+        physics_system.GetBodyInterface().RemoveBody(p->body_id);
+        physics_system.GetBodyInterface().DestroyBody(p->body_id);
+    }
+
+    auto body_settings = JPH::BodyCreationSettings(
+        new JPH::BoxShape(JPH::RVec3(half_extents.x, half_extents.y, half_extents.z)),
+        JPH::Vec3(t->position.x, t->position.y, t->position.z),
+        JPH::Quat::sIdentity(),
+        JPH::EMotionType::Dynamic,
+        Layers::MOVING
+    );
+    body_settings.mFriction                     = 0.7f;
+    body_settings.mRestitution                  = 0.1f;
+    body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
+    body_settings.mMassPropertiesOverride.mMass = 1.0f;
+
+    JPH::BodyID body_id = physics_system.GetBodyInterface().CreateAndAddBody(body_settings, JPH::EActivation::Activate);
+    p->body_id          = body_id;
+    p->is_static        = false;
+    p->last_scale       = t->scale;
 }
