@@ -2,6 +2,7 @@
 
 #include "components.hpp"
 #include "ember.hpp"
+#include "input_system.hpp"
 #include "physics.hpp"
 #include "scene.hpp"
 
@@ -16,9 +17,11 @@ struct Script {
 
 class ScriptSystem {
 public:
-    ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system);
+    ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system);
 
     void load_scripts(const std::filesystem::path& path);
+    // Destroys all script objects from nodes that have the script component
+    void clear();
 
     const std::unordered_map<uint32_t, Script>& get_scripts();
 
@@ -26,9 +29,18 @@ public:
     void call_on_update(const components::Script& script, float delta);
     void call_on_fixed_update(const components::Script& script, float delta);
 
+    void set_player_position(glm::vec3 position) {
+        this->player_pos = position;
+    }
+
+    void set_player_look_dir(glm::vec3 direction) {
+        this->player_look_dir = direction;
+    }
+
 private:
     Scene&              scene;
     JPH::PhysicsSystem& physics_system;
+    InputSystem&        input_system;
 
     class asIScriptEngine* engine;
 
@@ -39,4 +51,23 @@ private:
 
     void   clone_node(const std::string& name, float x, float y, float z);
     Entity clone_node_internal(Entity e, float x, float y, float z);
+    Entity get_node(const std::string& name);
+
+    bool cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance, float& t, uint32_t& entity);
+
+    void set_node_position(Entity entity, glm::vec3 position);
+    void set_node_scale(Entity entity, float scale);
+
+    glm::vec3 get_node_position(Entity entity);
+    float     get_node_scale(Entity entity);
+
+    glm::vec3 player_pos;
+    glm::vec3 get_player_position() {
+        return player_pos;
+    }
+
+    glm::vec3 player_look_dir;
+    glm::vec3 get_player_look_direction() {
+        return player_look_dir;
+    }
 };

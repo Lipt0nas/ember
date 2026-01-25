@@ -161,10 +161,21 @@ FetchContent_Declare(
 
 FetchContent_Declare(
   angelscript
-  GIT_REPOSITORY  https://github.com/anjo76/angelscript
+  GIT_REPOSITORY https://github.com/anjo76/angelscript
   GIT_TAG v2.38.0 
   GIT_SHALLOW TRUE
   SOURCE_SUBDIR sdk/angelscript/projects/cmake
+)
+
+
+set(BUILD_DOC OFF)
+set(BUILD_SANDBOX OFF)
+set(SKIP_PERFORMANCE_COMPARISON ON)
+FetchContent_Declare(
+  cereal 
+  GIT_REPOSITORY https://github.com/USCiLab/cereal
+  GIT_TAG v1.3.2 
+  GIT_SHALLOW TRUE
 )
 
 FetchContent_MakeAvailable(
@@ -183,6 +194,7 @@ FetchContent_MakeAvailable(
     JoltPhysics
     entt
     angelscript
+    cereal
 )
 
 set(AS_ADDON_DIR "${angelscript_SOURCE_DIR}/sdk/add_on")
@@ -263,6 +275,7 @@ set(SOURCES
     "src/embedded.cpp"
     "src/script_system.cpp"
     "src/editor.cpp"
+    "src/input_system.cpp"
 )
 add_executable(Ember ${SOURCES})
 
@@ -284,6 +297,7 @@ target_link_libraries(Ember PRIVATE
     EnTT::EnTT
     angelscript
     angelscript_addons
+    cereal
 )
 
 # TODO: temporary convenience
