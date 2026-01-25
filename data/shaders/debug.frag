@@ -40,10 +40,6 @@ void main() {
         vec3 irradiance = vec3(0.0);
         bool valid_probe = probe.state == 1;
 
-        if (lighting.use_probe_state == 0) {
-            valid_probe = true;
-        }
-
         if (valid_probe) {
             irradiance = texture(ddgi_irradiance, ddgi_probe_uv(lighting.probe_counts, in_probe_index, normalize(in_normal), lighting.texels_per_probe)).rgb;
 

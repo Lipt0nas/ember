@@ -149,7 +149,7 @@ struct LightingUBO {
     vec3 camera_pos;
     int frame_index;
 
-    int use_probe_state;
+    float gi_intensity;
     int use_bent_normals;
     int compensate_specular;
     int disney_diffuse;

@@ -8,6 +8,7 @@
 #include "framegraph.hpp"
 #include "geometry.hpp"
 #include "imgui_internal.h"
+#include "input_system.hpp"
 #include "physics.hpp"
 #include "pipeline.hpp"
 #include "resources.hpp"
@@ -17,13 +18,15 @@
 #include "swapchain.hpp"
 #include "ui.hpp"
 
-#include <format>
 #include <map>
 
 #include <glm/gtc/random.hpp>
 
 #include <tracy/Tracy.hpp>
 #include <tracy/TracyVulkan.hpp>
+
+#include <cereal/archives/binary.hpp>
+#include <cereal/archives/json.hpp>
 
 #include <ImGuizmo.h>
 
@@ -284,10 +287,10 @@ struct alignas(16) LightingUBO {
     glm::vec3 camera_pos;
     int       frame_index;
 
-    int use_probe_state;
-    int use_bent_normals;
-    int compensate_specular;
-    int disney_diffuse;
+    float gi_intensity;
+    int   use_bent_normals;
+    int   compensate_specular;
+    int   disney_diffuse;
 
     glm::vec4 sky_hemisphere_top;
     glm::vec4 sky_hemisphere_bottom;
@@ -437,7 +440,7 @@ DebugRenderer create_debug_renderer(
     IcosphereGenerator generator;
     generator.generate(0.45, 3);
 
-    auto max_instances = 2048 * 5;
+    auto max_instances = 64 * 64 * 64; // NOTE: might be a little overkill
 
     auto vertices = generator.get_vertices();
     auto indices  = generator.get_indices();
@@ -1000,16 +1003,16 @@ int main(int argc, char* argv[]) {
     LightingUBO lighting_data    = {
            .light_direction  = glm::vec4(-0.2f, -0.7f, -1.0f, 0.0f),
            .light_color      = glm::vec4(1.0, 0.9, 0.8, 5.0f),
-           .grid_origin      = {0, 15, 0},
-           .probe_spacing    = 5.0f,
-           .probe_counts     = {16, 8, 16},
+           .grid_origin      = {0, 10.0f, 0},
+           .probe_spacing    = 2.5f,
+           .probe_counts     = {32, 16, 32},
            .texels_per_probe = 6,
            .camera_pos       = {},
            .frame_index      = {},
     };
 
     lighting_data.use_bent_normals         = 1;
-    lighting_data.use_probe_state          = 1;
+    lighting_data.gi_intensity             = 1.5f;
     lighting_data.compensate_specular      = 1;
     lighting_data.multibounce              = 1;
     lighting_data.remove_visibility_checks = 0;
@@ -1787,18 +1790,12 @@ int main(int argc, char* argv[]) {
     JPH::BodyInterface& physics_body_interface = physics_system.GetBodyInterface();
 
     const float                             player_height          = 1.8f;
-    const float                             player_radius          = 0.3f;
-    const float                             player_speed           = 10.0f;
-    const float                             player_sprint_modifier = 2.0f;
-    const float                             player_jump_velocity   = 10.0f;
+    const float                             player_radius          = 0.5f;
+    const float                             player_speed           = 5.0f;
+    const float                             player_sprint_modifier = 1.5f;
+    const float                             player_jump_velocity   = 4.0f;
     JPH::Ref<JPH::CharacterVirtualSettings> character_settings     = new JPH::CharacterVirtualSettings();
-    character_settings->mShape            = new JPH::CapsuleShape(player_height / 2.0f - player_radius, player_radius);
-    character_settings->mMass             = 180.0f;
-    character_settings->mMaxSlopeAngle    = JPH::DegreesToRadians(45.0f);
-    character_settings->mMaxStrength      = 100.0f;
-    character_settings->mCharacterPadding = 0.02f;
-    character_settings->mPenetrationRecoverySpeed  = 1.0f;
-    character_settings->mPredictiveContactDistance = 0.1f;
+    character_settings->mShape = new JPH::CapsuleShape(player_height / 2.0f - player_radius, player_radius);
 
     JPH::CharacterVirtual* player_character = new JPH::CharacterVirtual(
         character_settings, JPH::RVec3(0.0, 0.0, 0.0), JPH::Quat::sIdentity(), 0, &physics_system
@@ -1837,9 +1834,10 @@ int main(int argc, char* argv[]) {
         command_buffers[0]
     );
 
+    InputSystem input_system;
+
     spdlog::info("Initializing script system");
-    bool         run_scripts = false;
-    ScriptSystem script_system(scene, physics_system);
+    ScriptSystem script_system(scene, physics_system, input_system);
     if (!script_load_path.empty()) {
         script_system.load_scripts(script_load_path);
     }
@@ -1857,6 +1855,15 @@ int main(int argc, char* argv[]) {
     }
 
     populate_materials(scene, global_texture_descriptor_set, device);
+
+    std::stringstream scene_state_snapshot;
+    // We want to avoid clearing static bodies which are constructed from
+    // the source geometry, as this would force us to either:
+    // keep vertex positions and indices on the CPU at all times
+    // or readback from the GPU on demand
+    // either option feels unnecessary, at least for the time being, so instead
+    // we never unload these bodies during save/load and reassign then back
+    std::unordered_map<entt::entity, JPH::BodyID> static_body_load_map;
 
     RTScene rt_scene = {};
 
@@ -1919,15 +1926,7 @@ int main(int argc, char* argv[]) {
     float camera_shutter_time = 1.0f / 60.0f;
     float camera_iso          = 100.0f;
 
-    bool      capturing_mouse = false;
-    glm::vec2 mouse_pos       = {};
-
-    std::array<bool, 512> pressed_keys    = {0};
-    std::array<bool, 12>  pressed_buttons = {0};
-
-    std::array<bool, 512> released_keys    = {1};
-    std::array<bool, 12>  released_buttons = {1};
-
+    bool                capturing_mouse   = false;
     ImGuizmo::OPERATION tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
 
     bool      enable_transform_snap = false;
@@ -1936,7 +1935,9 @@ int main(int argc, char* argv[]) {
 
     bool enable_particles = false;
 
-    bool                                        editor_mode = true;
+    bool editor_mode = true;
+    // To allow being in gameplay mode with the editor overlay
+    bool                                        editor_overlay = true;
     std::map<std::string, EditorViewportSource> editor_viewport_source_handles;
 
     auto add_viewport_source = [&](const std::string& name, Image& image) {
@@ -1990,7 +1991,7 @@ int main(int argc, char* argv[]) {
 
     std::array<uint64_t, 2> pipeline_stats;
 
-    float min_log_lum    = -8.0f;
+    float min_log_lum    = -4.0f;
     float max_log_lum    = 4.0f;
     float adaption_speed = 1.1f;
 
@@ -5344,7 +5345,7 @@ int main(int argc, char* argv[]) {
                 swapchain.images[swapchain_image_index],
                 command_buffer,
                 VK_IMAGE_LAYOUT_UNDEFINED,
-                editor_mode ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                editor_overlay ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 0,
                 VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -5358,7 +5359,7 @@ int main(int argc, char* argv[]) {
                 }
             );
 
-            if (!editor_mode) {
+            if (!editor_overlay) {
                 auto& blit_source = smaa_output;
                 image_pipeline_barrier(
                     blit_source,
@@ -5422,7 +5423,7 @@ int main(int argc, char* argv[]) {
                     .resolveMode        = VK_RESOLVE_MODE_NONE,
                     .resolveImageView   = VK_NULL_HANDLE,
                     .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                    .loadOp             = editor_mode ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+                    .loadOp             = editor_overlay ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
                     .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
                     .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
                 };
@@ -5451,7 +5452,7 @@ int main(int argc, char* argv[]) {
             image_pipeline_barrier(
                 swapchain.images[swapchain_image_index],
                 command_buffer,
-                editor_mode ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                editor_overlay ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -5522,31 +5523,18 @@ int main(int argc, char* argv[]) {
                 running = false;
                 break;
             case SDL_EVENT_KEY_DOWN:
-                pressed_keys[window_event.key.scancode] = true;
-
-                if (pressed_keys[SDL_SCANCODE_LSHIFT]) {
-                    if (window_event.key.scancode == SDL_SCANCODE_C) {
-                        tranform_gizmo_op = ImGuizmo::OPERATION::SCALEU;
-                    }
-
-                    if (window_event.key.scancode == SDL_SCANCODE_R) {
-                        tranform_gizmo_op = ImGuizmo::OPERATION::ROTATE;
-                    }
-
-                    if (window_event.key.scancode == SDL_SCANCODE_T) {
-                        tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
-                    }
-                }
+                input_system.pressed_keys[window_event.key.scancode] = true;
                 break;
             case SDL_EVENT_KEY_UP:
-                pressed_keys[window_event.key.scancode]  = false;
-                released_keys[window_event.key.scancode] = true;
+                input_system.pressed_keys[window_event.key.scancode]  = false;
+                input_system.released_keys[window_event.key.scancode] = true;
 
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                pressed_buttons[window_event.button.button] = true;
+                input_system.pressed_buttons[window_event.button.button] = true;
 
-                if (window_event.button.button == SDL_BUTTON_RIGHT && coords_in_scene_viewport(mouse_pos)) {
+                if (window_event.button.button == SDL_BUTTON_RIGHT &&
+                    coords_in_scene_viewport(input_system.get_mouse_position())) {
                     SDL_SetWindowMouseGrab(window, true);
                     SDL_SetWindowRelativeMouseMode(window, true);
 
@@ -5554,8 +5542,8 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
-                pressed_buttons[window_event.button.button]  = false;
-                released_buttons[window_event.button.button] = true;
+                input_system.pressed_buttons[window_event.button.button]  = false;
+                input_system.released_buttons[window_event.button.button] = true;
 
                 if (window_event.button.button == SDL_BUTTON_RIGHT && capturing_mouse) {
                     SDL_SetWindowMouseGrab(window, false);
@@ -5571,7 +5559,7 @@ int main(int argc, char* argv[]) {
                 auto x = static_cast<float>(window_event.motion.x);
                 auto y = static_cast<float>(window_event.motion.y);
 
-                mouse_pos = {x, y};
+                input_system.mouse_pos = {x, y};
 
                 if (capturing_mouse) {
                     camera.orientation =
@@ -5593,13 +5581,13 @@ int main(int argc, char* argv[]) {
         }
 
         float current_player_speed = player_speed;
-        if (pressed_keys[SDL_SCANCODE_LSHIFT] | pressed_keys[SDL_SCANCODE_LCTRL]) {
-            if (pressed_keys[SDL_SCANCODE_LCTRL]) {
+        if (input_system.is_key_pressed(SDL_SCANCODE_LSHIFT) || input_system.is_key_pressed(SDL_SCANCODE_LCTRL)) {
+            if (input_system.is_key_pressed(SDL_SCANCODE_LCTRL)) {
                 camera_speed = base_camera_speed / camera_speed_mod;
                 current_player_speed /= player_sprint_modifier;
             }
 
-            if (pressed_keys[SDL_SCANCODE_LSHIFT]) {
+            if (input_system.is_key_pressed(SDL_SCANCODE_LSHIFT)) {
                 camera_speed = base_camera_speed * camera_speed_mod;
                 current_player_speed *= player_sprint_modifier;
             }
@@ -5608,23 +5596,23 @@ int main(int argc, char* argv[]) {
         }
 
         glm::vec3 velocity = glm::vec3(0.0);
-        if (pressed_keys[SDL_SCANCODE_W]) {
+        if (input_system.is_key_pressed(SDL_SCANCODE_W)) {
             velocity.x = 1;
         }
 
-        if (pressed_keys[SDL_SCANCODE_S]) {
+        if (input_system.is_key_pressed(SDL_SCANCODE_S)) {
             velocity.x = -1;
         }
 
-        if (pressed_keys[SDL_SCANCODE_A]) {
+        if (input_system.is_key_pressed(SDL_SCANCODE_A)) {
             velocity.y = -1;
         }
 
-        if (pressed_keys[SDL_SCANCODE_D]) {
+        if (input_system.is_key_pressed(SDL_SCANCODE_D)) {
             velocity.y = 1;
         }
 
-        if (pressed_keys[SDL_SCANCODE_G] && released_keys[SDL_SCANCODE_G]) {
+        if (input_system.is_key_just_pressed(SDL_SCANCODE_G)) {
             player_physics = !player_physics;
 
             if (player_physics) {
@@ -5632,15 +5620,102 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (pressed_keys[SDL_SCANCODE_P] && released_keys[SDL_SCANCODE_P]) {
+        if (input_system.is_key_just_pressed(SDL_SCANCODE_P)) {
             visualize_probes = !visualize_probes;
         }
 
-        if (pressed_keys[SDL_SCANCODE_F5] && released_keys[SDL_SCANCODE_F5]) {
-            editor_mode = !editor_mode;
+        if (input_system.is_key_just_pressed(SDL_SCANCODE_GRAVE)) {
+            editor_overlay = !editor_overlay;
         }
 
-        if (pressed_keys[SDL_SCANCODE_ESCAPE]) {
+        if (input_system.is_key_just_pressed(SDL_SCANCODE_F5)) {
+            editor_mode = !editor_mode;
+
+            if (editor_mode) {
+                // Entering editor state
+                editor_overlay = true;
+
+                auto physics_view = scene.entity_registry.view<components::Physics>();
+                for (auto [e, p] : physics_view.each()) {
+                    if (!p.body_id.IsInvalid()) {
+                        if (!p.is_static) {
+                            physics_body_interface.RemoveBody(p.body_id);
+                            physics_body_interface.DestroyBody(p.body_id);
+                        }
+                    }
+                }
+
+                script_system.clear();
+                scene.entity_registry.clear();
+
+                cereal::BinaryInputArchive input(scene_state_snapshot);
+
+                entt::snapshot_loader(scene.entity_registry)
+                    .get<entt::entity>(input)
+                    .get<components::Transform>(input)
+                    .get<components::Name>(input)
+                    .get<components::Mesh>(input)
+                    .get<components::Parent>(input)
+                    .get<components::Children>(input)
+                    .get<components::Script>(input)
+                    .get<components::Physics>(input);
+
+                auto view = scene.entity_registry.view<components::Physics, components::Mesh, components::Transform>();
+                for (auto [e, p, m, t] : view.each()) {
+                    if (p.is_static) {
+                        if (static_body_load_map.contains(e)) {
+                            p.body_id = static_body_load_map.at(e);
+                        }
+                    }
+                }
+
+                SDL_SetWindowMouseGrab(window, false);
+                SDL_SetWindowRelativeMouseMode(window, false);
+                capturing_mouse = false;
+            } else {
+                // Entering play state
+                editor_overlay = false;
+
+                scene_state_snapshot.str("");
+                scene_state_snapshot.clear();
+
+                static_body_load_map.clear();
+
+                cereal::BinaryOutputArchive output(scene_state_snapshot);
+
+                entt::snapshot(scene.entity_registry)
+                    .get<entt::entity>(output)
+                    .get<components::Transform>(output)
+                    .get<components::Name>(output)
+                    .get<components::Mesh>(output)
+                    .get<components::Parent>(output)
+                    .get<components::Children>(output)
+                    .get<components::Script>(output)
+                    .get<components::Physics>(output);
+
+                auto physics_view = scene.entity_registry.view<components::Physics>();
+                for (auto [e, p] : physics_view.each()) {
+                    if (!p.body_id.IsInvalid()) {
+                        if (p.is_static) {
+                            static_body_load_map.insert({e, p.body_id});
+                        }
+                    }
+                }
+
+                auto view = scene.entity_registry.view<components::Script>();
+                for (auto [e, s] : view.each()) {
+                    script_system.initialize(s);
+                }
+            }
+        }
+
+        if (!editor_overlay) {
+            SDL_SetWindowMouseGrab(window, true);
+            SDL_SetWindowRelativeMouseMode(window, true);
+            capturing_mouse = true;
+        }
+
+        if (input_system.is_key_just_pressed(SDL_SCANCODE_ESCAPE)) {
             running = false;
         }
 
@@ -5699,7 +5774,7 @@ int main(int argc, char* argv[]) {
             auto update_view = scene.entity_registry.view<components::Transform, components::Physics>();
 
             while (physics_time_accumulator >= physics_delta_time) {
-                if (run_scripts) {
+                if (!editor_mode) {
                     auto script_view = scene.entity_registry.view<components::Script>();
                     for (auto [e, s] : script_view.each()) {
                         script_system.call_on_fixed_update(s, physics_delta_time);
@@ -5753,7 +5828,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (run_scripts) {
+        if (!editor_mode) {
             auto script_view = scene.entity_registry.view<components::Script>();
             for (auto [e, s] : script_view.each()) {
                 script_system.call_on_update(s, delta_time);
@@ -5818,7 +5893,8 @@ int main(int argc, char* argv[]) {
             static bool                         jumped       = false;
             JPH::CharacterVirtual::EGroundState ground_state = player_character->GetGroundState();
 
-            if (pressed_keys[SDL_SCANCODE_SPACE] && ground_state == JPH::CharacterVirtual::EGroundState::OnGround) {
+            if (input_system.is_key_pressed(SDL_SCANCODE_SPACE) &&
+                ground_state == JPH::CharacterVirtual::EGroundState::OnGround) {
                 if (!jumped) {
                     desired_velocity.SetY(player_jump_velocity);
                     jumped = true;
@@ -5878,6 +5954,9 @@ int main(int argc, char* argv[]) {
 
         update_camera(camera);
 
+        script_system.set_player_position(camera.position);
+        script_system.set_player_look_dir(camera.orientation * glm::vec3(0, 0, -1));
+
         luminance_constants.time_coef          = glm::clamp(1.0f - glm::exp(-delta_time * adaption_speed), 0.0f, 1.0f);
         luminance_constants.min_log2_luminance = min_log_lum;
         luminance_constants.inverse_log2_luminance = 1.0f / (max_log_lum - min_log_lum);
@@ -5893,7 +5972,7 @@ int main(int argc, char* argv[]) {
         ImGuizmo::BeginFrame();
 
         ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
-        if (editor_mode) {
+        if (editor_overlay) {
             ImGui::Begin(ICON_FA_VIDEO " Scene Viewport", nullptr, ImGuiWindowFlags_MenuBar);
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu(ICON_FA_ARROW_CIRCLE_RIGHT " Viewport Source")) {
@@ -5906,15 +5985,7 @@ int main(int argc, char* argv[]) {
                 }
 
                 ImGui::Text(": %s", editor_viewport_source.c_str());
-
-                if (ImGui::Checkbox("Run Scripts", &run_scripts)) {
-                    if (run_scripts) {
-                        auto view = scene.entity_registry.view<components::Script>();
-                        for (auto [e, s] : view.each()) {
-                            script_system.initialize(s);
-                        }
-                    }
-                }
+                ImGui::Text("        State: %s", editor_mode ? "Editor" : "Gameplay");
                 ImGui::EndMenuBar();
             }
 
@@ -6051,12 +6122,12 @@ int main(int argc, char* argv[]) {
                 ImGui::EndCombo();
             }
 
+            ImGui::DragFloat("GI Intensity", &lighting_data.gi_intensity, 0.01);
             ImGui::DragFloat("Probe Spacing", &lighting_data.probe_spacing, 0.01, 0.1, 10.0);
             ImGui::DragFloat3("Grid Origin", &lighting_data.grid_origin.x, 0.03, -100.0, 100.0);
             ImGui::Checkbox("Visualize Probes", (bool*)&visualize_probes);
             ImGui::Checkbox("Cull Innactive Probes", (bool*)&debug_renderer_constants.cull_innactive_probes);
             ImGui::Checkbox("Multibounce Diffuse", (bool*)&lighting_data.multibounce);
-            ImGui::Checkbox("Use Probe State", (bool*)&lighting_data.use_probe_state);
 
             ImGui::SeparatorText("Light Pass");
             ImGui::Checkbox("Use Bent Normals", (bool*)&lighting_data.use_bent_normals);
@@ -6139,6 +6210,20 @@ int main(int argc, char* argv[]) {
         editor.render_scene_hierarchy_window(scene);
 
         if (editor.get_selected_entity() != entt::null) {
+            if (input_system.is_key_pressed(SDL_SCANCODE_LSHIFT)) {
+                if (input_system.is_key_just_pressed(SDL_SCANCODE_C)) {
+                    tranform_gizmo_op = ImGuizmo::OPERATION::SCALEU;
+                }
+
+                if (input_system.is_key_just_pressed(SDL_SCANCODE_R)) {
+                    tranform_gizmo_op = ImGuizmo::OPERATION::ROTATE;
+                }
+
+                if (input_system.is_key_just_pressed(SDL_SCANCODE_T)) {
+                    tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
+                }
+            }
+
             auto t = scene.get_component<components::Transform>(editor.get_selected_entity());
 
             glm::mat4 transform = glm::translate(glm::mat4(1.0f), t->world_position);
@@ -6345,8 +6430,9 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (pressed_keys[SDL_SCANCODE_C] && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
-            if (pressed_buttons[SDL_BUTTON_LEFT] && released_buttons[SDL_BUTTON_LEFT]) {
+        glm::vec2 mouse_pos = input_system.get_mouse_position();
+        if (input_system.is_key_pressed(SDL_SCANCODE_C) && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
+            if (input_system.is_button_just_pressed(SDL_BUTTON_LEFT)) {
                 if (editor.get_selected_entity() != entt::null) {
                     auto t = scene.get_component<components::Transform>(editor.get_selected_entity());
                     auto m = scene.get_component<components::Mesh>(editor.get_selected_entity());
@@ -6594,8 +6680,9 @@ int main(int argc, char* argv[]) {
 
         framegraph.execute(command_buffer, frame_index);
 
-        if (pressed_keys[SDL_SCANCODE_LSHIFT] && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
-            if (pressed_buttons[SDL_BUTTON_LEFT] && released_buttons[SDL_BUTTON_LEFT]) {
+        if (input_system.is_key_pressed(SDL_SCANCODE_LSHIFT) && !capturing_mouse &&
+            coords_in_scene_viewport(mouse_pos)) {
+            if (input_system.is_button_just_pressed(SDL_BUTTON_LEFT)) {
                 glm::vec2 pos  = screen_pos_to_scene_vewport(mouse_pos);
                 glm::vec2 frac = pos / glm::vec2(viewport_pos_size.z, viewport_pos_size.w);
 
@@ -6719,13 +6806,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        for (int i = 0; i < pressed_keys.size(); i++) {
-            released_keys[i] = !pressed_keys[i];
-        }
-
-        for (int i = 0; i < pressed_buttons.size(); i++) {
-            released_buttons[i] = !pressed_buttons[i];
-        }
+        input_system.update_key_states();
     }
 
     VK_CHECK(vkDeviceWaitIdle(device));

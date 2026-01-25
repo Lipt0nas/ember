@@ -6,6 +6,10 @@
 
 #include <vector>
 
+#include <cereal/cereal.hpp>
+#include <cereal/types/string.hpp>
+#include <cereal/types/vector.hpp>
+
 namespace components {
     struct Transform {
         glm::vec3 position = {};
@@ -50,4 +54,42 @@ namespace components {
         // NOTE: maybe script system could just keep the instances
         void* object = nullptr;
     };
+
+    template <typename Archive> void serialize(Archive& archive, Transform& transform) {
+        archive(
+            transform.position.x,
+            transform.position.y,
+            transform.position.z,
+            transform.scale,
+            transform.rotation.x,
+            transform.rotation.y,
+            transform.rotation.z,
+            transform.rotation.w
+        );
+    }
+
+    template <typename Archive> void serialize(Archive& archive, Name& name) {
+        archive(name.name);
+    }
+
+    template <typename Archive> void serialize(Archive& archive, Mesh& mesh) {
+        archive(mesh.mesh.mesh_id, mesh.mesh.material_id);
+    }
+
+    template <typename Archive> void serialize(Archive& archive, Parent& parent) {
+        archive(parent.parent);
+    }
+
+    template <typename Archive> void serialize(Archive& archive, Children& children) {
+        archive(children.children);
+    }
+
+    template <typename Archive> void serialize(Archive& archive, Physics& physics) {
+        archive(physics.is_static, physics.last_scale);
+    }
+
+    template <typename Archive> void serialize(Archive& archive, Script& script) {
+        archive(script.script_id);
+    }
+
 } // namespace components

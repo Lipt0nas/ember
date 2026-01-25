@@ -26,6 +26,7 @@
 #define GLM_FORCE_QUAT_CTOR_XYZW
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/euler_angles.hpp>
 #include <glm/gtx/string_cast.hpp>
 
 #include <entt/entt.hpp>

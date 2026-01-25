@@ -205,6 +205,30 @@ void Editor::render_scene_node_property_window(
                 }
             }
         }
+
+        auto* n = scene.get_component<components::Name>(selected_entity);
+        if (n) {
+            if (ImGui::CollapsingHeader("Name")) {
+            }
+        }
+
+        auto* p = scene.get_component<components::Parent>(selected_entity);
+        if (p) {
+            if (ImGui::CollapsingHeader("Parent")) {
+            }
+        }
+
+        auto* c = scene.get_component<components::Children>(selected_entity);
+        if (c) {
+            if (ImGui::CollapsingHeader("Children")) {
+            }
+        }
+
+        auto* ph = scene.get_component<components::Physics>(selected_entity);
+        if (ph) {
+            if (ImGui::CollapsingHeader("Physics")) {
+            }
+        }
     }
     ImGui::End();
 }
