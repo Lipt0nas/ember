@@ -1839,7 +1839,7 @@ int main(int argc, char* argv[]) {
     spdlog::info("Initializing script system");
     ScriptSystem script_system(scene, physics_system, input_system);
     if (!script_load_path.empty()) {
-        script_system.load_scripts(script_load_path);
+        script_system.load_scripts(script_load_path, args.get_arg<bool>("script_predefined", false));
     }
 
     // This is updated by a system at the beginning of a frame
@@ -5523,15 +5523,13 @@ int main(int argc, char* argv[]) {
                 running = false;
                 break;
             case SDL_EVENT_KEY_DOWN:
-                input_system.pressed_keys[window_event.key.scancode] = true;
+                input_system.register_key_press(window_event.key.scancode);
                 break;
             case SDL_EVENT_KEY_UP:
-                input_system.pressed_keys[window_event.key.scancode]  = false;
-                input_system.released_keys[window_event.key.scancode] = true;
-
+                input_system.register_key_release(window_event.key.scancode);
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                input_system.pressed_buttons[window_event.button.button] = true;
+                input_system.register_button_press(window_event.button.button);
 
                 if (window_event.button.button == SDL_BUTTON_RIGHT &&
                     coords_in_scene_viewport(input_system.get_mouse_position())) {
@@ -5542,8 +5540,7 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
-                input_system.pressed_buttons[window_event.button.button]  = false;
-                input_system.released_buttons[window_event.button.button] = true;
+                input_system.register_button_release(window_event.button.button);
 
                 if (window_event.button.button == SDL_BUTTON_RIGHT && capturing_mouse) {
                     SDL_SetWindowMouseGrab(window, false);
@@ -5581,13 +5578,13 @@ int main(int argc, char* argv[]) {
         }
 
         float current_player_speed = player_speed;
-        if (input_system.is_key_pressed(SDL_SCANCODE_LSHIFT) || input_system.is_key_pressed(SDL_SCANCODE_LCTRL)) {
-            if (input_system.is_key_pressed(SDL_SCANCODE_LCTRL)) {
+        if (input_system.is_key_pressed(Key::LEFT_SHIFT) || input_system.is_key_pressed(Key::LEFT_CTRL)) {
+            if (input_system.is_key_pressed(Key::LEFT_CTRL)) {
                 camera_speed = base_camera_speed / camera_speed_mod;
                 current_player_speed /= player_sprint_modifier;
             }
 
-            if (input_system.is_key_pressed(SDL_SCANCODE_LSHIFT)) {
+            if (input_system.is_key_pressed(Key::LEFT_SHIFT)) {
                 camera_speed = base_camera_speed * camera_speed_mod;
                 current_player_speed *= player_sprint_modifier;
             }
@@ -5596,23 +5593,23 @@ int main(int argc, char* argv[]) {
         }
 
         glm::vec3 velocity = glm::vec3(0.0);
-        if (input_system.is_key_pressed(SDL_SCANCODE_W)) {
+        if (input_system.is_key_pressed(Key::W)) {
             velocity.x = 1;
         }
 
-        if (input_system.is_key_pressed(SDL_SCANCODE_S)) {
+        if (input_system.is_key_pressed(Key::S)) {
             velocity.x = -1;
         }
 
-        if (input_system.is_key_pressed(SDL_SCANCODE_A)) {
+        if (input_system.is_key_pressed(Key::A)) {
             velocity.y = -1;
         }
 
-        if (input_system.is_key_pressed(SDL_SCANCODE_D)) {
+        if (input_system.is_key_pressed(Key::D)) {
             velocity.y = 1;
         }
 
-        if (input_system.is_key_just_pressed(SDL_SCANCODE_G)) {
+        if (input_system.is_key_just_pressed(Key::G)) {
             player_physics = !player_physics;
 
             if (player_physics) {
@@ -5620,15 +5617,15 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (input_system.is_key_just_pressed(SDL_SCANCODE_P)) {
+        if (input_system.is_key_just_pressed(Key::P)) {
             visualize_probes = !visualize_probes;
         }
 
-        if (input_system.is_key_just_pressed(SDL_SCANCODE_GRAVE)) {
+        if (input_system.is_key_just_pressed(Key::GRAVE)) {
             editor_overlay = !editor_overlay;
         }
 
-        if (input_system.is_key_just_pressed(SDL_SCANCODE_F5)) {
+        if (input_system.is_key_just_pressed(Key::F5)) {
             editor_mode = !editor_mode;
 
             if (editor_mode) {
@@ -5715,7 +5712,7 @@ int main(int argc, char* argv[]) {
             capturing_mouse = true;
         }
 
-        if (input_system.is_key_just_pressed(SDL_SCANCODE_ESCAPE)) {
+        if (input_system.is_key_just_pressed(Key::ESCAPE)) {
             running = false;
         }
 
@@ -5885,6 +5882,7 @@ int main(int argc, char* argv[]) {
 
         if (!player_physics) {
             move_camera(camera, velocity, camera_speed * delta_time);
+            script_system.set_player_velocity(velocity);
         } else {
             glm::vec3 oriented_velocity =
                 camera.orientation * glm::vec3(velocity.y, 0, -velocity.x) * current_player_speed;
@@ -5893,7 +5891,7 @@ int main(int argc, char* argv[]) {
             static bool                         jumped       = false;
             JPH::CharacterVirtual::EGroundState ground_state = player_character->GetGroundState();
 
-            if (input_system.is_key_pressed(SDL_SCANCODE_SPACE) &&
+            if (input_system.is_key_pressed(Key::SPACE) &&
                 ground_state == JPH::CharacterVirtual::EGroundState::OnGround) {
                 if (!jumped) {
                     desired_velocity.SetY(player_jump_velocity);
@@ -5933,6 +5931,8 @@ int main(int argc, char* argv[]) {
                 physics_temp_allocator
             );
 
+            JPH::RVec3 char_vel = player_character->GetLinearVelocity();
+            script_system.set_player_velocity(glm::vec3(char_vel.GetX(), char_vel.GetY(), char_vel.GetZ()));
             JPH::RVec3 char_pos = player_character->GetPosition();
             camera.position =
                 glm::vec3(char_pos.GetX(), char_pos.GetY(), char_pos.GetZ()) + glm::vec3(0, player_height * 0.4f, 0);
@@ -6210,16 +6210,16 @@ int main(int argc, char* argv[]) {
         editor.render_scene_hierarchy_window(scene);
 
         if (editor.get_selected_entity() != entt::null) {
-            if (input_system.is_key_pressed(SDL_SCANCODE_LSHIFT)) {
-                if (input_system.is_key_just_pressed(SDL_SCANCODE_C)) {
+            if (input_system.is_key_pressed(Key::LEFT_SHIFT)) {
+                if (input_system.is_key_just_pressed(Key::C)) {
                     tranform_gizmo_op = ImGuizmo::OPERATION::SCALEU;
                 }
 
-                if (input_system.is_key_just_pressed(SDL_SCANCODE_R)) {
+                if (input_system.is_key_just_pressed(Key::R)) {
                     tranform_gizmo_op = ImGuizmo::OPERATION::ROTATE;
                 }
 
-                if (input_system.is_key_just_pressed(SDL_SCANCODE_T)) {
+                if (input_system.is_key_just_pressed(Key::T)) {
                     tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
                 }
             }
@@ -6431,8 +6431,8 @@ int main(int argc, char* argv[]) {
         }
 
         glm::vec2 mouse_pos = input_system.get_mouse_position();
-        if (input_system.is_key_pressed(SDL_SCANCODE_C) && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
-            if (input_system.is_button_just_pressed(SDL_BUTTON_LEFT)) {
+        if (input_system.is_key_pressed(Key::C) && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
+            if (input_system.is_button_just_pressed(Button::LEFT)) {
                 if (editor.get_selected_entity() != entt::null) {
                     auto t = scene.get_component<components::Transform>(editor.get_selected_entity());
                     auto m = scene.get_component<components::Mesh>(editor.get_selected_entity());
@@ -6680,9 +6680,8 @@ int main(int argc, char* argv[]) {
 
         framegraph.execute(command_buffer, frame_index);
 
-        if (input_system.is_key_pressed(SDL_SCANCODE_LSHIFT) && !capturing_mouse &&
-            coords_in_scene_viewport(mouse_pos)) {
-            if (input_system.is_button_just_pressed(SDL_BUTTON_LEFT)) {
+        if (input_system.is_key_pressed(Key::LEFT_SHIFT) && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
+            if (input_system.is_button_just_pressed(Button::LEFT)) {
                 glm::vec2 pos  = screen_pos_to_scene_vewport(mouse_pos);
                 glm::vec2 frac = pos / glm::vec2(viewport_pos_size.z, viewport_pos_size.w);
 
