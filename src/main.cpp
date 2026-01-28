@@ -1837,9 +1837,12 @@ int main(int argc, char* argv[]) {
     InputSystem input_system;
 
     spdlog::info("Initializing script system");
-    ScriptSystem script_system(scene, physics_system, input_system);
+    ScriptSystem script_system(script_load_path, scene, physics_system, input_system);
     if (!script_load_path.empty()) {
-        script_system.load_scripts(script_load_path, args.get_arg<bool>("script_predefined", false));
+        script_system.load_scripts();
+        if (args.get_arg<bool>("script_predefined", false)) {
+            script_system.generate_predefined_file();
+        }
     }
 
     // This is updated by a system at the beginning of a frame
@@ -5974,6 +5977,8 @@ int main(int argc, char* argv[]) {
 
         ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
         if (editor_overlay) {
+            editor.render_main_menu(scene, script_system);
+
             ImGui::Begin(ICON_FA_VIDEO " Scene Viewport", nullptr, ImGuiWindowFlags_MenuBar);
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu(ICON_FA_ARROW_CIRCLE_RIGHT " Viewport Source")) {

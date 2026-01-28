@@ -14,6 +14,16 @@
 #include <weakref.h>
 
 namespace {
+    auto hash_script = [](const std::filesystem::path& path) -> uint32_t {
+        uint32_t hash = 0;
+
+        for (auto& it : path.string()) {
+            hash = 37 * hash + 17 + static_cast<char>(it);
+        }
+
+        return hash;
+    };
+
     void script_message_callback(const asSMessageInfo* msg, void* param) {
         switch (msg->type) {
         case asMSGTYPE_ERROR:
@@ -26,6 +36,23 @@ namespace {
             spdlog::info("{} ({}:{}): {}", msg->section, msg->row, msg->col, msg->message);
             break;
         }
+    }
+
+    int script_include_callback(const char* include, const char* from, CScriptBuilder* builder, void* user_param) {
+        if (strcmp(include, from) == 0) {
+            return -1;
+        }
+
+        auto scripts = (std::unordered_map<std::string, std::string>*)user_param;
+        auto entry   = scripts->find(include);
+
+        if (entry == scripts->end()) {
+            return -1;
+        }
+
+        builder->AddSectionFromMemory(include, entry->second.c_str(), entry->second.size());
+
+        return 0;
     }
 
     void script_log_trace(const std::string& string) {
@@ -72,6 +99,10 @@ namespace {
         new (memory) glm::vec2(other);
     }
 
+    void vec2_construct_float(float v, void* memory) {
+        new (memory) glm::vec2(v);
+    }
+
     void vec2_destruct(glm::vec2* ptr) {
         ptr->~vec();
     }
@@ -98,6 +129,38 @@ namespace {
 
     glm::vec2 vec2_neg(const glm::vec2* self) {
         return -*self;
+    }
+
+    glm::vec2& vec2_mul_assign_scalar(float scalar, glm::vec2* self) {
+        return (*self *= scalar);
+    }
+
+    glm::vec2& vec2_mul_assign_vec(const glm::vec2& other, glm::vec2* self) {
+        return (*self *= other);
+    }
+
+    glm::vec2& vec2_div_assign_scalar(float scalar, glm::vec2* self) {
+        return (*self /= scalar);
+    }
+
+    glm::vec2& vec2_div_assign_vec(const glm::vec2& other, glm::vec2* self) {
+        return (*self /= other);
+    }
+
+    glm::vec2& vec2_add_assign(const glm::vec2& other, glm::vec2* self) {
+        return (*self += other);
+    }
+
+    glm::vec2& vec2_sub_assign(const glm::vec2& other, glm::vec2* self) {
+        return (*self -= other);
+    }
+
+    glm::vec2 vec2_mul_r(const glm::vec2* self, float scalar) {
+        return scalar * *self;
+    }
+
+    glm::vec2 vec2_div_r(const glm::vec2* self, float scalar) {
+        return glm::vec2(scalar) / *self;
     }
 
     float vec2_length(const glm::vec2* self) {
@@ -130,6 +193,10 @@ namespace {
         new (memory) glm::vec3(other);
     }
 
+    void vec3_construct_float(float v, void* memory) {
+        new (memory) glm::vec3(v);
+    }
+
     void vec3_destruct(glm::vec3* ptr) {
         ptr->~vec();
     }
@@ -156,6 +223,38 @@ namespace {
 
     glm::vec3 vec3_neg(const glm::vec3* self) {
         return -*self;
+    }
+
+    glm::vec3& vec3_mul_assign_scalar(float scalar, glm::vec3* self) {
+        return (*self *= scalar);
+    }
+
+    glm::vec3& vec3_mul_assign_vec(const glm::vec3& other, glm::vec3* self) {
+        return (*self *= other);
+    }
+
+    glm::vec3& vec3_div_assign_scalar(float scalar, glm::vec3* self) {
+        return (*self /= scalar);
+    }
+
+    glm::vec3& vec3_div_assign_vec(const glm::vec3& other, glm::vec3* self) {
+        return (*self /= other);
+    }
+
+    glm::vec3& vec3_add_assign(const glm::vec3& other, glm::vec3* self) {
+        return (*self += other);
+    }
+
+    glm::vec3& vec3_sub_assign(const glm::vec3& other, glm::vec3* self) {
+        return (*self -= other);
+    }
+
+    glm::vec3 vec3_mul_r(const glm::vec3* self, float scalar) {
+        return scalar * *self;
+    }
+
+    glm::vec3 vec3_div_r(const glm::vec3* self, float scalar) {
+        return glm::vec3(scalar) / *self;
     }
 
     float vec3_length(const glm::vec3* self) {
@@ -192,6 +291,10 @@ namespace {
         new (memory) glm::vec4(other);
     }
 
+    void vec4_construct_float(float v, void* memory) {
+        new (memory) glm::vec4(v);
+    }
+
     void vec4_destruct(glm::vec4* ptr) {
         ptr->~vec();
     }
@@ -218,6 +321,38 @@ namespace {
 
     glm::vec4 vec4_neg(const glm::vec4* self) {
         return -*self;
+    }
+
+    glm::vec4& vec4_mul_assign_scalar(float scalar, glm::vec4* self) {
+        return (*self *= scalar);
+    }
+
+    glm::vec4& vec4_mul_assign_vec(const glm::vec4& other, glm::vec4* self) {
+        return (*self *= other);
+    }
+
+    glm::vec4& vec4_div_assign_scalar(float scalar, glm::vec4* self) {
+        return (*self /= scalar);
+    }
+
+    glm::vec4& vec4_div_assign_vec(const glm::vec4& other, glm::vec4* self) {
+        return (*self /= other);
+    }
+
+    glm::vec4& vec4_add_assign(const glm::vec4& other, glm::vec4* self) {
+        return (*self += other);
+    }
+
+    glm::vec4& vec4_sub_assign(const glm::vec4& other, glm::vec4* self) {
+        return (*self -= other);
+    }
+
+    glm::vec4 vec4_mul_r(const glm::vec4* self, float scalar) {
+        return scalar * *self;
+    }
+
+    glm::vec4 vec4_div_r(const glm::vec4* self, float scalar) {
+        return glm::vec4(scalar) / *self;
     }
 
     float vec4_length(const glm::vec4* self) {
@@ -260,6 +395,10 @@ namespace {
 
     glm::vec4 mat4_mul_vec(const glm::vec4& vec, const glm::mat4* self) {
         return *self * vec;
+    }
+
+    glm::mat4& mat4_mul_assign(const glm::mat4& other, glm::mat4* self) {
+        return (*self *= other);
     }
 
     glm::mat4 mat4_translate(const glm::vec3& vec, const glm::mat4* self) {
@@ -330,6 +469,10 @@ namespace {
         return *self * vec;
     }
 
+    glm::quat& quat_mul_assign(const glm::quat& other, glm::quat* self) {
+        return (*self *= other);
+    }
+
     glm::quat quat_normalize(const glm::quat* self) {
         return glm::normalize(*self);
     }
@@ -375,6 +518,11 @@ namespace {
         assert(r >= 0);
 
         r = engine->RegisterObjectBehaviour(
+            "vec2", asBEHAVE_CONSTRUCT, "void f(float)", asFUNCTION(vec2_construct_float), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+
+        r = engine->RegisterObjectBehaviour(
             "vec2", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(vec2_construct_default), asCALL_CDECL_OBJLAST
         );
         assert(r >= 0);
@@ -413,6 +561,39 @@ namespace {
         r = engine->RegisterObjectMethod("vec2", "vec2 opDiv(float) const", asFUNCTION(vec2_div), asCALL_CDECL_OBJLAST);
         assert(r >= 0);
         r = engine->RegisterObjectMethod("vec2", "vec2 opNeg() const", asFUNCTION(vec2_neg), asCALL_CDECL_OBJLAST);
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec2", "vec2 opMul_r(float) const", asFUNCTION(vec2_mul_r), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec2", "vec2 opDiv_r(float) const", asFUNCTION(vec2_div_r), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+
+        r = engine->RegisterObjectMethod(
+            "vec2", "vec2 &opAddAssign(const vec2 &in)", asFUNCTION(vec2_add_assign), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec2", "vec2 &opSubAssign(const vec2 &in)", asFUNCTION(vec2_sub_assign), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec2", "vec2 &opMulAssign(float)", asFUNCTION(vec2_mul_assign_scalar), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec2", "vec2 &opMulAssign(const vec2 &in)", asFUNCTION(vec2_mul_assign_vec), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec2", "vec2 &opDivAssign(float)", asFUNCTION(vec2_div_assign_scalar), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec2", "vec2 &opDivAssign(const vec2 &in)", asFUNCTION(vec2_div_assign_vec), asCALL_CDECL_OBJLAST
+        );
         assert(r >= 0);
 
         r = engine->RegisterObjectMethod("vec2", "float length() const", asFUNCTION(vec2_length), asCALL_CDECL_OBJLAST);
@@ -453,6 +634,12 @@ namespace {
             asCALL_CDECL_OBJLAST
         );
         assert(r >= 0);
+
+        r = engine->RegisterObjectBehaviour(
+            "vec3", asBEHAVE_CONSTRUCT, "void f(float)", asFUNCTION(vec3_construct_float), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+
         r = engine->RegisterObjectBehaviour(
             "vec3", asBEHAVE_CONSTRUCT, "void f(const vec3 &in)", asFUNCTION(vec3_construct_copy), asCALL_CDECL_OBJLAST
         );
@@ -486,6 +673,39 @@ namespace {
         r = engine->RegisterObjectMethod("vec3", "vec3 opDiv(float) const", asFUNCTION(vec3_div), asCALL_CDECL_OBJLAST);
         assert(r >= 0);
         r = engine->RegisterObjectMethod("vec3", "vec3 opNeg() const", asFUNCTION(vec3_neg), asCALL_CDECL_OBJLAST);
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec3", "vec3 opMul_r(float) const", asFUNCTION(vec3_mul_r), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec3", "vec3 opDiv_r(float) const", asFUNCTION(vec3_div_r), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+
+        r = engine->RegisterObjectMethod(
+            "vec3", "vec3 &opAddAssign(const vec3 &in)", asFUNCTION(vec3_add_assign), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec3", "vec3 &opSubAssign(const vec3 &in)", asFUNCTION(vec3_sub_assign), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec3", "vec3 &opMulAssign(float)", asFUNCTION(vec3_mul_assign_scalar), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec3", "vec3 &opMulAssign(const vec3 &in)", asFUNCTION(vec3_mul_assign_vec), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec3", "vec3 &opDivAssign(float)", asFUNCTION(vec3_div_assign_scalar), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec3", "vec3 &opDivAssign(const vec3 &in)", asFUNCTION(vec3_div_assign_vec), asCALL_CDECL_OBJLAST
+        );
         assert(r >= 0);
 
         r = engine->RegisterObjectMethod("vec3", "float length() const", asFUNCTION(vec3_length), asCALL_CDECL_OBJLAST);
@@ -530,6 +750,12 @@ namespace {
             asCALL_CDECL_OBJLAST
         );
         assert(r >= 0);
+
+        r = engine->RegisterObjectBehaviour(
+            "vec4", asBEHAVE_CONSTRUCT, "void f(float)", asFUNCTION(vec4_construct_float), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+
         r = engine->RegisterObjectBehaviour(
             "vec4", asBEHAVE_CONSTRUCT, "void f(const vec4 &in)", asFUNCTION(vec4_construct_copy), asCALL_CDECL_OBJLAST
         );
@@ -565,6 +791,39 @@ namespace {
         r = engine->RegisterObjectMethod("vec4", "vec4 opDiv(float) const", asFUNCTION(vec4_div), asCALL_CDECL_OBJLAST);
         assert(r >= 0);
         r = engine->RegisterObjectMethod("vec4", "vec4 opNeg() const", asFUNCTION(vec4_neg), asCALL_CDECL_OBJLAST);
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec4", "vec4 opMul_r(float) const", asFUNCTION(vec4_mul_r), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec4", "vec4 opDiv_r(float) const", asFUNCTION(vec4_div_r), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+
+        r = engine->RegisterObjectMethod(
+            "vec4", "vec4 &opAddAssign(const vec4 &in)", asFUNCTION(vec4_add_assign), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec4", "vec4 &opSubAssign(const vec4 &in)", asFUNCTION(vec4_sub_assign), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec4", "vec4 &opMulAssign(float)", asFUNCTION(vec4_mul_assign_scalar), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec4", "vec4 &opMulAssign(const vec4 &in)", asFUNCTION(vec4_mul_assign_vec), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec4", "vec4 &opDivAssign(float)", asFUNCTION(vec4_div_assign_scalar), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+        r = engine->RegisterObjectMethod(
+            "vec4", "vec4 &opDivAssign(const vec4 &in)", asFUNCTION(vec4_div_assign_vec), asCALL_CDECL_OBJLAST
+        );
         assert(r >= 0);
 
         r = engine->RegisterObjectMethod("vec4", "float length() const", asFUNCTION(vec4_length), asCALL_CDECL_OBJLAST);
@@ -616,6 +875,11 @@ namespace {
         assert(r >= 0);
         r = engine->RegisterObjectMethod(
             "mat4", "vec4 opMul(const vec4 &in) const", asFUNCTION(mat4_mul_vec), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+
+        r = engine->RegisterObjectMethod(
+            "mat4", "mat4 &opMulAssign(const mat4 &in)", asFUNCTION(mat4_mul_assign), asCALL_CDECL_OBJLAST
         );
         assert(r >= 0);
 
@@ -716,6 +980,11 @@ namespace {
         assert(r >= 0);
         r = engine->RegisterObjectMethod(
             "quat", "vec3 opMul(const vec3 &in) const", asFUNCTION(quat_mul_vec), asCALL_CDECL_OBJLAST
+        );
+        assert(r >= 0);
+
+        r = engine->RegisterObjectMethod(
+            "quat", "quat &opMulAssign(const quat &in)", asFUNCTION(quat_mul_assign), asCALL_CDECL_OBJLAST
         );
         assert(r >= 0);
 
@@ -883,12 +1152,16 @@ namespace {
     }
 } // namespace
 
-ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system)
-    : scene(scene), physics_system(physics_system), input_system(input_system) {
+ScriptSystem::ScriptSystem(
+    const std::filesystem::path& path, Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system
+)
+    : scene(scene), physics_system(physics_system), input_system(input_system), script_source_dir(path) {
     engine = asCreateScriptEngine();
 
     engine->SetMessageCallback(asFUNCTION(script_message_callback), 0, asCALL_CDECL);
     auto default_namespace = engine->GetDefaultNamespace();
+
+    script_builder = new CScriptBuilder();
 
     RegisterScriptArray(engine, true);
     RegisterStdString(engine);
@@ -1113,21 +1386,68 @@ ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, Inp
 
     engine->SetDefaultNamespace(default_namespace);
 
+    engine->RegisterGlobalFunction(
+        "float min(float, float)", asFUNCTIONPR(glm::min, (float, float), float), asCALL_CDECL
+    );
+    engine->RegisterGlobalFunction(
+        "float max(float, float)", asFUNCTIONPR(glm::max, (float, float), float), asCALL_CDECL
+    );
+
+    engine->RegisterGlobalFunction("float cos(float)", asFUNCTIONPR(glm::cos, (float), float), asCALL_CDECL);
+    engine->RegisterGlobalFunction("float sin(float)", asFUNCTIONPR(glm::sin, (float), float), asCALL_CDECL);
+    engine->RegisterGlobalFunction("float tan(float)", asFUNCTIONPR(glm::tan, (float), float), asCALL_CDECL);
+
+    engine->RegisterGlobalFunction("float acos(float)", asFUNCTIONPR(glm::acos, (float), float), asCALL_CDECL);
+    engine->RegisterGlobalFunction("float asin(float)", asFUNCTIONPR(glm::asin, (float), float), asCALL_CDECL);
+    engine->RegisterGlobalFunction("float atan(float)", asFUNCTIONPR(glm::atan, (float), float), asCALL_CDECL);
+
+    engine->RegisterGlobalFunction("float cosh(float)", asFUNCTIONPR(glm::cosh, (float), float), asCALL_CDECL);
+    engine->RegisterGlobalFunction("float sinh(float)", asFUNCTIONPR(glm::sinh, (float), float), asCALL_CDECL);
+    engine->RegisterGlobalFunction("float tanh(float)", asFUNCTIONPR(glm::tanh, (float), float), asCALL_CDECL);
+
+    engine->RegisterGlobalFunction("float acosh(float)", asFUNCTIONPR(glm::acosh, (float), float), asCALL_CDECL);
+    engine->RegisterGlobalFunction("float asinh(float)", asFUNCTIONPR(glm::asinh, (float), float), asCALL_CDECL);
+    engine->RegisterGlobalFunction("float atanh(float)", asFUNCTIONPR(glm::atanh, (float), float), asCALL_CDECL);
+
+    engine->RegisterGlobalFunction("float log(float)", asFUNCTIONPR(glm::log, (float), float), asCALL_CDECL);
+    engine->RegisterGlobalFunction("float log2(float)", asFUNCTIONPR(glm::log2, (float), float), asCALL_CDECL);
+
+    engine->RegisterGlobalFunction(
+        "float pow(float, float)", asFUNCTIONPR(glm::pow, (float, float), float), asCALL_CDECL
+    );
+
+    engine->RegisterGlobalFunction("float sqrt(float)", asFUNCTIONPR(glm::sqrt, (float), float), asCALL_CDECL);
+    engine->RegisterGlobalFunction(
+        "float invsqrt(float)", asFUNCTIONPR(glm::inversesqrt, (float), float), asCALL_CDECL
+    );
+
+    engine->RegisterGlobalFunction("float abs(float)", asFUNCTIONPR(glm::abs, (float), float), asCALL_CDECL);
+
+    engine->RegisterGlobalFunction("float ceil(float)", asFUNCTIONPR(glm::ceil, (float), float), asCALL_CDECL);
+    engine->RegisterGlobalFunction("float floor(float)", asFUNCTIONPR(glm::floor, (float), float), asCALL_CDECL);
+
     context = engine->CreateContext();
 }
 
-void ScriptSystem::load_scripts(const std::filesystem::path& path, bool generate_predefined_file) {
-    auto hash_script = [](const std::filesystem::path& path) -> uint32_t {
-        uint32_t hash = 0;
+void ScriptSystem::load_scripts() {
+    spdlog::info("releasing scripts");
+    clear();
 
-        for (auto& it : path.string()) {
-            hash = 37 * hash + 17 + static_cast<char>(it);
+    spdlog::info("discarding modules");
+    for (auto& [hash, handle] : scripts) {
+        if (handle.module) {
+            handle.module->Discard();
         }
+    }
+    spdlog::info("clearing map");
+    scripts.clear();
 
-        return hash;
-    };
+    spdlog::info("loading scripts from {}", script_source_dir.string());
 
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(path)) {
+    std::unordered_map<std::string, std::string> script_sources;
+    script_builder->SetIncludeCallback(script_include_callback, &script_sources);
+
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(script_source_dir)) {
         if (!entry.is_regular_file()) {
             continue;
         }
@@ -1143,21 +1463,33 @@ void ScriptSystem::load_scripts(const std::filesystem::path& path, bool generate
 
         std::string source(std::istreambuf_iterator<char>(file), {});
 
-        asIScriptModule* script_module =
-            engine->GetModule(entry.path().filename().string().c_str(), asGM_ALWAYS_CREATE);
+        script_sources.insert({entry.path().filename().string(), source});
+    }
+
+    for (const auto& [filename, source] : script_sources) {
+        auto hash           = hash_script(filename);
+        scripts[hash].valid = false;
 
         int r;
-        r = script_module->AddScriptSection(entry.path().filename().string().c_str(), source.c_str(), source.length());
+        r = script_builder->StartNewModule(engine, filename.c_str());
         if (r < 0) {
-            spdlog::error("Failed to load script {}", entry.path().string());
+            spdlog::error("Failed to start a new module {}", filename);
             continue;
         }
 
-        r = script_module->Build();
+        r = script_builder->AddSectionFromMemory(filename.c_str(), source.c_str(), source.length());
         if (r < 0) {
-            spdlog::error("Failed to build script {}", entry.path().string());
+            spdlog::error("Failed to load script {}", filename);
             continue;
         }
+
+        r = script_builder->BuildModule();
+        if (r < 0) {
+            spdlog::error("Failed to build script {}", filename);
+            continue;
+        }
+
+        asIScriptModule* script_module = script_builder->GetModule();
 
         asITypeInfo* type       = nullptr;
         int          type_count = script_module->GetObjectTypeCount();
@@ -1179,49 +1511,52 @@ void ScriptSystem::load_scripts(const std::filesystem::path& path, bool generate
             type = nullptr;
         }
 
-        if (!type) {
-            spdlog::warn("Script doesn't implement INode, it will not be loaded");
-            continue;
+        asIScriptFunction* constructor     = nullptr;
+        asIScriptFunction* on_update       = nullptr;
+        asIScriptFunction* on_fixed_update = nullptr;
+
+        if (type) {
+            std::string constructor_name = std::string(type->GetName()) + "@ " + std::string(type->GetName()) + "()";
+            constructor                  = type->GetFactoryByDecl(constructor_name.c_str());
+            if (!constructor) {
+                spdlog::warn("Script doesn't have a default constructor, it will not be loaded");
+                continue;
+            }
+
+            on_update       = type->GetMethodByDecl("void update(float)");
+            on_fixed_update = type->GetMethodByDecl("void fixed_update(float)");
         }
 
-        std::string constructor_name = std::string(type->GetName()) + "@ " + std::string(type->GetName()) + "()";
-        auto        constructor      = type->GetFactoryByDecl(constructor_name.c_str());
-        if (!constructor) {
-            spdlog::warn("Script doesn't have a default constructor, it will not be loaded");
-            continue;
-        }
-
-        auto on_update       = type->GetMethodByDecl("void update(float)");
-        auto on_fixed_update = type->GetMethodByDecl("void fixed_update(float)");
-
-        auto hash = hash_script(entry.path().filename());
-
-        scripts.insert(
-            {hash,
-             Script{
-                 .name            = entry.path().filename().string(),
-                 .source          = source,
-                 .constructor     = constructor,
-                 .on_update       = on_update,
-                 .on_fixed_update = on_fixed_update,
-             }}
-        );
+        scripts[hash] = {
+            Script{
+                .valid           = true,
+                .name            = filename,
+                .source          = source,
+                .module          = script_module,
+                .constructor     = constructor,
+                .on_update       = on_update,
+                .on_fixed_update = on_fixed_update,
+            },
+        };
     }
+}
 
-    if (generate_predefined_file) {
-        std::ofstream stream(path / "as.predefined");
-        generate_enum_list(engine, stream);
-        generate_class_type_list(engine, stream);
-        generate_global_function_list(engine, stream);
-        generate_global_property_list(engine, stream);
-        generate_global_typedefs(engine, stream);
-    }
+void ScriptSystem::generate_predefined_file() {
+    std::ofstream stream(script_source_dir / "as.predefined");
+    generate_enum_list(engine, stream);
+    generate_class_type_list(engine, stream);
+    generate_global_function_list(engine, stream);
+    generate_global_property_list(engine, stream);
+    generate_global_typedefs(engine, stream);
 }
 
 void ScriptSystem::clear() {
     auto view = scene.entity_registry.view<components::Script>();
     for (auto [e, s] : view.each()) {
-        ((asIScriptObject*)s.object)->Release();
+        auto obj = (asIScriptObject*)s.object;
+        if (obj) {
+            obj->Release();
+        }
     }
 }
 
@@ -1232,7 +1567,7 @@ const std::unordered_map<uint32_t, Script>& ScriptSystem::get_scripts() {
 void ScriptSystem::initialize(components::Script& s) {
     if (scripts.contains(s.script_id)) {
         auto& script = scripts.at(s.script_id);
-        if (script.constructor && !s.object) {
+        if (script.valid && script.constructor && !s.object) {
             context->Prepare(script.constructor);
             int r = context->Execute();
             if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
@@ -1254,7 +1589,7 @@ void ScriptSystem::initialize(components::Script& s) {
 void ScriptSystem::call_on_update(const components::Script& s, float delta) {
     if (scripts.contains(s.script_id)) {
         auto& script = scripts.at(s.script_id);
-        if (script.on_update && s.object) {
+        if (script.valid && script.on_update && s.object) {
             context->Prepare(script.on_update);
             context->SetObject(s.object);
             context->SetArgFloat(0, delta);
@@ -1275,7 +1610,7 @@ void ScriptSystem::call_on_update(const components::Script& s, float delta) {
 void ScriptSystem::call_on_fixed_update(const components::Script& s, float delta) {
     if (scripts.contains(s.script_id)) {
         auto& script = scripts.at(s.script_id);
-        if (script.on_fixed_update && s.object) {
+        if (script.valid && script.on_fixed_update && s.object) {
             context->Prepare(script.on_fixed_update);
             context->SetObject(s.object);
             context->SetArgFloat(0, delta);
