@@ -758,6 +758,129 @@ namespace {
         register_glm_mat4(engine);
         register_glm_quat(engine);
     }
+
+    template <class Stream> void generate_enum_list(const asIScriptEngine* engine, Stream& stream) {
+        for (int i = 0; i < engine->GetEnumCount(); i++) {
+            const auto e = engine->GetEnumByIndex(i);
+            if (not e)
+                continue;
+            const std::string_view ns = e->GetNamespace();
+            if (not ns.empty())
+                stream << std::format("namespace {} {{\n", ns);
+            stream << std::format("enum {} {{\n", e->GetName());
+            for (int j = 0; j < e->GetEnumValueCount(); ++j) {
+                stream << std::format("\t{}", e->GetEnumValueByIndex(j, nullptr));
+                if (j < e->GetEnumValueCount() - 1)
+                    stream << ",";
+                stream << "\n";
+            }
+            stream << "}\n";
+            if (not ns.empty())
+                stream << "}\n";
+        }
+    }
+
+    template <class Stream> void generate_class_type_list(const asIScriptEngine* engine, Stream& stream) {
+        for (int i = 0; i < engine->GetObjectTypeCount(); i++) {
+            const auto t = engine->GetObjectTypeByIndex(i);
+            if (not t)
+                continue;
+
+            const std::string_view ns = t->GetNamespace();
+            if (not ns.empty())
+                stream << std::format("namespace {} {{\n", ns);
+
+            stream << std::format("class {}", t->GetName());
+            if (t->GetSubTypeCount() > 0) {
+                stream << "<";
+                for (int sub = 0; sub < t->GetSubTypeCount(); ++sub) {
+                    if (sub < t->GetSubTypeCount() - 1)
+                        stream << ", ";
+                    const auto st = t->GetSubType(sub);
+                    stream << st->GetName();
+                }
+
+                stream << ">";
+            }
+
+            stream << "{\n";
+            for (int j = 0; j < t->GetBehaviourCount(); ++j) {
+                asEBehaviours behaviours;
+                const auto    f = t->GetBehaviourByIndex(j, &behaviours);
+                if (behaviours == asBEHAVE_CONSTRUCT || behaviours == asBEHAVE_DESTRUCT) {
+                    stream << std::format("\t{};\n", f->GetDeclaration(false, true, true));
+                }
+            }
+            for (int j = 0; j < t->GetMethodCount(); ++j) {
+                const auto m = t->GetMethodByIndex(j);
+                stream << std::format("\t{};\n", m->GetDeclaration(false, true, true));
+            }
+            for (int j = 0; j < t->GetPropertyCount(); ++j) {
+                stream << std::format("\t{};\n", t->GetPropertyDeclaration(j, true));
+            }
+            for (int j = 0; j < t->GetChildFuncdefCount(); ++j) {
+                stream << std::format(
+                    "\tfuncdef {};\n", t->GetChildFuncdef(j)->GetFuncdefSignature()->GetDeclaration(false)
+                );
+            }
+            stream << "}\n";
+            if (not ns.empty())
+                stream << "}\n";
+        }
+    }
+
+    template <class Stream> void generate_global_function_list(const asIScriptEngine* engine, Stream& stream) {
+        for (int i = 0; i < engine->GetGlobalFunctionCount(); i++) {
+            const auto f = engine->GetGlobalFunctionByIndex(i);
+            if (not f)
+                continue;
+            const std::string_view ns = f->GetNamespace();
+            if (not ns.empty())
+                stream << std::format("namespace {} {{ ", ns);
+            stream << std::format("{};", f->GetDeclaration(false, false, true));
+            if (not ns.empty())
+                stream << " }";
+            stream << "\n";
+        }
+    }
+
+    template <class Stream> void generate_global_property_list(const asIScriptEngine* engine, Stream& stream) {
+        for (int i = 0; i < engine->GetGlobalPropertyCount(); i++) {
+            const char* name;
+            const char* ns0;
+            int         type;
+            engine->GetGlobalPropertyByIndex(i, &name, &ns0, &type, nullptr, nullptr, nullptr, nullptr);
+
+            const std::string t = engine->GetTypeDeclaration(type, true);
+            if (t.empty())
+                continue;
+
+            std::string_view ns = ns0;
+            if (not ns.empty())
+                stream << std::format("namespace {} {{ ", ns);
+
+            stream << std::format("{} {};", t, name);
+            if (not ns.empty())
+                stream << " }";
+            stream << "\n";
+        }
+    }
+
+    template <class Stream> void generate_global_typedefs(const asIScriptEngine* engine, Stream& stream) {
+        for (int i = 0; i < engine->GetTypedefCount(); ++i) {
+            const auto type = engine->GetTypedefByIndex(i);
+            if (not type)
+                continue;
+            const std::string_view ns = type->GetNamespace();
+            if (not ns.empty())
+                stream << std::format("namespace {} {{\n", ns);
+            stream << std::format(
+                "typedef {} {};\n", engine->GetTypeDeclaration(type->GetTypedefTypeId()), type->GetName()
+            );
+            if (not ns.empty())
+                stream << "}\n";
+        }
+    }
 } // namespace
 
 ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system)
@@ -779,6 +902,18 @@ ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, Inp
 
     register_glm_types(engine);
 
+    engine->RegisterEnum("Key");
+    for (int i = 0; i < input_system.get_key_count(); i++) {
+        auto name = input_system.key_to_string(static_cast<Key>(i));
+        engine->RegisterEnumValue("Key", name.c_str(), i);
+    }
+
+    engine->RegisterEnum("Button");
+    for (int i = 0; i < input_system.get_button_count(); i++) {
+        auto name = input_system.button_to_string(static_cast<Button>(i));
+        engine->RegisterEnumValue("Button", name.c_str(), i);
+    }
+
     engine->SetDefaultNamespace("Log");
     engine->RegisterGlobalFunction("void trace(string &in)", asFUNCTION(script_log_trace), asCALL_CDECL);
     engine->RegisterGlobalFunction("void debug(string &in)", asFUNCTION(script_log_debug), asCALL_CDECL);
@@ -796,29 +931,57 @@ ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, Inp
     );
 
     engine->RegisterGlobalFunction(
-        "bool is_key_pressed(int)",
+        "bool is_key_pressed(Key)",
         asMETHOD(InputSystem, InputSystem::is_key_pressed),
         asCALL_THISCALL_ASGLOBAL,
         &input_system
     );
 
     engine->RegisterGlobalFunction(
-        "bool is_key_just_pressed(int)",
+        "bool is_key_just_pressed(Key)",
         asMETHOD(InputSystem, InputSystem::is_key_just_pressed),
         asCALL_THISCALL_ASGLOBAL,
         &input_system
     );
 
     engine->RegisterGlobalFunction(
-        "bool is_button_pressed(int)",
+        "string key_to_string(Key)",
+        asMETHOD(InputSystem, InputSystem::key_to_string),
+        asCALL_THISCALL_ASGLOBAL,
+        &input_system
+    );
+
+    engine->RegisterGlobalFunction(
+        "Key string_to_key(string &in)",
+        asMETHOD(InputSystem, InputSystem::string_to_key),
+        asCALL_THISCALL_ASGLOBAL,
+        &input_system
+    );
+
+    engine->RegisterGlobalFunction(
+        "bool is_button_pressed(Button)",
         asMETHOD(InputSystem, InputSystem::is_button_pressed),
         asCALL_THISCALL_ASGLOBAL,
         &input_system
     );
 
     engine->RegisterGlobalFunction(
-        "bool is_button_just_pressed(int)",
+        "bool is_button_just_pressed(Button)",
         asMETHOD(InputSystem, InputSystem::is_button_just_pressed),
+        asCALL_THISCALL_ASGLOBAL,
+        &input_system
+    );
+
+    engine->RegisterGlobalFunction(
+        "string button_to_string(Button)",
+        asMETHOD(InputSystem, InputSystem::button_to_string),
+        asCALL_THISCALL_ASGLOBAL,
+        &input_system
+    );
+
+    engine->RegisterGlobalFunction(
+        "Button string_to_button(string &in)",
+        asMETHOD(InputSystem, InputSystem::string_to_button),
         asCALL_THISCALL_ASGLOBAL,
         &input_system
     );
@@ -850,8 +1013,22 @@ ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, Inp
     );
 
     engine->RegisterGlobalFunction(
+        "vec3 get_player_velocity()",
+        asMETHOD(ScriptSystem, ScriptSystem::get_player_velocity),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
         "vec3 get_node_position(uint)",
         asMETHOD(ScriptSystem, ScriptSystem::get_node_position),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
+        "string get_node_name(uint)",
+        asMETHOD(ScriptSystem, ScriptSystem::get_node_name),
         asCALL_THISCALL_ASGLOBAL,
         this
     );
@@ -885,6 +1062,48 @@ ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, Inp
     );
 
     engine->RegisterGlobalFunction(
+        "void set_node_physics_linear_velocity(uint, vec3)",
+        asMETHOD(ScriptSystem, ScriptSystem::set_node_physics_linear_velocity),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
+        "void set_node_physics_angular_velocity(uint, vec3)",
+        asMETHOD(ScriptSystem, ScriptSystem::set_node_physics_angular_velocity),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
+        "void disable_node_physics(uint)",
+        asMETHOD(ScriptSystem, ScriptSystem::disable_node_physics),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
+        "void enable_node_physics(uint)",
+        asMETHOD(ScriptSystem, ScriptSystem::enable_node_physics),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
+        "void node_dedicate_material(uint)",
+        asMETHOD(ScriptSystem, ScriptSystem::node_dedicate_material),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
+        "void node_set_material_emissive(uint, vec3)",
+        asMETHOD(ScriptSystem, ScriptSystem::node_set_material_emissive),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
         "uint get_node(string &in)", asMETHOD(ScriptSystem, ScriptSystem::get_node), asCALL_THISCALL_ASGLOBAL, this
     );
 
@@ -897,7 +1116,7 @@ ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, Inp
     context = engine->CreateContext();
 }
 
-void ScriptSystem::load_scripts(const std::filesystem::path& path) {
+void ScriptSystem::load_scripts(const std::filesystem::path& path, bool generate_predefined_file) {
     auto hash_script = [](const std::filesystem::path& path) -> uint32_t {
         uint32_t hash = 0;
 
@@ -987,6 +1206,15 @@ void ScriptSystem::load_scripts(const std::filesystem::path& path) {
                  .on_fixed_update = on_fixed_update,
              }}
         );
+    }
+
+    if (generate_predefined_file) {
+        std::ofstream stream(path / "as.predefined");
+        generate_enum_list(engine, stream);
+        generate_class_type_list(engine, stream);
+        generate_global_function_list(engine, stream);
+        generate_global_property_list(engine, stream);
+        generate_global_typedefs(engine, stream);
     }
 }
 
@@ -1179,7 +1407,15 @@ bool ScriptSystem::cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance,
 }
 
 void ScriptSystem::set_node_position(Entity entity, glm::vec3 position) {
-    scene.get_component<components::Transform>(entity)->position = position;
+    auto t      = scene.get_component<components::Transform>(entity);
+    t->position = position;
+
+    auto p = scene.get_component<components::Physics>(entity);
+    if (p && !p->is_static) {
+        physics_system.GetBodyInterface().SetPosition(
+            p->body_id, JPH::Vec3(t->position.x, t->position.y, t->position.z), JPH::EActivation::Activate
+        );
+    }
 }
 
 void ScriptSystem::set_node_scale(Entity entity, float scale) {
@@ -1192,6 +1428,10 @@ glm::vec3 ScriptSystem::get_node_position(Entity entity) {
 
 float ScriptSystem::get_node_scale(Entity entity) {
     return scene.get_component<components::Transform>(entity)->scale;
+}
+
+std::string ScriptSystem::get_node_name(Entity entity) {
+    return scene.get_component<components::Name>(entity)->name;
 }
 
 void ScriptSystem::set_node_physics_body_box(Entity entity, glm::vec3 half_extents) {
@@ -1215,8 +1455,8 @@ void ScriptSystem::set_node_physics_body_box(Entity entity, glm::vec3 half_exten
         JPH::EMotionType::Dynamic,
         Layers::MOVING
     );
-    body_settings.mFriction                     = 0.7f;
-    body_settings.mRestitution                  = 0.1f;
+    body_settings.mFriction                     = 0.8f;
+    body_settings.mRestitution                  = 0.0f;
     body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
     body_settings.mMassPropertiesOverride.mMass = 1.0f;
 
@@ -1224,4 +1464,53 @@ void ScriptSystem::set_node_physics_body_box(Entity entity, glm::vec3 half_exten
     p->body_id          = body_id;
     p->is_static        = false;
     p->last_scale       = t->scale;
+}
+
+void ScriptSystem::set_node_physics_linear_velocity(Entity entity, glm::vec3 velocity) {
+    auto p = scene.get_component<components::Physics>(entity);
+
+    if (p) {
+        physics_system.GetBodyInterface().SetLinearVelocity(p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z));
+    }
+}
+
+void ScriptSystem::set_node_physics_angular_velocity(Entity entity, glm::vec3 velocity) {
+    auto p = scene.get_component<components::Physics>(entity);
+
+    if (p) {
+        physics_system.GetBodyInterface().SetAngularVelocity(p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z));
+    }
+}
+
+void ScriptSystem::disable_node_physics(Entity entity) {
+    auto p = scene.get_component<components::Physics>(entity);
+
+    if (p) {
+        physics_system.GetBodyInterface().DeactivateBody(p->body_id);
+    }
+}
+
+void ScriptSystem::enable_node_physics(Entity entity) {
+    auto p = scene.get_component<components::Physics>(entity);
+
+    if (p) {
+        physics_system.GetBodyInterface().ActivateBody(p->body_id);
+    }
+}
+
+void ScriptSystem::node_dedicate_material(Entity entity) {
+    auto m = scene.get_component<components::Mesh>(entity);
+
+    if (m && m->mesh.material_id != 0) {
+        scene.materials.push_back(scene.materials[m->mesh.material_id]);
+        m->mesh.material_id = scene.materials.size() - 1;
+    }
+}
+
+void ScriptSystem::node_set_material_emissive(Entity entity, glm::vec3 emissive) {
+    auto m = scene.get_component<components::Mesh>(entity);
+
+    if (m && m->mesh.material_id != 0) {
+        scene.materials[m->mesh.material_id].emissive_factor = emissive;
+    }
 }

@@ -19,7 +19,7 @@ class ScriptSystem {
 public:
     ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system);
 
-    void load_scripts(const std::filesystem::path& path);
+    void load_scripts(const std::filesystem::path& path, bool generate_predefined_file);
     // Destroys all script objects from nodes that have the script component
     void clear();
 
@@ -35,6 +35,10 @@ public:
 
     void set_player_look_dir(glm::vec3 direction) {
         this->player_look_dir = direction;
+    }
+
+    void set_player_velocity(glm::vec3 velocity) {
+        this->player_velocity = velocity;
     }
 
 private:
@@ -58,10 +62,18 @@ private:
     void set_node_position(Entity entity, glm::vec3 position);
     void set_node_scale(Entity entity, float scale);
 
-    glm::vec3 get_node_position(Entity entity);
-    float     get_node_scale(Entity entity);
+    glm::vec3   get_node_position(Entity entity);
+    float       get_node_scale(Entity entity);
+    std::string get_node_name(Entity entity);
 
     void set_node_physics_body_box(Entity entity, glm::vec3 half_extents);
+    void set_node_physics_linear_velocity(Entity entity, glm::vec3 velocity);
+    void set_node_physics_angular_velocity(Entity entity, glm::vec3 velocity);
+    void disable_node_physics(Entity entity);
+    void enable_node_physics(Entity entity);
+
+    void node_dedicate_material(Entity entity);
+    void node_set_material_emissive(Entity entity, glm::vec3 emissive);
 
     glm::vec3 player_pos;
     glm::vec3 get_player_position() {
@@ -71,5 +83,10 @@ private:
     glm::vec3 player_look_dir;
     glm::vec3 get_player_look_direction() {
         return player_look_dir;
+    }
+
+    glm::vec3 player_velocity;
+    glm::vec3 get_player_velocity() {
+        return player_velocity;
     }
 };
