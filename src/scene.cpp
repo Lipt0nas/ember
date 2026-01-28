@@ -130,6 +130,7 @@ void Scene::load_scene(
     std::map<uint32_t, int> local_sampler_cache;
 
     materials.resize(model.materials.size());
+    original_material_size = materials.size();
 
     spdlog::info("Loading {} samplers", model.samplers.size());
     samplers.push_back(create_sampler(
