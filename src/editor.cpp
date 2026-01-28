@@ -14,6 +14,18 @@ Editor::Editor() {
     this->register_component<components::Script>("Script", true);
 }
 
+void Editor::render_main_menu(Scene& scene, ScriptSystem& script_system) {
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("Editor")) {
+            if (ImGui::MenuItem("Reload scripts")) {
+                script_system.load_scripts();
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndMainMenuBar();
+    }
+}
+
 void Editor::render_scene_hierarchy_window(Scene& scene) {
     ImGui::Begin(ICON_FA_SITEMAP " Scene Hierarchy");
     if (ImGui::BeginPopupContextItem()) {
@@ -197,6 +209,11 @@ void Editor::render_scene_node_property_window(
 
                 if (ImGui::BeginCombo("Script Source", current_name.c_str())) {
                     for (auto& [id, script] : scripts) {
+                        // Currently scripts that don't have node behavior are distinguished by having no constructor
+                        if (!script.constructor || !script.valid) {
+                            continue;
+                        }
+
                         if (ImGui::Selectable(script.name.c_str(), id == s->script_id)) {
                             s->script_id = id;
                         }

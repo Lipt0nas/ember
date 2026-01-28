@@ -41,6 +41,7 @@ public:
         );
     }
 
+    void render_main_menu(Scene& scene, ScriptSystem& script_system);
     void render_scene_hierarchy_window(Scene& scene);
     void render_scene_node_property_window(
         Scene&                                               scene,

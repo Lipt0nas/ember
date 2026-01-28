@@ -7,8 +7,12 @@
 #include "scene.hpp"
 
 struct Script {
+    bool valid;
+
     std::string name;
     std::string source;
+
+    class asIScriptModule* module;
 
     class asIScriptFunction* constructor;
     class asIScriptFunction* on_update;
@@ -17,9 +21,12 @@ struct Script {
 
 class ScriptSystem {
 public:
-    ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system);
+    ScriptSystem(
+        const std::filesystem::path& path, Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system
+    );
 
-    void load_scripts(const std::filesystem::path& path, bool generate_predefined_file);
+    void load_scripts();
+    void generate_predefined_file();
     // Destroys all script objects from nodes that have the script component
     void clear();
 
@@ -42,11 +49,14 @@ public:
     }
 
 private:
+    std::filesystem::path script_source_dir;
+
     Scene&              scene;
     JPH::PhysicsSystem& physics_system;
     InputSystem&        input_system;
 
     class asIScriptEngine* engine;
+    class CScriptBuilder*  script_builder;
 
     // NOTE: is there a need for more?
     class asIScriptContext* context;
