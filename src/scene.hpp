@@ -20,7 +20,10 @@ public:
     std::vector<Mesh>          meshes;
     std::vector<ImageResource> images;
     std::vector<Sampler>       samplers;
-    std::vector<Material>      materials;
+
+    std::vector<Material> materials;
+    // How many materials were loaded on scene load, used when rolling back from the gameplay state
+    size_t original_material_size;
 
     entt::registry entity_registry;
 

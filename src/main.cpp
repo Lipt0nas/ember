@@ -5644,6 +5644,7 @@ int main(int argc, char* argv[]) {
 
                 script_system.clear();
                 scene.entity_registry.clear();
+                scene.materials.resize(scene.original_material_size);
 
                 cereal::BinaryInputArchive input(scene_state_snapshot);
 
