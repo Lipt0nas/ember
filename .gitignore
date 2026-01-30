@@ -1,4 +1,5 @@
 build/
+build-windows/
 .cache
 imgui.ini
 *.spv
