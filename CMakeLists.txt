@@ -6,9 +6,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(Vulkan REQUIRED)
-
 include(FetchContent)
+
+FetchContent_Declare(VulkanHeaders
+    GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
+    GIT_TAG v1.4.335
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_Declare(VulkanUtilityLibraries
+    GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Utility-Libraries.git
+    GIT_TAG v1.4.335
+    GIT_SHALLOW TRUE
+)
 
 FetchContent_Declare(glm
     GIT_REPOSITORY https://github.com/g-truc/glm.git
@@ -32,7 +42,7 @@ FetchContent_Declare(imgui
 )
 
 FetchContent_Declare(imguizmo
-    GIT_REPOSITORY https://github.com/Lipt0nas/ImGuizmo.git
+    GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
     GIT_TAG df1c30142e7c3fb13c171aaeb328bb338fa7aaa6
 )
 
@@ -82,12 +92,6 @@ FetchContent_Declare(
   GIT_TAG v0.12.2
   GIT_SHALLOW TRUE
 )
-
-add_compile_options("-DTRACY_ENABLE")
-add_compile_options("-DTRACY_ONLY_LOCALHOST")
-add_compile_options("-DTRACY_VK_USE_SYMBOL_TABLE")
-add_compile_options("-DTRACY_NO_BROADCAST")
-add_compile_options("-DTRACY_CALLSTACK")
 
 # https://github.com/jrouwe/JoltPhysicsHelloWorld/blob/main/Build/CMakeLists.txt
 set(DOUBLE_PRECISION OFF)
@@ -144,13 +148,12 @@ if (MSVC)
 endif()
 
 FetchContent_Declare(
-        JoltPhysics
-        GIT_REPOSITORY "https://github.com/jrouwe/JoltPhysics"
-        GIT_TAG "v5.5.0"
-        GIT_SHALLOW TRUE
-		SOURCE_SUBDIR "Build"
+    JoltPhysics
+    GIT_REPOSITORY "https://github.com/jrouwe/JoltPhysics"
+    GIT_TAG "v5.5.0"
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR "Build"
 )
-FetchContent_MakeAvailable(JoltPhysics)
 
 FetchContent_Declare(
   entt
@@ -195,7 +198,12 @@ FetchContent_MakeAvailable(
     entt
     angelscript
     cereal
+    VulkanHeaders
+    VulkanUtilityLibraries 
+    JoltPhysics
 )
+
+target_link_libraries(volk PUBLIC Vulkan-Headers)
 
 set(AS_ADDON_DIR "${angelscript_SOURCE_DIR}/sdk/add_on")
 
@@ -238,7 +246,7 @@ target_include_directories(imgui PUBLIC
 target_compile_definitions(imgui PUBLIC
     "IMGUI_IMPL_VULKAN_NO_PROTOTYPES"
 )
-target_link_libraries(imgui PUBLIC SDL3::SDL3-static Vulkan::Vulkan)
+target_link_libraries(imgui PUBLIC SDL3::SDL3-static Vulkan-Headers)
 
 add_library(stb INTERFACE)
 target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
@@ -278,9 +286,17 @@ set(SOURCES
     "src/input_system.cpp"
 )
 add_executable(Ember ${SOURCES})
+target_compile_definitions(Ember PRIVATE 
+    TRACY_ENABLE
+    TRACY_ONLY_LOCALHOST
+    TRACY_VK_USE_SYMBOL_TABLE
+    TRACY_NO_BROADCAST
+    TRACY_CALLSTACK
+)
 
 target_link_libraries(Ember PRIVATE
-    Vulkan::Vulkan
+    Vulkan-Headers
+    VulkanUtilityHeaders
     glm::glm
     SDL3::SDL3-static
     imgui
