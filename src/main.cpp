@@ -314,7 +314,7 @@ struct ShadowBlurConstants {
 
 struct GlossyRTConstants {
     glm::mat4 last_frame_view_proj;
-    uint      frame_index;
+    uint32_t  frame_index;
 };
 
 struct CullPassPushConstants {
@@ -355,9 +355,9 @@ struct CompositePushConstants {
     float    bloom_strength;
     uint32_t tonemapping_type;
 
-    float min_ev100;
-    float max_ev100;
-    uint  enable_auto_exposure;
+    float    min_ev100;
+    float    max_ev100;
+    uint32_t enable_auto_exposure;
 
     float manual_ev100;
     float exposure_compensation;
@@ -1989,7 +1989,7 @@ int main(int argc, char* argv[]) {
 
     bool running = true;
 
-    int   bloom_levels               = glm::max(5ul, bloom_mip_views.size() - 5);
+    int   bloom_levels               = glm::max(5u, static_cast<uint32_t>(bloom_mip_views.size() - 5));
     float bloom_upscale_sample_scale = 2.5f;
 
     std::array<uint64_t, 2> pipeline_stats;
