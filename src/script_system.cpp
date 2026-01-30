@@ -155,11 +155,11 @@ namespace {
         return (*self -= other);
     }
 
-    glm::vec2 vec2_mul_r(const glm::vec2* self, float scalar) {
+    glm::vec2 vec2_mul_r(float scalar, const glm::vec2* self) {
         return scalar * *self;
     }
 
-    glm::vec2 vec2_div_r(const glm::vec2* self, float scalar) {
+    glm::vec2 vec2_div_r(float scalar, const glm::vec2* self) {
         return glm::vec2(scalar) / *self;
     }
 
@@ -249,11 +249,11 @@ namespace {
         return (*self -= other);
     }
 
-    glm::vec3 vec3_mul_r(const glm::vec3* self, float scalar) {
+    glm::vec3 vec3_mul_r(float scalar, const glm::vec3* self) {
         return scalar * *self;
     }
 
-    glm::vec3 vec3_div_r(const glm::vec3* self, float scalar) {
+    glm::vec3 vec3_div_r(float scalar, const glm::vec3* self) {
         return glm::vec3(scalar) / *self;
     }
 
@@ -347,11 +347,11 @@ namespace {
         return (*self -= other);
     }
 
-    glm::vec4 vec4_mul_r(const glm::vec4* self, float scalar) {
+    glm::vec4 vec4_mul_r(float scalar, const glm::vec4* self) {
         return scalar * *self;
     }
 
-    glm::vec4 vec4_div_r(const glm::vec4* self, float scalar) {
+    glm::vec4 vec4_div_r(float scalar, const glm::vec4* self) {
         return glm::vec4(scalar) / *self;
     }
 
@@ -1159,6 +1159,9 @@ ScriptSystem::ScriptSystem(
     engine = asCreateScriptEngine();
 
     engine->SetMessageCallback(asFUNCTION(script_message_callback), 0, asCALL_CDECL);
+    engine->SetEngineProperty(asEP_DISALLOW_EMPTY_LIST_ELEMENTS, true);
+    engine->SetEngineProperty(asEP_DISALLOW_VALUE_ASSIGN_FOR_REF_TYPE, true);
+
     auto default_namespace = engine->GetDefaultNamespace();
 
     script_builder = new CScriptBuilder();
