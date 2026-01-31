@@ -21,11 +21,11 @@ struct Script {
 
 class ScriptSystem {
 public:
-    ScriptSystem(
-        const std::filesystem::path& path, Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system
-    );
+    ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system);
 
-    void load_scripts();
+    void load_scripts(const std::filesystem::path& path);
+    void reload_scripts();
+
     void generate_predefined_file();
     // Destroys all script objects from nodes that have the script component
     void clear();

@@ -4,91 +4,10 @@
 
 #include <map>
 
-uint16_t pack_tangent(glm::vec3 tangent) {
-    float sum = glm::abs(tangent.x) + glm::abs(tangent.y) + glm::abs(tangent.z);
-    float tu  = tangent.z >= 0 ? tangent.x / sum : (1 - glm::abs(tangent.y / sum)) * (tangent.x >= 0 ? 1 : -1);
-    float tv  = tangent.z >= 0 ? tangent.y / sum : (1 - glm::abs(tangent.x / sum)) * (tangent.y >= 0 ? 1 : -1);
-
-    return (meshopt_quantizeSnorm(tu, 8) + 127) | (meshopt_quantizeSnorm(tv, 8) + 127) << 8;
-}
-
-void generate_tangents(std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
-    std::vector<glm::vec3> tangents(vertices.size(), glm::vec3(0));
-    std::vector<glm::vec3> bitangents(vertices.size(), glm::vec3(0));
-
-    for (size_t i = 0; i < indices.size(); i += 3) {
-        uint32_t i0 = indices[i + 0];
-        uint32_t i1 = indices[i + 1];
-        uint32_t i2 = indices[i + 2];
-
-        const Vertex& v0 = vertices[i0];
-        const Vertex& v1 = vertices[i1];
-        const Vertex& v2 = vertices[i2];
-
-        const glm::vec3 v0_pos =
-            glm::vec3(meshopt_dequantizeHalf(v0.px), meshopt_dequantizeHalf(v0.py), meshopt_dequantizeHalf(v0.pz));
-        const glm::vec3 v1_pos =
-            glm::vec3(meshopt_dequantizeHalf(v1.px), meshopt_dequantizeHalf(v1.py), meshopt_dequantizeHalf(v1.pz));
-        const glm::vec3 v2_pos =
-            glm::vec3(meshopt_dequantizeHalf(v2.px), meshopt_dequantizeHalf(v2.py), meshopt_dequantizeHalf(v2.pz));
-
-        const glm::vec2 uv0 = glm::vec2(meshopt_dequantizeHalf(v0.ux), meshopt_dequantizeHalf(v0.uy));
-        const glm::vec2 uv1 = glm::vec2(meshopt_dequantizeHalf(v1.ux), meshopt_dequantizeHalf(v1.uy));
-        const glm::vec2 uv2 = glm::vec2(meshopt_dequantizeHalf(v2.ux), meshopt_dequantizeHalf(v2.uy));
-
-        glm::vec3 edge1     = v1_pos - v0_pos;
-        glm::vec3 edge2     = v2_pos - v0_pos;
-        glm::vec2 delta_uv1 = uv1 - uv0;
-        glm::vec2 delta_uv2 = uv2 - uv0;
-
-        float f = 1.0f / (delta_uv1.x * delta_uv2.y - delta_uv2.x * delta_uv1.y);
-
-        glm::vec3 tangent;
-        tangent.x = f * (delta_uv2.y * edge1.x - delta_uv1.y * edge2.x);
-        tangent.y = f * (delta_uv2.y * edge1.y - delta_uv1.y * edge2.y);
-        tangent.z = f * (delta_uv2.y * edge1.z - delta_uv1.y * edge2.z);
-
-        glm::vec3 bitangent;
-        bitangent.x = f * (-delta_uv2.x * edge1.x + delta_uv1.x * edge2.x);
-        bitangent.y = f * (-delta_uv2.x * edge1.y + delta_uv1.x * edge2.y);
-        bitangent.z = f * (-delta_uv2.x * edge1.z + delta_uv1.x * edge2.z);
-
-        tangents[i0] += tangent;
-        tangents[i1] += tangent;
-        tangents[i2] += tangent;
-
-        bitangents[i0] += bitangent;
-        bitangents[i1] += bitangent;
-        bitangents[i2] += bitangent;
-    }
-
-    for (size_t i = 0; i < vertices.size(); ++i) {
-        const glm::vec3& n = glm::vec3(
-            (vertices[i].norm & 1023) / 511.0f - 1.0f,
-            ((vertices[i].norm >> 10) & 1023) / 511.0f - 1.0f,
-            ((vertices[i].norm >> 20) & 1023) / 511.0f - 1.0f
-        );
-        const glm::vec3& t = tangents[i];
-        const glm::vec3& b = bitangents[i];
-
-        glm::vec3 tangent = glm::normalize(t - n * glm::dot(n, t));
-
-        float handedness = (glm::dot(glm::cross(n, tangent), b) < 0.0f) ? -1.0f : 1.0f;
-
-        vertices[i].norm |= (handedness >= 0 ? 0 : 1) << 30;
-        vertices[i].tn = pack_tangent(tangent);
-    }
-}
-
 void Scene::load_scene(
     const std::filesystem::path& path,
-    const Buffer&                staging_buffer,
-    const Buffer&                vertex_buffer,
-    const Buffer&                index_buffer,
-    const Buffer&                meshlet_buffer,
-    const Buffer&                meshlet_vertex_indices,
-    const Buffer&                meshlet_primitive_buffer,
-    const Buffer&                meshlet_bounds_buffer,
+    RendererBuffers&             buffers,
+    BufferOffsets&               buffer_offsets,
     JPH::PhysicsSystem*          physics_system,
     bool                         build_lods,
     bool                         fast_build,
@@ -204,7 +123,7 @@ void Scene::load_scene(
 
     spdlog::info("Loading {} materials", materials.size());
     void* staging_buffer_ptr = nullptr;
-    VK_CHECK(vmaMapMemory(allocator, staging_buffer.allocation, &staging_buffer_ptr));
+    VK_CHECK(vmaMapMemory(allocator, buffers.staging_buffer.allocation, &staging_buffer_ptr));
     for (int i = 0; i < model.materials.size(); i++) {
         ZoneScopedN("Load Material");
         auto& mat = model.materials[i];
@@ -236,24 +155,24 @@ void Scene::load_scene(
                     format,
                     static_cast<uint32_t>(img.width),
                     static_cast<uint32_t>(img.height),
-                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT,
                     true,
                     allocator,
                     device
                 );
 
-                if (img.image.size() > staging_buffer.size) {
+                if (img.image.size() > buffers.staging_buffer.size) {
                     spdlog::error(
                         "Attempted out of bounds image buffer write for image, size={}, staging size={}",
                         img.image.size(),
-                        staging_buffer.size
+                        buffers.staging_buffer.size
                     );
                     exit(1);
                 }
 
                 memcpy(staging_buffer_ptr, &img.image.at(0), img.image.size());
-                copy_image(staging_buffer, image, true, command_buffer, queue, device);
+                copy_image(buffers.staging_buffer, image, true, command_buffer, queue, device);
 
                 local_texture_cache.insert({image_index, local_texture_cache.size() + 1});
                 images.push_back(
@@ -529,12 +448,11 @@ void Scene::load_scene(
             spdlog::debug("Copying vertices into global buffer");
             memcpy(staging_buffer_ptr, vertices.data(), sizeof(Vertex) * vertices.size());
             copy_buffer(
-                staging_buffer,
-                vertex_buffer,
+                buffers.staging_buffer,
+                buffers.vertex_buffer,
                 command_buffer,
                 queue,
                 device,
-                staging_buffer_ptr,
                 sizeof(Vertex) * vertices.size(),
                 indirect_vertex_buffer_offset
             );
@@ -725,12 +643,11 @@ void Scene::load_scene(
             spdlog::debug("Copying all meshlets into buffers");
             memcpy(staging_buffer_ptr, all_meshlets.data(), sizeof(meshopt_Meshlet) * all_meshlets.size());
             copy_buffer(
-                staging_buffer,
-                meshlet_buffer,
+                buffers.staging_buffer,
+                buffers.meshlet_buffer,
                 command_buffer,
                 queue,
                 device,
-                staging_buffer_ptr,
                 sizeof(meshopt_Meshlet) * all_meshlets.size(),
                 meshlet_buffer_offset
             );
@@ -739,12 +656,11 @@ void Scene::load_scene(
             spdlog::debug("Copying all meshlet bounds into buffer");
             memcpy(staging_buffer_ptr, all_meshlet_bounds.data(), sizeof(MeshletBounds) * all_meshlet_bounds.size());
             copy_buffer(
-                staging_buffer,
-                meshlet_bounds_buffer,
+                buffers.staging_buffer,
+                buffers.meshlet_bounds_buffer,
                 command_buffer,
                 queue,
                 device,
-                staging_buffer_ptr,
                 sizeof(MeshletBounds) * all_meshlet_bounds.size(),
                 meshlet_bounds_buffer_offset
             );
@@ -753,12 +669,11 @@ void Scene::load_scene(
             spdlog::debug("Copying all meshlet vertex indices into buffer");
             memcpy(staging_buffer_ptr, all_meshlet_vertices.data(), sizeof(unsigned int) * all_meshlet_vertices.size());
             copy_buffer(
-                staging_buffer,
-                meshlet_vertex_indices,
+                buffers.staging_buffer,
+                buffers.meshlet_vertex_indices,
                 command_buffer,
                 queue,
                 device,
-                staging_buffer_ptr,
                 sizeof(unsigned int) * all_meshlet_vertices.size(),
                 meshlet_vertex_indices_offset
             );
@@ -769,12 +684,11 @@ void Scene::load_scene(
                 staging_buffer_ptr, all_meshlet_triangles.data(), sizeof(unsigned char) * all_meshlet_triangles.size()
             );
             copy_buffer(
-                staging_buffer,
-                meshlet_primitive_buffer,
+                buffers.staging_buffer,
+                buffers.meshlet_primitive_buffer,
                 command_buffer,
                 queue,
                 device,
-                staging_buffer_ptr,
                 sizeof(unsigned char) * all_meshlet_triangles.size(),
                 meshlet_vertex_primitive_indices_offset
             );
@@ -782,12 +696,11 @@ void Scene::load_scene(
 
             memcpy(staging_buffer_ptr, all_indices.data(), sizeof(uint32_t) * all_indices.size());
             copy_buffer(
-                staging_buffer,
-                index_buffer,
+                buffers.staging_buffer,
+                buffers.index_buffer,
                 command_buffer,
                 queue,
                 device,
-                staging_buffer_ptr,
                 sizeof(uint32_t) * all_indices.size(),
                 indirect_index_buffer_offset
             );
@@ -799,9 +712,16 @@ void Scene::load_scene(
 
             current_entry++;
         }
+
+        buffer_offsets.vertex_buffer            = indirect_vertex_buffer_offset;
+        buffer_offsets.index_buffer             = indirect_index_buffer_offset;
+        buffer_offsets.meshlet_buffer           = meshlet_buffer_offset;
+        buffer_offsets.meshlet_vertex_indices   = meshlet_vertex_indices_offset;
+        buffer_offsets.meshlet_primitive_buffer = meshlet_vertex_primitive_indices_offset;
+        buffer_offsets.meshlet_bounds_buffer    = meshlet_bounds_buffer_offset;
     }
 
-    vmaUnmapMemory(allocator, staging_buffer.allocation);
+    vmaUnmapMemory(allocator, buffers.staging_buffer.allocation);
 
     auto root_node = create_entity("Root Node");
 

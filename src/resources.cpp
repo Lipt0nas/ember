@@ -53,9 +53,9 @@ void copy_buffer(
     VkCommandBuffer command_buffer,
     VkQueue         queue,
     VkDevice        device,
-    void*           data,
     size_t          data_size,
-    VkDeviceSize    dst_buffer_offset
+    VkDeviceSize    dst_buffer_offset,
+    VkDeviceSize    src_buffer_offset
 ) {
     if (data_size + dst_buffer_offset > dst_buffer.size) {
         spdlog::error(
@@ -72,7 +72,7 @@ void copy_buffer(
     VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
 
     VkBufferCopy copy_region = {
-        .srcOffset = 0,
+        .srcOffset = src_buffer_offset,
         .dstOffset = dst_buffer_offset,
         .size      = data_size,
     };

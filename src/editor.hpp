@@ -41,7 +41,12 @@ public:
         );
     }
 
-    void render_main_menu(Scene& scene, ScriptSystem& script_system);
+    void render_main_menu(
+        Scene&                           scene,
+        ScriptSystem&                    script_system,
+        JPH::PhysicsSystem&              physics_system,
+        std::function<void(std::string)> scene_save_callback
+    );
     void render_scene_hierarchy_window(Scene& scene);
     void render_scene_node_property_window(
         Scene&                                               scene,

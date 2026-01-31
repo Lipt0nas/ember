@@ -284,6 +284,7 @@ set(SOURCES
     "src/script_system.cpp"
     "src/editor.cpp"
     "src/input_system.cpp"
+    "src/scene_serializer.cpp"
 )
 add_executable(Ember ${SOURCES})
 target_compile_definitions(Ember PRIVATE 

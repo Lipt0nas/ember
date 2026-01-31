@@ -14,6 +14,7 @@
 #include "resources.hpp"
 #include "rt_scene.hpp"
 #include "scene.hpp"
+#include "scene_serializer.hpp"
 #include "script_system.hpp"
 #include "swapchain.hpp"
 #include "ui.hpp"
@@ -650,7 +651,7 @@ int main(int argc, char* argv[]) {
 
     use_meshlets     = args.get_arg<bool>("meshlets", true);
     build_lods       = args.get_arg<bool>("lods", true);
-    fast_scene_build = args.get_arg<bool>("fast-build", true);
+    fast_scene_build = args.get_arg<bool>("fast-build", false);
 
     spdlog::info(
         "Extension support:\n\tMesh shading: {}\n\tRay tracing: {}\n\tFast Scene Build: {}\n\tLOD's: {}",
@@ -1562,8 +1563,9 @@ int main(int argc, char* argv[]) {
     }
 
     Buffer global_vertex_buffer = create_buffer(
-        1024 * 1024 * 164,
+        1024 * 1024 * 128,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
             (use_hardware_rt ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
                              : 0),
@@ -1571,8 +1573,9 @@ int main(int argc, char* argv[]) {
     );
 
     Buffer global_index_buffer = create_buffer(
-        1024 * 1024 * 364,
+        1024 * 1024 * 160,
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
             (use_hardware_rt ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
                              : 0),
@@ -1635,19 +1638,27 @@ int main(int argc, char* argv[]) {
     );
 
     Buffer meshlet_buffer = create_buffer(
-        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 12,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        vma_allocator
     );
 
     Buffer meshlet_vertex_indices_buffer = create_buffer(
-        1024 * 1024 * 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 128,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        vma_allocator
     );
 
     Buffer meshlet_primitive_indices_buffer = create_buffer(
-        1024 * 1024 * 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 128,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        vma_allocator
     );
 
     Buffer meshlet_bounds_buffer = create_buffer(
-        1024 * 1024 * 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
+        1024 * 1024 * 32,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        vma_allocator
     );
 
     Buffer scene_ubo_buffer = create_buffer(
@@ -1693,7 +1704,6 @@ int main(int argc, char* argv[]) {
             command_buffers[0],
             graphics_queue,
             device,
-            nullptr,
             sizeof(glm::vec3) * positions.size(),
             0
         );
@@ -1705,7 +1715,6 @@ int main(int argc, char* argv[]) {
             command_buffers[0],
             graphics_queue,
             device,
-            nullptr,
             sizeof(glm::vec3) * velocities.size(),
             0
         );
@@ -1815,35 +1824,79 @@ int main(int argc, char* argv[]) {
     std::string scene_load_path  = args.get_arg<std::string>("s", "data/models/room2.glb");
     std::string script_load_path = args.get_arg<std::string>("scripts", "");
 
-    Scene scene = {};
-    scene.load_scene(
-        scene_load_path,
-        staging_buffer,
-        global_vertex_buffer,
-        global_index_buffer,
-        meshlet_buffer,
-        meshlet_vertex_indices_buffer,
-        meshlet_primitive_indices_buffer,
-        meshlet_bounds_buffer,
-        &physics_system,
-        build_lods,
-        fast_scene_build,
-        device,
-        graphics_queue,
-        vma_allocator,
-        command_buffers[0]
-    );
-
+    Scene       scene;
     InputSystem input_system;
 
     spdlog::info("Initializing script system");
-    ScriptSystem script_system(script_load_path, scene, physics_system, input_system);
-    if (!script_load_path.empty()) {
-        script_system.load_scripts();
-        if (args.get_arg<bool>("script_predefined", false)) {
-            script_system.generate_predefined_file();
+    ScriptSystem script_system(scene, physics_system, input_system);
+
+    RendererBuffers buffers = {
+        .staging_buffer           = staging_buffer,
+        .vertex_buffer            = global_vertex_buffer,
+        .index_buffer             = global_index_buffer,
+        .meshlet_buffer           = meshlet_buffer,
+        .meshlet_vertex_indices   = meshlet_vertex_indices_buffer,
+        .meshlet_primitive_buffer = meshlet_primitive_indices_buffer,
+        .meshlet_bounds_buffer    = meshlet_bounds_buffer
+    };
+
+    BufferOffsets buffer_offsets;
+
+    if (std::filesystem::is_directory(scene_load_path)) {
+        VkCommandBufferAllocateInfo alloc_info = {
+            .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext              = nullptr,
+            .commandPool        = command_pool,
+            .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1
+        };
+        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+        VK_CHECK(vkAllocateCommandBuffers(device, &alloc_info, &command_buffer));
+        SceneSerializer::load(
+            scene_load_path,
+            scene,
+            physics_system,
+            script_system,
+            buffers,
+            buffer_offsets,
+            device,
+            graphics_queue,
+            vma_allocator,
+            command_buffer
+        );
+        vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+
+        script_system.load_scripts(std::filesystem::path(scene_load_path) / "scripts");
+    } else {
+        scene.load_scene(
+            scene_load_path,
+            buffers,
+            buffer_offsets,
+            &physics_system,
+            build_lods,
+            fast_scene_build,
+            device,
+            graphics_queue,
+            vma_allocator,
+            command_buffers[0]
+        );
+
+        if (!script_load_path.empty()) {
+            script_system.load_scripts(script_load_path);
         }
     }
+    VK_CHECK(vkDeviceWaitIdle(device));
+
+    spdlog::info(
+        "Geometry buffer sizes:\n\tVertex: {}MB\n\tIndex: {}MB\n\tMeshlet: {}MB\n\tMeshlet Vertex Indices: "
+        "{}MB\n\tMeshlet Primitive Indices: {}MB\n\tMeshlet Bounds: {}MB",
+        static_cast<float>(buffer_offsets.vertex_buffer) / 1024.0f / 1024.0f,
+        static_cast<float>(buffer_offsets.index_buffer) / 1024.0f / 1024.0f,
+        static_cast<float>(buffer_offsets.meshlet_buffer) / 1024.0f / 1024.0f,
+        static_cast<float>(buffer_offsets.meshlet_vertex_indices) / 1024.0f / 1024.0f,
+        static_cast<float>(buffer_offsets.meshlet_primitive_buffer) / 1024.0f / 1024.0f,
+        static_cast<float>(buffer_offsets.meshlet_bounds_buffer) / 1024.0f / 1024.0f
+    );
 
     // This is updated by a system at the beginning of a frame
     std::vector<MeshInstance> mesh_instances;
@@ -5734,6 +5787,10 @@ int main(int argc, char* argv[]) {
         {
             auto view = scene.entity_registry.view<components::Transform, components::Physics>();
             for (auto [entity, transform, physics] : view.each()) {
+                if (physics.body_id.IsInvalid()) {
+                    continue;
+                }
+
                 JPH::EActivation activation =
                     physics.is_static ? JPH::EActivation::DontActivate : JPH::EActivation::Activate;
 
@@ -5783,6 +5840,10 @@ int main(int argc, char* argv[]) {
                 }
 
                 for (auto [entity, transform, physics] : update_view.each()) {
+                    if (physics.body_id.IsInvalid()) {
+                        continue;
+                    }
+
                     JPH::Vec3 p;
                     JPH::Quat r;
                     physics_body_interface.GetPositionAndRotation(physics.body_id, p, r);
@@ -5799,7 +5860,7 @@ int main(int argc, char* argv[]) {
                 scene.entity_registry.view<components::Transform, components::Physics, components::Mesh>();
             float physics_alpha = physics_time_accumulator / physics_delta_time;
             for (auto [entity, transform, physics, m] : interpolate_view.each()) {
-                if (physics.is_static) {
+                if (physics.is_static || physics.body_id.IsInvalid()) {
                     continue;
                 }
 
@@ -5977,7 +6038,30 @@ int main(int argc, char* argv[]) {
 
         ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
         if (editor_overlay) {
-            editor.render_main_menu(scene, script_system);
+            editor.render_main_menu(scene, script_system, physics_system, [&](std::string path) {
+                VkCommandBufferAllocateInfo alloc_info = {
+                    .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                    .pNext              = nullptr,
+                    .commandPool        = command_pool,
+                    .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                    .commandBufferCount = 1
+                };
+                VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+                VK_CHECK(vkAllocateCommandBuffers(device, &alloc_info, &command_buffer));
+                SceneSerializer::save(
+                    path,
+                    scene,
+                    physics_system,
+                    script_system,
+                    buffers,
+                    buffer_offsets,
+                    device,
+                    graphics_queue,
+                    vma_allocator,
+                    command_buffer
+                );
+                vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+            });
 
             ImGui::Begin(ICON_FA_VIDEO " Scene Viewport", nullptr, ImGuiWindowFlags_MenuBar);
             if (ImGui::BeginMenuBar()) {
@@ -6051,6 +6135,8 @@ int main(int argc, char* argv[]) {
 
         ImGui::Begin(ICON_FA_COGS " Configuration");
         ImGui::Checkbox("Enable Particles", &enable_particles);
+        if (ImGui::Button("SAVE SCENE TEST")) {
+        }
         ImGui::InputInt("Simulate Target FPS", &simulated_fps);
         ImGui::Checkbox("Simulate FPS", &simulate_lower_fps);
         if (ImGui::CollapsingHeader("Renderer Info", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -6282,7 +6368,7 @@ int main(int argc, char* argv[]) {
                 }
 
                 auto p = scene.get_component<components::Physics>(editor.get_selected_entity());
-                if (p && !p->is_static) {
+                if (p && !p->is_static && !p->body_id.IsInvalid()) {
                     JPH::EActivation activation = JPH::EActivation::Activate;
 
                     auto last_position = physics_body_interface.GetPosition(p->body_id);
