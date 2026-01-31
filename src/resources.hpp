@@ -161,6 +161,15 @@ void copy_image(
     VkDevice        device
 );
 
+void copy_image_mip(
+    const Buffer&   src_buffer,
+    const Image&    dst_image,
+    uint32_t        mip_level,
+    VkCommandBuffer command_buffer,
+    VkQueue         queue,
+    VkDevice        device
+);
+
 Sampler create_sampler(
     VkFilter             mag_filter,
     VkFilter             min_filter,

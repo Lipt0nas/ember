@@ -2,7 +2,12 @@
 
 #include <tracy/Tracy.hpp>
 
+#include <ktx.h>
 #include <map>
+#include <thread>
+
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include <stb_image_resize2.h>
 
 void Scene::load_scene(
     const std::filesystem::path& path,
@@ -11,6 +16,7 @@ void Scene::load_scene(
     JPH::PhysicsSystem*          physics_system,
     bool                         build_lods,
     bool                         fast_build,
+    bool                         compress_textures,
     VkDevice                     device,
     VkQueue                      queue,
     VmaAllocator                 allocator,
@@ -128,70 +134,226 @@ void Scene::load_scene(
         ZoneScopedN("Load Material");
         auto& mat = model.materials[i];
 
-        auto upload_texture = [&](int texture_index, VkFormat format) {
-            if (texture_index < 0) {
-                return 0;
-            }
-
-            tinygltf::Texture& texture = model.textures[texture_index];
-
-            int image_index = texture.source;
-            if (image_index < 0) {
-                return 0;
-            }
-
-            int sampler_index = texture.sampler;
-            if (sampler_index < 0) {
-                sampler_index = 0;
-            } else {
-                sampler_index = local_sampler_cache.at(sampler_index);
-            }
-
-            auto local_it = local_texture_cache.find(image_index);
-            if (local_it == local_texture_cache.end()) {
-                tinygltf::Image& img = model.images[image_index];
-
-                Image image = create_image(
-                    format,
-                    static_cast<uint32_t>(img.width),
-                    static_cast<uint32_t>(img.height),
-                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT,
-                    true,
-                    allocator,
-                    device
-                );
-
-                if (img.image.size() > buffers.staging_buffer.size) {
-                    spdlog::error(
-                        "Attempted out of bounds image buffer write for image, size={}, staging size={}",
-                        img.image.size(),
-                        buffers.staging_buffer.size
-                    );
-                    exit(1);
+        auto upload_texture =
+            [&](int texture_index, VkFormat format, VkFormat compressed_format, bool is_normal = false) {
+                if (texture_index < 0) {
+                    return 0;
                 }
 
-                memcpy(staging_buffer_ptr, &img.image.at(0), img.image.size());
-                copy_image(buffers.staging_buffer, image, true, command_buffer, queue, device);
+                tinygltf::Texture& texture = model.textures[texture_index];
 
-                local_texture_cache.insert({image_index, local_texture_cache.size() + 1});
-                images.push_back(
-                    ImageResource{
-                        .image         = image,
-                        .sampler_index = sampler_index,
+                int image_index = texture.source;
+                if (image_index < 0) {
+                    return 0;
+                }
+
+                int sampler_index = texture.sampler;
+                if (sampler_index < 0) {
+                    sampler_index = 0;
+                } else {
+                    sampler_index = local_sampler_cache.at(sampler_index);
+                }
+
+                auto local_it = local_texture_cache.find(image_index);
+                if (local_it == local_texture_cache.end()) {
+                    tinygltf::Image& img = model.images[image_index];
+
+                    Image image = create_image(
+                        compress_textures ? compressed_format : format,
+                        static_cast<uint32_t>(img.width),
+                        static_cast<uint32_t>(img.height),
+                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                        VK_IMAGE_ASPECT_COLOR_BIT,
+                        true,
+                        allocator,
+                        device
+                    );
+
+                    if (compress_textures) {
+                        ktxTexture2*         ktx_texture;
+                        ktxTextureCreateInfo ktx_info = {
+                            .glInternalformat = 0,
+                            .vkFormat         = format,
+                            .pDfd             = nullptr,
+                            .baseWidth        = static_cast<uint32_t>(img.width),
+                            .baseHeight       = static_cast<uint32_t>(img.height),
+                            .baseDepth        = 1,
+                            .numDimensions    = 2,
+                            .numLevels        = image.levels,
+                            .numLayers        = 1,
+                            .numFaces         = 1,
+                            .isArray          = KTX_FALSE,
+                            .generateMipmaps  = KTX_FALSE,
+                        };
+                        KTX_error_code result =
+                            ktxTexture2_Create(&ktx_info, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &ktx_texture);
+                        if (result != KTX_SUCCESS) {
+                            spdlog::error("Failed to create KTX texture: {}", (int)result);
+                            return 0;
+                        }
+
+                        result = ktxTexture_SetImageFromMemory(
+                            ktxTexture(ktx_texture), 0, 0, 0, &img.image.at(0), img.image.size()
+                        );
+                        if (result != KTX_SUCCESS) {
+                            spdlog::error("Failed to set image data: {}", (int)result);
+                            ktxTexture_Destroy(ktxTexture(ktx_texture));
+                            return 0;
+                        }
+
+                        int mip_width  = img.width;
+                        int mip_height = img.height;
+                        int channels   = img.component;
+
+                        std::vector<uint8_t> prev_mip(img.image.begin(), img.image.end());
+
+                        for (uint32_t level = 1; level < image.levels; level++) {
+                            int new_width  = std::max(1, mip_width / 2);
+                            int new_height = std::max(1, mip_height / 2);
+
+                            std::vector<uint8_t> mip_data(new_width * new_height * channels);
+
+                            stbir_resize_uint8_linear(
+                                prev_mip.data(),
+                                mip_width,
+                                mip_height,
+                                0,
+                                mip_data.data(),
+                                new_width,
+                                new_height,
+                                0,
+                                (stbir_pixel_layout)channels
+                            );
+
+                            result = ktxTexture_SetImageFromMemory(
+                                ktxTexture(ktx_texture), level, 0, 0, mip_data.data(), mip_data.size()
+                            );
+
+                            if (result != KTX_SUCCESS) {
+                                spdlog::error("Failed to set mip level {}: {}", level, (int)result);
+                                ktxTexture_Destroy(ktxTexture(ktx_texture));
+                                return 0;
+                            }
+
+                            prev_mip   = std::move(mip_data);
+                            mip_width  = new_width;
+                            mip_height = new_height;
+                        }
+
+                        ktxBasisParams basis_params   = {0};
+                        basis_params.structSize       = sizeof(basis_params);
+                        basis_params.compressionLevel = KTX_ETC1S_DEFAULT_COMPRESSION_LEVEL;
+                        basis_params.uastc            = KTX_TRUE;
+                        basis_params.threadCount      = std::max(1u, std::thread::hardware_concurrency() - 1);
+                        basis_params.normalMap        = is_normal;
+
+                        result = ktxTexture2_CompressBasisEx(ktx_texture, &basis_params);
+                        if (result != KTX_SUCCESS) {
+                            spdlog::error("Failed to compress texture: {}", (int)result);
+                            ktxTexture_Destroy(ktxTexture(ktx_texture));
+                            return 0;
+                        }
+
+                        ktx_transcode_fmt_e transcode_fmt;
+                        if (compressed_format == VK_FORMAT_BC7_SRGB_BLOCK ||
+                            compressed_format == VK_FORMAT_BC7_UNORM_BLOCK) {
+                            transcode_fmt = KTX_TTF_BC7_RGBA;
+                        } else if (compressed_format == VK_FORMAT_BC5_UNORM_BLOCK ||
+                                   compressed_format == VK_FORMAT_BC5_SNORM_BLOCK) {
+                            transcode_fmt = KTX_TTF_BC5_RG;
+                        } else {
+                            spdlog::error("Unsupported compressed format: {}", (uint32_t)compressed_format);
+                            ktxTexture_Destroy(ktxTexture(ktx_texture));
+                            return 0;
+                        }
+
+                        result = ktxTexture2_TranscodeBasis(ktx_texture, transcode_fmt, 0);
+                        if (result != KTX_SUCCESS) {
+                            spdlog::error("Failed to transcode texture: {}", (int)result);
+                            ktxTexture_Destroy(ktxTexture(ktx_texture));
+                            return 0;
+                        }
+
+                        uint32_t num_levels = ktx_texture->numLevels;
+                        spdlog::info("Generated {} mip levels for {}x{} texture", num_levels, img.width, img.height);
+                        for (uint32_t level = 0; level < num_levels; level++) {
+                            ktx_size_t offset;
+                            ktxTexture_GetImageOffset(ktxTexture(ktx_texture), level, 0, 0, &offset);
+                            ktx_size_t mip_size = ktxTexture_GetImageSize(ktxTexture(ktx_texture), level);
+
+                            ktx_uint8_t* src_data = ktxTexture_GetData(ktxTexture(ktx_texture)) + offset;
+
+                            if (mip_size > buffers.staging_buffer.size) {
+                                spdlog::error(
+                                    "Attempted out of bounds image buffer write for image, size={}, staging size={}",
+                                    mip_size,
+                                    buffers.staging_buffer.size
+                                );
+                                exit(1);
+                            }
+
+                            memcpy(staging_buffer_ptr, src_data, mip_size);
+                            copy_image_mip(buffers.staging_buffer, image, level, command_buffer, queue, device);
+                        }
+
+                        VkCommandBufferBeginInfo begin_info = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+                        vkBeginCommandBuffer(command_buffer, &begin_info);
+
+                        image_pipeline_barrier(
+                            image,
+                            command_buffer,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                            VK_ACCESS_2_SHADER_READ_BIT
+                        );
+
+                        vkEndCommandBuffer(command_buffer);
+                        VkSubmitInfo submit = {
+                            .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                            .commandBufferCount = 1,
+                            .pCommandBuffers    = &command_buffer
+                        };
+                        vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
+                        vkDeviceWaitIdle(device);
+                    } else {
+                        if (img.image.size() > buffers.staging_buffer.size) {
+                            spdlog::error(
+                                "Attempted out of bounds image buffer write for image, size={}, staging size={}",
+                                img.image.size(),
+                                buffers.staging_buffer.size
+                            );
+                            exit(1);
+                        }
+
+                        memcpy(staging_buffer_ptr, &img.image.at(0), img.image.size());
+                        copy_image(buffers.staging_buffer, image, true, command_buffer, queue, device);
                     }
-                );
-            }
 
-            return local_texture_cache.at(image_index);
-        };
+                    local_texture_cache.insert({image_index, local_texture_cache.size() + 1});
+                    images.push_back(
+                        ImageResource{
+                            .image         = image,
+                            .sampler_index = sampler_index,
+                        }
+                    );
+                }
 
-        uint32_t albedo_index =
-            upload_texture(mat.pbrMetallicRoughness.baseColorTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
-        uint32_t material_index =
-            upload_texture(mat.pbrMetallicRoughness.metallicRoughnessTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
-        uint32_t normals_index  = upload_texture(mat.normalTexture.index, VK_FORMAT_R8G8B8A8_UNORM);
-        uint32_t emissive_index = upload_texture(mat.emissiveTexture.index, VK_FORMAT_R8G8B8A8_SRGB);
+                return local_texture_cache.at(image_index);
+            };
+
+        uint32_t albedo_index = upload_texture(
+            mat.pbrMetallicRoughness.baseColorTexture.index, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_BC7_SRGB_BLOCK
+        );
+        uint32_t material_index = upload_texture(
+            mat.pbrMetallicRoughness.metallicRoughnessTexture.index, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_BC7_UNORM_BLOCK
+        );
+        uint32_t normals_index =
+            upload_texture(mat.normalTexture.index, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_BC5_UNORM_BLOCK, true);
+        uint32_t emissive_index =
+            upload_texture(mat.emissiveTexture.index, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_BC7_SRGB_BLOCK);
 
         materials[i].albedo_index     = albedo_index;
         materials[i].normals_index    = normals_index;

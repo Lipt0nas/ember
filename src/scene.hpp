@@ -55,6 +55,7 @@ public:
         JPH::PhysicsSystem*          physics_system,
         bool                         build_lods,
         bool                         fast_build,
+        bool                         compress_textures,
         VkDevice                     device,
         VkQueue                      queue,
         VmaAllocator                 allocator,

@@ -93,6 +93,19 @@ FetchContent_Declare(
   GIT_SHALLOW TRUE
 )
 
+set(KTX_FEATURE_TESTS OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_JS OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_VK_UPLOAD OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_TOOLS OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_LOADTEST_APPS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    ktx
+    GIT_REPOSITORY https://github.com/KhronosGroup/KTX-Software.git
+    GIT_TAG v4.4.2
+    GIT_SHALLOW TRUE
+)
+
 # https://github.com/jrouwe/JoltPhysicsHelloWorld/blob/main/Build/CMakeLists.txt
 set(DOUBLE_PRECISION OFF)
 set(GENERATE_DEBUG_SYMBOLS ON)
@@ -201,6 +214,7 @@ FetchContent_MakeAvailable(
     VulkanHeaders
     VulkanUtilityLibraries 
     JoltPhysics
+    ktx
 )
 
 target_link_libraries(volk PUBLIC Vulkan-Headers)
@@ -315,6 +329,7 @@ target_link_libraries(Ember PRIVATE
     angelscript
     angelscript_addons
     cereal
+    ktx
 )
 
 # TODO: temporary convenience

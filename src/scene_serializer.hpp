@@ -22,8 +22,14 @@ struct TextureHeader {
     uint32_t width;
     uint32_t height;
     uint32_t format;
-    uint64_t data_size;
+    uint32_t mip_levels;
     int      sampler_index;
+};
+
+struct MipLevelHeader {
+    uint32_t width;
+    uint32_t height;
+    uint32_t size;
 };
 
 struct SamplerInfo {
