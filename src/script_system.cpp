@@ -1152,10 +1152,8 @@ namespace {
     }
 } // namespace
 
-ScriptSystem::ScriptSystem(
-    const std::filesystem::path& path, Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system
-)
-    : scene(scene), physics_system(physics_system), input_system(input_system), script_source_dir(path) {
+ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system)
+    : scene(scene), physics_system(physics_system), input_system(input_system) {
     engine = asCreateScriptEngine();
 
     engine->SetMessageCallback(asFUNCTION(script_message_callback), 0, asCALL_CDECL);
@@ -1432,20 +1430,12 @@ ScriptSystem::ScriptSystem(
     context = engine->CreateContext();
 }
 
-void ScriptSystem::load_scripts() {
-    spdlog::info("releasing scripts");
-    clear();
-
-    spdlog::info("discarding modules");
-    for (auto& [hash, handle] : scripts) {
-        if (handle.module) {
-            handle.module->Discard();
-        }
-    }
-    spdlog::info("clearing map");
-    scripts.clear();
-
+void ScriptSystem::load_scripts(const std::filesystem::path& path) {
+    script_source_dir = path;
     spdlog::info("loading scripts from {}", script_source_dir.string());
+    if (!std::filesystem::exists(path)) {
+        return;
+    }
 
     std::unordered_map<std::string, std::string> script_sources;
     script_builder->SetIncludeCallback(script_include_callback, &script_sources);
@@ -1544,7 +1534,27 @@ void ScriptSystem::load_scripts() {
     }
 }
 
+void ScriptSystem::reload_scripts() {
+    spdlog::info("releasing scripts");
+    clear();
+
+    spdlog::info("discarding modules");
+    for (auto& [hash, handle] : scripts) {
+        if (handle.module) {
+            handle.module->Discard();
+        }
+    }
+    spdlog::info("clearing map");
+    scripts.clear();
+
+    load_scripts(script_source_dir);
+}
+
 void ScriptSystem::generate_predefined_file() {
+    if (!std::filesystem::exists(script_source_dir)) {
+        return;
+    }
+
     std::ofstream stream(script_source_dir / "as.predefined");
     generate_enum_list(engine, stream);
     generate_class_type_list(engine, stream);

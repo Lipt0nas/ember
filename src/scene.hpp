@@ -8,6 +8,27 @@
 
 #include <filesystem>
 
+// TODO: Not an ideal location
+struct RendererBuffers {
+    Buffer staging_buffer;
+    Buffer vertex_buffer;
+    Buffer index_buffer;
+    Buffer meshlet_buffer;
+    Buffer meshlet_vertex_indices;
+    Buffer meshlet_primitive_buffer;
+    Buffer meshlet_bounds_buffer;
+};
+
+// TODO: This should probably be merged into the buffer struct somehow, or wrapped in another struct
+struct BufferOffsets {
+    uint64_t vertex_buffer;
+    uint64_t index_buffer;
+    uint64_t meshlet_buffer;
+    uint64_t meshlet_vertex_indices;
+    uint64_t meshlet_primitive_buffer;
+    uint64_t meshlet_bounds_buffer;
+};
+
 struct ImageResource {
     Image image;
     int   sampler_index;
@@ -29,13 +50,8 @@ public:
 
     void load_scene(
         const std::filesystem::path& path,
-        const Buffer&                staging_buffer,
-        const Buffer&                vertex_buffer,
-        const Buffer&                index_buffer,
-        const Buffer&                meshlet_buffer,
-        const Buffer&                meshlet_vertex_indices,
-        const Buffer&                meshlet_primitive_buffer,
-        const Buffer&                meshlet_bounds_buffer,
+        RendererBuffers&             buffers,
+        BufferOffsets&               buffer_offsets,
         JPH::PhysicsSystem*          physics_system,
         bool                         build_lods,
         bool                         fast_build,

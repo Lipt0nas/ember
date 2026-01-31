@@ -52,11 +52,10 @@ void copy_buffer(
     VkCommandBuffer command_buffer,
     VkQueue         queue,
     VkDevice        device,
-    void*           data,
     size_t          data_size,
-    VkDeviceSize    dst_buffer_offset = 0
+    VkDeviceSize    dst_buffer_offset = 0,
+    VkDeviceSize    src_buffer_offset = 0
 );
-
 void copy_to_buffer(const Buffer& dst_buffer, VmaAllocator allocator, void* src_ptr, size_t size);
 
 uint64_t get_buffer_device_address(const Buffer& buffer, VkDevice device);

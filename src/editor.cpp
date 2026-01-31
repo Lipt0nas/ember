@@ -14,15 +14,57 @@ Editor::Editor() {
     this->register_component<components::Script>("Script", true);
 }
 
-void Editor::render_main_menu(Scene& scene, ScriptSystem& script_system) {
+void Editor::render_main_menu(
+    Scene&                           scene,
+    ScriptSystem&                    script_system,
+    JPH::PhysicsSystem&              physics_system,
+    std::function<void(std::string)> scene_save_callback
+) {
+    static char save_scene_path[256] = "\0";
+    static bool show_save_popup      = false;
+
     if (ImGui::BeginMainMenuBar()) {
-        if (ImGui::BeginMenu("Editor")) {
-            if (ImGui::MenuItem("Reload scripts")) {
-                script_system.load_scripts();
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Save scene")) {
+                show_save_popup = true;
             }
             ImGui::EndMenu();
         }
+
+        if (ImGui::BeginMenu("Editor")) {
+            if (ImGui::MenuItem("Reload scripts")) {
+                script_system.reload_scripts();
+            }
+            if (ImGui::MenuItem("Generate predefined script file")) {
+                script_system.generate_predefined_file();
+            }
+            ImGui::EndMenu();
+        }
+
         ImGui::EndMainMenuBar();
+    }
+
+    if (show_save_popup) {
+        ImGui::OpenPopup("SaveScenePopup");
+        show_save_popup = false;
+    }
+
+    if (ImGui::BeginPopupModal("SaveScenePopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Save Scene");
+        ImGui::Separator();
+
+        ImGui::InputText("Path", save_scene_path, 256);
+
+        if (ImGui::Button("Save")) {
+            scene_save_callback(save_scene_path);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
     }
 }
 
