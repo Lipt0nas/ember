@@ -6135,8 +6135,6 @@ int main(int argc, char* argv[]) {
 
         ImGui::Begin(ICON_FA_COGS " Configuration");
         ImGui::Checkbox("Enable Particles", &enable_particles);
-        if (ImGui::Button("SAVE SCENE TEST")) {
-        }
         ImGui::InputInt("Simulate Target FPS", &simulated_fps);
         ImGui::Checkbox("Simulate FPS", &simulate_lower_fps);
         if (ImGui::CollapsingHeader("Renderer Info", ImGuiTreeNodeFlags_DefaultOpen)) {

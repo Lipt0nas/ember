@@ -185,8 +185,9 @@ void SceneSerializer::load(
             }
 
             for (int c = 0; c < chunks; c++) {
-                uint64_t dst_offset  = chunk_size * c;
-                uint64_t region_size = glm::clamp(chunk_size, 0ul, dst_buffer_size - (chunk_size * c));
+                uint64_t dst_offset = chunk_size * c;
+                uint64_t region_size =
+                    glm::clamp(chunk_size, static_cast<uint64_t>(0), dst_buffer_size - (chunk_size * c));
 
                 void* staging_buffer_ptr = nullptr;
                 VK_CHECK(vmaMapMemory(allocator, buffers.staging_buffer.allocation, &staging_buffer_ptr));
@@ -441,7 +442,7 @@ void SceneSerializer::save(
 
             for (int c = 0; c < chunks; c++) {
                 uint64_t src_offset  = chunk_size * c;
-                uint64_t region_size = glm::clamp(chunk_size, 0ul, size - (chunk_size * c));
+                uint64_t region_size = glm::clamp(chunk_size, static_cast<uint64_t>(0), size - (chunk_size * c));
 
                 copy_buffer(
                     src_buffer, buffers.staging_buffer, command_buffer, queue, device, region_size, 0, src_offset
