@@ -558,6 +558,69 @@ void copy_image(
     VK_CHECK(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE));
     VK_CHECK(vkDeviceWaitIdle(device));
 }
+
+void copy_image_mip(
+    const Buffer&   src_buffer,
+    const Image&    dst_image,
+    uint32_t        mip_level,
+    VkCommandBuffer command_buffer,
+    VkQueue         queue,
+    VkDevice        device
+) {
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .pNext = nullptr, .flags = 0, .pInheritanceInfo = nullptr
+    };
+    VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
+
+    uint32_t mip_width  = std::max(1u, dst_image.width >> mip_level);
+    uint32_t mip_height = std::max(1u, dst_image.height >> mip_level);
+
+    VkBufferImageCopy copy_region = {};
+    copy_region.imageExtent       = {.width = mip_width, .height = mip_height, .depth = 1};
+    copy_region.imageOffset       = {.x = 0, .y = 0, .z = 0};
+    copy_region.imageSubresource  = {
+         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = mip_level, .baseArrayLayer = 0, .layerCount = 1
+    };
+
+    image_pipeline_barrier(
+        dst_image.handle,
+        command_buffer,
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+        0,
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        {
+            .aspectMask     = dst_image.aspect,
+            .baseMipLevel   = mip_level,
+            .levelCount     = 1,
+            .baseArrayLayer = 0,
+            .layerCount     = 1,
+        }
+    );
+
+    vkCmdCopyBufferToImage(
+        command_buffer, src_buffer.handle, dst_image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region
+    );
+
+    VK_CHECK(vkEndCommandBuffer(command_buffer));
+
+    VkSubmitInfo submit_info = {
+        .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext                = nullptr,
+        .waitSemaphoreCount   = 0,
+        .pWaitSemaphores      = nullptr,
+        .pWaitDstStageMask    = nullptr,
+        .commandBufferCount   = 1,
+        .pCommandBuffers      = &command_buffer,
+        .signalSemaphoreCount = 0,
+        .pSignalSemaphores    = nullptr
+    };
+    VK_CHECK(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE));
+    VK_CHECK(vkDeviceWaitIdle(device));
+}
+
 void buffer_pipeline_barrier(
     const Buffer&         buffer,
     VkCommandBuffer       command_buffer,

@@ -34,7 +34,11 @@ template <typename Archive> void serialize(Archive& archive, TextureDataHeader& 
 }
 
 template <typename Archive> void serialize(Archive& archive, TextureHeader& header) {
-    archive(header.width, header.height, header.format, header.data_size, header.sampler_index);
+    archive(header.width, header.height, header.format, header.mip_levels, header.sampler_index);
+}
+
+template <typename Archive> void serialize(Archive& archive, MipLevelHeader& header) {
+    archive(header.width, header.height, header.size);
 }
 
 template <typename Archive> void serialize(Archive& archive, SamplerInfo& info) {
@@ -306,15 +310,6 @@ void SceneSerializer::load(
             TextureHeader texture_header;
             archive(texture_header);
 
-            if (texture_header.data_size > buffers.staging_buffer.size) {
-                spdlog::error(
-                    "Attempted out of bounds image buffer write for image, size={}, staging size={}",
-                    texture_header.data_size,
-                    buffers.staging_buffer.size
-                );
-                exit(1);
-            }
-
             Image image = create_image(
                 static_cast<VkFormat>(texture_header.format),
                 texture_header.width,
@@ -326,12 +321,38 @@ void SceneSerializer::load(
                 device
             );
 
-            void* staging_buffer_ptr = nullptr;
-            VK_CHECK(vmaMapMemory(allocator, buffers.staging_buffer.allocation, &staging_buffer_ptr));
+            for (uint32_t mip = 0; mip < texture_header.mip_levels; mip++) {
+                MipLevelHeader mip_header;
+                archive(mip_header);
 
-            archive.loadBinary(staging_buffer_ptr, texture_header.data_size);
-            copy_image(buffers.staging_buffer, image, true, command_buffer, queue, device);
-            vmaUnmapMemory(allocator, buffers.staging_buffer.allocation);
+                void* staging_buffer_ptr = nullptr;
+                VK_CHECK(vmaMapMemory(allocator, buffers.staging_buffer.allocation, &staging_buffer_ptr));
+                archive.loadBinary(staging_buffer_ptr, mip_header.size);
+                vmaUnmapMemory(allocator, buffers.staging_buffer.allocation);
+
+                copy_image_mip(buffers.staging_buffer, image, mip, command_buffer, queue, device);
+            }
+
+            VkCommandBufferBeginInfo begin_info = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+            vkBeginCommandBuffer(command_buffer, &begin_info);
+
+            image_pipeline_barrier(
+                image,
+                command_buffer,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT
+            );
+
+            vkEndCommandBuffer(command_buffer);
+            VkSubmitInfo submit = {
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &command_buffer
+            };
+            vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
+            vkDeviceWaitIdle(device);
 
             scene.images.push_back(
                 ImageResource{
@@ -480,6 +501,35 @@ void SceneSerializer::save(
         for (uint32_t i = 0; i < scene.images.size(); i++) {
             auto& resource = scene.images[i];
 
+            uint32_t bytes_per_block;
+            uint32_t block_size = 4;
+
+            if (resource.image.format == VK_FORMAT_BC7_SRGB_BLOCK ||
+                resource.image.format == VK_FORMAT_BC7_UNORM_BLOCK ||
+                resource.image.format == VK_FORMAT_BC1_RGB_SRGB_BLOCK ||
+                resource.image.format == VK_FORMAT_BC1_RGBA_SRGB_BLOCK ||
+                resource.image.format == VK_FORMAT_BC4_UNORM_BLOCK) {
+                bytes_per_block = 16;
+            } else if (resource.image.format == VK_FORMAT_BC5_UNORM_BLOCK ||
+                       resource.image.format == VK_FORMAT_BC5_SNORM_BLOCK) {
+                bytes_per_block = 16;
+            } else if (resource.image.format == VK_FORMAT_BC3_UNORM_BLOCK ||
+                       resource.image.format == VK_FORMAT_BC3_SRGB_BLOCK) {
+                bytes_per_block = 16;
+            } else {
+                bytes_per_block = 4;
+                block_size      = 1;
+            }
+
+            TextureHeader texture_header = {
+                .width         = resource.image.width,
+                .height        = resource.image.height,
+                .format        = resource.image.format,
+                .mip_levels    = resource.image.levels,
+                .sampler_index = resource.sampler_index,
+            };
+            archive(texture_header);
+
             VkCommandBufferBeginInfo begin_info = {
                 .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                 .pNext            = nullptr,
@@ -488,90 +538,105 @@ void SceneSerializer::save(
             };
             VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
 
-            image_pipeline_barrier(
-                resource.image,
-                command_buffer,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                0,
-                VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                0
-            );
+            for (uint32_t mip_level = 0; mip_level < resource.image.levels; mip_level++) {
+                uint32_t mip_width  = std::max(1u, resource.image.width >> mip_level);
+                uint32_t mip_height = std::max(1u, resource.image.height >> mip_level);
 
-            VkBufferImageCopy copy_region = {
-                .bufferOffset      = 0,
-                .bufferRowLength   = 0,
-                .bufferImageHeight = 0,
-                .imageSubresource =
+                uint32_t blocks_x = (mip_width + block_size - 1) / block_size;
+                uint32_t blocks_y = (mip_height + block_size - 1) / block_size;
+                uint32_t mip_size = blocks_x * blocks_y * bytes_per_block;
+
+                VkCommandBufferBeginInfo begin_info = {
+                    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                };
+                VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
+
+                image_pipeline_barrier(
+                    resource.image.handle,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_READ_BIT,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT,
                     {
                         .aspectMask     = resource.image.aspect,
-                        .mipLevel       = 0,
+                        .baseMipLevel   = mip_level,
+                        .levelCount     = 1,
                         .baseArrayLayer = 0,
                         .layerCount     = 1,
+                    }
+                );
+
+                VkBufferImageCopy copy_region = {
+                    .bufferOffset      = 0,
+                    .bufferRowLength   = 0,
+                    .bufferImageHeight = 0,
+                    .imageSubresource =
+                        {
+                            .aspectMask     = resource.image.aspect,
+                            .mipLevel       = mip_level,
+                            .baseArrayLayer = 0,
+                            .layerCount     = 1,
+                        },
+                    .imageOffset = {0, 0, 0},
+                    .imageExtent = {
+                        .width  = mip_width,
+                        .height = mip_height,
+                        .depth  = 1,
                     },
-                .imageOffset =
+                };
+
+                vkCmdCopyImageToBuffer(
+                    command_buffer,
+                    resource.image.handle,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    buffers.staging_buffer.handle,
+                    1,
+                    &copy_region
+                );
+
+                image_pipeline_barrier(
+                    resource.image.handle,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_READ_BIT,
                     {
-                        .x = 0,
-                        .y = 0,
-                        .z = 0,
-                    },
-                .imageExtent = {
-                    .width  = resource.image.width,
-                    .height = resource.image.height,
-                    .depth  = 1,
-                },
-            };
+                        .aspectMask     = resource.image.aspect,
+                        .baseMipLevel   = mip_level,
+                        .levelCount     = 1,
+                        .baseArrayLayer = 0,
+                        .layerCount     = 1,
+                    }
+                );
 
-            vkCmdCopyImageToBuffer(
-                command_buffer,
-                resource.image.handle,
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                buffers.staging_buffer.handle,
-                1,
-                &copy_region
-            );
+                VK_CHECK(vkEndCommandBuffer(command_buffer));
 
-            image_pipeline_barrier(
-                resource.image,
-                command_buffer,
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                0,
-                VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                0
-            );
+                VkSubmitInfo submit_info = {
+                    .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                    .commandBufferCount = 1,
+                    .pCommandBuffers    = &command_buffer,
+                };
+                VK_CHECK(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE));
+                VK_CHECK(vkDeviceWaitIdle(device));
 
-            VK_CHECK(vkEndCommandBuffer(command_buffer));
+                MipLevelHeader mip_header = {
+                    .width  = mip_width,
+                    .height = mip_height,
+                    .size   = mip_size,
+                };
+                archive(mip_header);
 
-            VkSubmitInfo submit_info = {
-                .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                .pNext                = nullptr,
-                .waitSemaphoreCount   = 0,
-                .pWaitSemaphores      = nullptr,
-                .pWaitDstStageMask    = nullptr,
-                .commandBufferCount   = 1,
-                .pCommandBuffers      = &command_buffer,
-                .signalSemaphoreCount = 0,
-                .pSignalSemaphores    = nullptr
-            };
-            VK_CHECK(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE));
-            VK_CHECK(vkDeviceWaitIdle(device));
-
-            TextureHeader texture_header = {
-                .width         = resource.image.width,
-                .height        = resource.image.height,
-                .format        = resource.image.format,
-                .data_size     = resource.image.width * resource.image.height * 4,
-                .sampler_index = resource.sampler_index,
-            };
-            archive(texture_header);
-
-            void* staging_buffer_ptr = nullptr;
-            VK_CHECK(vmaMapMemory(allocator, buffers.staging_buffer.allocation, &staging_buffer_ptr));
-            archive.saveBinary(staging_buffer_ptr, texture_header.data_size);
-            vmaUnmapMemory(allocator, buffers.staging_buffer.allocation);
+                void* staging_buffer_ptr = nullptr;
+                VK_CHECK(vmaMapMemory(allocator, buffers.staging_buffer.allocation, &staging_buffer_ptr));
+                archive.saveBinary(staging_buffer_ptr, mip_size);
+                vmaUnmapMemory(allocator, buffers.staging_buffer.allocation);
+            }
         }
     }
 }

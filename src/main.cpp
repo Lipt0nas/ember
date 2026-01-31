@@ -603,10 +603,11 @@ int main(int argc, char* argv[]) {
 
     const int FRAMES_IN_FLIGHT = 2;
 
-    bool use_meshlets     = true;
-    bool use_hardware_rt  = true;
-    bool build_lods       = true;
-    bool fast_scene_build = true;
+    bool use_meshlets      = true;
+    bool use_hardware_rt   = true;
+    bool build_lods        = true;
+    bool fast_scene_build  = true;
+    bool compress_textures = true;
 
     bool enable_validation = false;
 
@@ -649,16 +650,19 @@ int main(int argc, char* argv[]) {
     );
     volkLoadDevice(device);
 
-    use_meshlets     = args.get_arg<bool>("meshlets", true);
-    build_lods       = args.get_arg<bool>("lods", true);
-    fast_scene_build = args.get_arg<bool>("fast-build", false);
+    use_meshlets      = args.get_arg<bool>("meshlets", true);
+    build_lods        = args.get_arg<bool>("lods", true);
+    fast_scene_build  = args.get_arg<bool>("fast-build", false);
+    compress_textures = args.get_arg<bool>("compress-textures", true);
 
     spdlog::info(
-        "Extension support:\n\tMesh shading: {}\n\tRay tracing: {}\n\tFast Scene Build: {}\n\tLOD's: {}",
+        "Extension support:\n\tMesh shading: {}\n\tRay tracing: {}\n\tFast Scene Build: {}\n\tLOD's: {}\n\tTexture "
+        "Compression: {}",
         use_meshlets,
         use_hardware_rt,
         fast_scene_build,
-        build_lods
+        build_lods,
+        compress_textures
     );
 
     VmaAllocatorCreateInfo allocator_info = {
@@ -1573,7 +1577,7 @@ int main(int argc, char* argv[]) {
     );
 
     Buffer global_index_buffer = create_buffer(
-        1024 * 1024 * 160,
+        1024 * 1024 * 184,
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
             (use_hardware_rt ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
@@ -1875,6 +1879,7 @@ int main(int argc, char* argv[]) {
             &physics_system,
             build_lods,
             fast_scene_build,
+            compress_textures,
             device,
             graphics_queue,
             vma_allocator,
