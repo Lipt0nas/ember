@@ -5,7 +5,9 @@
 
 #include <imgui.h>
 
-Editor::Editor() {
+Editor::Editor(World* world) {
+    this->world = world;
+
     this->register_component<components::Transform>("Transform", false);
     this->register_component<components::Name>("Name", false);
 
@@ -14,12 +16,7 @@ Editor::Editor() {
     this->register_component<components::Script>("Script", true);
 }
 
-void Editor::render_main_menu(
-    Scene&                           scene,
-    ScriptSystem&                    script_system,
-    JPH::PhysicsSystem&              physics_system,
-    std::function<void(std::string)> scene_save_callback
-) {
+void Editor::render_main_menu(std::function<void(std::string)> scene_save_callback) {
     static char save_scene_path[256] = "\0";
     static bool show_save_popup      = false;
 
@@ -33,10 +30,10 @@ void Editor::render_main_menu(
 
         if (ImGui::BeginMenu("Editor")) {
             if (ImGui::MenuItem("Reload scripts")) {
-                script_system.reload_scripts();
+                world->script.reload_scripts();
             }
             if (ImGui::MenuItem("Generate predefined script file")) {
-                script_system.generate_predefined_file();
+                world->script.generate_predefined_file();
             }
             ImGui::EndMenu();
         }
@@ -68,18 +65,19 @@ void Editor::render_main_menu(
     }
 }
 
-void Editor::render_scene_hierarchy_window(Scene& scene) {
+void Editor::render_scene_hierarchy_window() {
     ImGui::Begin(ICON_FA_SITEMAP " Scene Hierarchy");
     if (ImGui::BeginPopupContextItem()) {
         if (ImGui::MenuItem("Create Node")) {
-            scene.create_entity("New Node");
+            world->scene.create_node("New Node");
         }
         ImGui::EndPopup();
     }
 
-    auto view = scene.entity_registry.view<components::Transform, components::Name>(entt::exclude<components::Parent>);
+    auto view =
+        world->scene.entity_registry.view<components::Transform, components::Name>(entt::exclude<components::Parent>);
     for (auto [e, t, n] : view.each()) {
-        draw_node_in_hierarchy(scene, e, selected_entity);
+        draw_node_in_hierarchy(e, selected_entity);
     }
 
     if (ImGui::IsMouseDown(0) && ImGui::IsWindowHovered()) {
@@ -96,9 +94,9 @@ Entity Editor::get_selected_entity() {
     return this->selected_entity;
 }
 
-void Editor::draw_node_in_hierarchy(Scene& scene, Entity e, Entity& selected_entity) {
-    auto children = scene.get_component<components::Children>(e);
-    auto name     = scene.get_component<components::Name>(e);
+void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
+    auto children = world->scene.get_component<components::Children>(e);
+    auto name     = world->scene.get_component<components::Name>(e);
 
     ImGuiTreeNodeFlags flags =
         ((selected_entity == e) ? ImGuiTreeNodeFlags_Selected : 0) | ImGuiTreeNodeFlags_OpenOnArrow;
@@ -115,9 +113,9 @@ void Editor::draw_node_in_hierarchy(Scene& scene, Entity e, Entity& selected_ent
     if (ImGui::BeginPopupContextItem()) {
         if (ImGui::BeginMenu("Add Component")) {
             for (auto [component_id, info] : this->node_component_map) {
-                if (!this->entity_has_component(scene, component_id, e)) {
+                if (!this->entity_has_component(component_id, e)) {
                     if (ImGui::MenuItem(info.name.c_str())) {
-                        info.add_component(scene, e);
+                        info.add_component(e);
                     }
                 }
             }
@@ -133,7 +131,7 @@ void Editor::draw_node_in_hierarchy(Scene& scene, Entity e, Entity& selected_ent
     if (opened) {
         if (children) {
             for (auto& child : children->children) {
-                draw_node_in_hierarchy(scene, child, selected_entity);
+                draw_node_in_hierarchy(child, selected_entity);
             }
         }
 
@@ -141,8 +139,8 @@ void Editor::draw_node_in_hierarchy(Scene& scene, Entity e, Entity& selected_ent
     }
 }
 
-bool Editor::entity_has_component(Scene& scene, entt::id_type component_type, Entity entity) {
-    auto storage = scene.entity_registry.storage(component_type);
+bool Editor::entity_has_component(entt::id_type component_type, Entity entity) {
+    auto storage = world->scene.entity_registry.storage(component_type);
 
     if (storage == nullptr) {
         return false;
@@ -154,13 +152,11 @@ bool Editor::entity_has_component(Scene& scene, entt::id_type component_type, En
 }
 
 void Editor::render_scene_node_property_window(
-    Scene&                                               scene,
-    ScriptSystem&                                        script_system,
     const std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles
 ) {
     ImGui::Begin(ICON_FA_WRENCH " Node Properties");
     if (selected_entity != entt::null) {
-        auto* t = scene.get_component<components::Transform>(selected_entity);
+        auto* t = world->scene.get_component<components::Transform>(selected_entity);
         if (t) {
             if (ImGui::CollapsingHeader("Transform")) {
                 ImGui::SeparatorText("Local Transform");
@@ -201,10 +197,10 @@ void Editor::render_scene_node_property_window(
             }
         }
 
-        auto* m = scene.get_component<components::Mesh>(selected_entity);
+        auto* m = world->scene.get_component<components::Mesh>(selected_entity);
         if (m) {
             if (ImGui::CollapsingHeader("Material")) {
-                auto& material = scene.materials[m->mesh.material_id];
+                auto& material = world->scene.materials[m->mesh.material_id];
 
                 std::vector<uint32_t*> material_indices = {
                     &material.albedo_index, &material.normals_index, &material.material_index, &material.emissive_index
@@ -239,10 +235,10 @@ void Editor::render_scene_node_property_window(
             }
         }
 
-        auto* s = scene.get_component<components::Script>(selected_entity);
+        auto* s = world->scene.get_component<components::Script>(selected_entity);
         if (s) {
             if (ImGui::CollapsingHeader("Script")) {
-                auto scripts = script_system.get_scripts();
+                auto scripts = world->script.get_scripts();
 
                 std::string current_name = "None";
                 if (scripts.contains(s->script_id)) {
@@ -265,25 +261,25 @@ void Editor::render_scene_node_property_window(
             }
         }
 
-        auto* n = scene.get_component<components::Name>(selected_entity);
+        auto* n = world->scene.get_component<components::Name>(selected_entity);
         if (n) {
             if (ImGui::CollapsingHeader("Name")) {
             }
         }
 
-        auto* p = scene.get_component<components::Parent>(selected_entity);
+        auto* p = world->scene.get_component<components::Parent>(selected_entity);
         if (p) {
             if (ImGui::CollapsingHeader("Parent")) {
             }
         }
 
-        auto* c = scene.get_component<components::Children>(selected_entity);
+        auto* c = world->scene.get_component<components::Children>(selected_entity);
         if (c) {
             if (ImGui::CollapsingHeader("Children")) {
             }
         }
 
-        auto* ph = scene.get_component<components::Physics>(selected_entity);
+        auto* ph = world->scene.get_component<components::Physics>(selected_entity);
         if (ph) {
             if (ImGui::CollapsingHeader("Physics")) {
             }

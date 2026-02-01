@@ -1,5 +1,7 @@
 #include "scene_serializer.hpp"
 
+#include "world.hpp"
+
 #include <cereal/archives/binary.hpp>
 #include <cereal/archives/json.hpp>
 
@@ -100,9 +102,7 @@ template <class Archive> void serialize(Archive& archive, Mesh& mesh) {
 
 void SceneSerializer::load(
     const std::filesystem::path& path,
-    Scene&                       scene,
-    JPH::PhysicsSystem&          physics_system,
-    ScriptSystem&                script_system,
+    World*                       world,
     RendererBuffers&             buffers,
     BufferOffsets&               buffer_offsets,
     std::vector<unsigned char>&  compressed_texture_data,
@@ -134,7 +134,7 @@ void SceneSerializer::load(
         archive(cereal::make_nvp("samplers", samplers));
 
         for (auto& info : samplers) {
-            scene.samplers.push_back(create_sampler(
+            world->scene.samplers.push_back(create_sampler(
                 static_cast<VkFilter>(info.mag_filter),
                 static_cast<VkFilter>(info.min_filter),
                 static_cast<VkSamplerMipmapMode>(info.mipmap_mode),
@@ -147,14 +147,14 @@ void SceneSerializer::load(
         }
 
         spdlog::info("Loading materials");
-        archive(cereal::make_nvp("materials", scene.materials));
-        scene.original_material_size = scene.materials.size();
+        archive(cereal::make_nvp("materials", world->scene.materials));
+        world->scene.original_material_size = world->scene.materials.size();
 
         spdlog::info("Loading meshes");
-        archive(cereal::make_nvp("meshes", scene.meshes));
+        archive(cereal::make_nvp("meshes", world->scene.meshes));
 
         spdlog::info("Loading entities");
-        entt::snapshot_loader(scene.entity_registry)
+        entt::snapshot_loader(world->scene.entity_registry)
             .get<entt::entity>(archive)
             .get<components::Transform>(archive)
             .get<components::Name>(archive)
@@ -232,8 +232,8 @@ void SceneSerializer::load(
         spdlog::info("Baking static physics shapes");
         std::vector<JPH::ShapeRefC> mesh_collision_shapes;
         const uint32_t*             indices = reinterpret_cast<const uint32_t*>(index_cpu_data.data());
-        for (int m = 0; m < scene.meshes.size(); m++) {
-            auto& mesh = scene.meshes[m];
+        for (int m = 0; m < world->scene.meshes.size(); m++) {
+            auto& mesh = world->scene.meshes[m];
 
             std::vector<glm::vec3> unquantized_positions(mesh.vertex_count);
             for (int i = 0; i < unquantized_positions.size(); i++) {
@@ -265,7 +265,7 @@ void SceneSerializer::load(
             mesh_collision_shapes.push_back(collision_shape);
         }
 
-        auto view = scene.entity_registry.view<components::Mesh, components::Transform>();
+        auto view = world->scene.entity_registry.view<components::Mesh, components::Transform>();
         for (auto [e, m, t] : view.each()) {
             JPH::ShapeRefC final_shape;
             if (t.scale != 1.0f) {
@@ -275,7 +275,7 @@ void SceneSerializer::load(
                 final_shape = mesh_collision_shapes[m.mesh.mesh_id];
             }
 
-            JPH::BodyInterface& body_interface = physics_system.GetBodyInterface();
+            JPH::BodyInterface& body_interface = world->physics.system.GetBodyInterface();
 
             JPH::BodyCreationSettings body_settings(
                 final_shape,
@@ -289,7 +289,7 @@ void SceneSerializer::load(
             if (body) {
                 body_interface.AddBody(body->GetID(), JPH::EActivation::DontActivate);
 
-                auto& physics      = scene.add_component<components::Physics>(e);
+                auto& physics      = world->scene.add_component<components::Physics>(e);
                 physics.body_id    = body->GetID();
                 physics.is_static  = true;
                 physics.last_scale = t.scale;
@@ -435,7 +435,7 @@ void SceneSerializer::load(
             vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
             vkDeviceWaitIdle(device);
 
-            scene.images.push_back(
+            world->scene.images.push_back(
                 ImageResource{
                     .image         = image,
                     .sampler_index = texture_header.sampler_index,
@@ -447,9 +447,7 @@ void SceneSerializer::load(
 
 void SceneSerializer::save(
     const std::filesystem::path&      path,
-    const Scene&                      scene,
-    const JPH::PhysicsSystem&         physics_system,
-    const ScriptSystem&               script_system,
+    World*                            world,
     const RendererBuffers&            buffers,
     const BufferOffsets&              buffer_offsets,
     const std::vector<unsigned char>& compressed_texture_data,
@@ -482,8 +480,8 @@ void SceneSerializer::save(
 
         spdlog::info("Saving samplers");
         std::vector<SamplerInfo> samplers;
-        for (int i = 0; i < scene.samplers.size(); i++) {
-            auto& src = scene.samplers[i];
+        for (int i = 0; i < world->scene.samplers.size(); i++) {
+            auto& src = world->scene.samplers[i];
 
             samplers.push_back(
                 SamplerInfo{
@@ -500,13 +498,13 @@ void SceneSerializer::save(
         archive(cereal::make_nvp("samplers", samplers));
 
         spdlog::info("Saving materials");
-        archive(cereal::make_nvp("materials", scene.materials));
+        archive(cereal::make_nvp("materials", world->scene.materials));
 
         spdlog::info("Saving meshes");
-        archive(cereal::make_nvp("meshes", scene.meshes));
+        archive(cereal::make_nvp("meshes", world->scene.meshes));
 
         spdlog::info("Saving entities");
-        entt::snapshot(scene.entity_registry)
+        entt::snapshot(world->scene.entity_registry)
             .get<entt::entity>(archive)
             .get<components::Transform>(archive)
             .get<components::Name>(archive)
@@ -576,7 +574,7 @@ void SceneSerializer::save(
         cereal::BinaryOutputArchive archive(os);
 
         TextureDataHeader header = {
-            .texture_count        = static_cast<uint32_t>(scene.images.size()),
+            .texture_count        = static_cast<uint32_t>(world->scene.images.size()),
             .is_compressed        = !compressed_texture_data.empty(),
             .compressed_data_size = compressed_texture_data.size(),
         };
@@ -586,8 +584,8 @@ void SceneSerializer::save(
             archive.saveBinary(compressed_texture_data.data(), header.compressed_data_size);
         }
 
-        for (uint32_t i = 0; i < scene.images.size(); i++) {
-            auto& resource = scene.images[i];
+        for (uint32_t i = 0; i < world->scene.images.size(); i++) {
+            auto& resource = world->scene.images[i];
 
             TextureHeader texture_header = {
                 .width         = resource.image.width,
