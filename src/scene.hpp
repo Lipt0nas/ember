@@ -56,6 +56,7 @@ public:
         bool                         build_lods,
         bool                         fast_build,
         bool                         compress_textures,
+        std::vector<unsigned char>&  compressed_texture_data,
         VkDevice                     device,
         VkQueue                      queue,
         VmaAllocator                 allocator,
