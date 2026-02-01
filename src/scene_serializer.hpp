@@ -51,9 +51,7 @@ class SceneSerializer {
 public:
     static void load(
         const std::filesystem::path& path,
-        Scene&                       scene,
-        JPH::PhysicsSystem&          physics_system,
-        ScriptSystem&                script_system,
+        class World*                 world,
         RendererBuffers&             buffers,
         BufferOffsets&               buffer_offsets,
         std::vector<unsigned char>&  compressed_texture_data,
@@ -65,9 +63,7 @@ public:
 
     static void save(
         const std::filesystem::path&      path,
-        const Scene&                      scene,
-        const JPH::PhysicsSystem&         physics_system,
-        const ScriptSystem&               script_system,
+        class World*                      world,
         const RendererBuffers&            buffers,
         const BufferOffsets&              buffer_offsets,
         const std::vector<unsigned char>& compressed_texture_data,

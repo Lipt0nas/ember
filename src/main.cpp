@@ -18,6 +18,7 @@
 #include "script_system.hpp"
 #include "swapchain.hpp"
 #include "ui.hpp"
+#include "world.hpp"
 
 #include <map>
 
@@ -1765,74 +1766,11 @@ int main(int argc, char* argv[]) {
         VK_CHECK(vkAllocateDescriptorSets(device, &global_texture_descriptor_set_info, &global_texture_descriptor_set));
     }
 
-    spdlog::info("Initializing physics engine");
-    JPH::RegisterDefaultAllocator();
-    JPH::Factory::sInstance = new JPH::Factory();
-    JPH::RegisterTypes();
-
-    JPH::TempAllocatorImpl   physics_temp_allocator(10 * 1024 * 1024);
-    JPH::JobSystemThreadPool physics_job_system(
-        JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, std::thread::hardware_concurrency() - 1
-    );
-    const uint32_t physics_max_bodies             = UINT16_MAX;
-    const uint32_t physics_num_body_mutexes       = 0;
-    const uint32_t physica_max_body_pairs         = UINT16_MAX;
-    const uint32_t physics_max_contact_contraints = 10240;
-
-    BPLayerInterfaceImpl              physics_broad_phase_layer_interface;
-    ObjectVsBroadPhaseLayerFilterImpl physics_object_vs_broad_phase_layer_filter;
-    ObjectLayerPairFilterImpl         physics_object_vs_object_layer_filter;
-
-    JPH::PhysicsSystem physics_system;
-    physics_system.Init(
-        physics_max_bodies,
-        physics_num_body_mutexes,
-        physica_max_body_pairs,
-        physics_max_contact_contraints,
-        physics_broad_phase_layer_interface,
-        physics_object_vs_broad_phase_layer_filter,
-        physics_object_vs_object_layer_filter
-    );
-
-    MyBodyActivationListener physics_body_activation_listener;
-    physics_system.SetBodyActivationListener(&physics_body_activation_listener);
-
-    MyContactListener physics_contact_listener;
-    physics_system.SetContactListener(&physics_contact_listener);
-
-    JPH::BodyInterface& physics_body_interface = physics_system.GetBodyInterface();
-
-    const float                             player_height          = 1.8f;
-    const float                             player_radius          = 0.5f;
-    const float                             player_speed           = 5.0f;
-    const float                             player_sprint_modifier = 1.5f;
-    const float                             player_jump_velocity   = 4.0f;
-    JPH::Ref<JPH::CharacterVirtualSettings> character_settings     = new JPH::CharacterVirtualSettings();
-    character_settings->mShape = new JPH::CapsuleShape(player_height / 2.0f - player_radius, player_radius);
-
-    JPH::CharacterVirtual* player_character = new JPH::CharacterVirtual(
-        character_settings, JPH::RVec3(0.0, 0.0, 0.0), JPH::Quat::sIdentity(), 0, &physics_system
-    );
-    bool player_physics = false;
-
-    float physics_spawn_mass        = 0.2f;
-    float physics_spawn_restitution = 0.2f;
-    float physics_spawn_friction    = 0.3f;
-    float physics_fling_modifier    = 100.0f;
-
-    const float physics_delta_time       = 1.0f / 60.0f;
-    float       physics_time_accumulator = 0.0f;
-
-    physics_system.OptimizeBroadPhase();
-
     std::string scene_load_path  = args.get_arg<std::string>("s", "data/models/room2.glb");
     std::string script_load_path = args.get_arg<std::string>("scripts", "");
 
-    Scene       scene;
-    InputSystem input_system;
-
-    spdlog::info("Initializing script system");
-    ScriptSystem script_system(scene, physics_system, input_system);
+    World world;
+    world.initialize();
 
     RendererBuffers buffers = {
         .staging_buffer           = staging_buffer,
@@ -1859,9 +1797,7 @@ int main(int argc, char* argv[]) {
         VK_CHECK(vkAllocateCommandBuffers(device, &alloc_info, &command_buffer));
         SceneSerializer::load(
             scene_load_path,
-            scene,
-            physics_system,
-            script_system,
+            &world,
             buffers,
             buffer_offsets,
             compressed_texture_data,
@@ -1872,13 +1808,12 @@ int main(int argc, char* argv[]) {
         );
         vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
 
-        script_system.load_scripts(std::filesystem::path(scene_load_path) / "scripts");
+        world.script.load_scripts(std::filesystem::path(scene_load_path) / "scripts");
     } else {
-        scene.load_scene(
+        world.scene.load_scene(
             scene_load_path,
             buffers,
             buffer_offsets,
-            &physics_system,
             build_lods,
             fast_scene_build,
             compress_textures,
@@ -1890,7 +1825,7 @@ int main(int argc, char* argv[]) {
         );
 
         if (!script_load_path.empty()) {
-            script_system.load_scripts(script_load_path);
+            world.script.load_scripts(script_load_path);
         }
     }
     VK_CHECK(vkDeviceWaitIdle(device));
@@ -1911,7 +1846,7 @@ int main(int argc, char* argv[]) {
     std::vector<MeshInstance> mesh_instances;
     std::vector<Entity>       mesh_instance_entities;
     {
-        auto view = scene.entity_registry.view<components::Mesh>();
+        auto view = world.scene.entity_registry.view<components::Mesh>();
         for (auto& e : view) {
             auto& c = view.get<components::Mesh>(e);
             mesh_instances.push_back(c.mesh);
@@ -1919,7 +1854,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    populate_materials(scene, global_texture_descriptor_set, device);
+    populate_materials(world.scene, global_texture_descriptor_set, device);
 
     std::stringstream scene_state_snapshot;
     // We want to avoid clearing static bodies which are constructed from
@@ -1942,7 +1877,7 @@ int main(int argc, char* argv[]) {
             graphics_queue,
             10000,
             FRAMES_IN_FLIGHT,
-            scene.meshes,
+            world.scene.meshes,
             mesh_instances,
             get_buffer_device_address(global_vertex_buffer, device),
             get_buffer_device_address(global_index_buffer, device)
@@ -1963,7 +1898,7 @@ int main(int argc, char* argv[]) {
     std::unordered_map<uint32_t, VkDescriptorSet> imgui_material_image_handles;
     {
         uint32_t slot = 1;
-        for (auto& image : scene.images) {
+        for (auto& image : world.scene.images) {
             imgui_material_image_handles.insert({slot++, imgui_image_handle(image.image, nearest_sampler)});
         }
     }
@@ -2011,6 +1946,24 @@ int main(int argc, char* argv[]) {
 
     bool simulate_lower_fps = false;
     int  simulated_fps      = 60;
+
+    const float                             player_height          = 1.8f;
+    const float                             player_radius          = 0.5f;
+    const float                             player_speed           = 5.0f;
+    const float                             player_sprint_modifier = 1.5f;
+    const float                             player_jump_velocity   = 4.0f;
+    JPH::Ref<JPH::CharacterVirtualSettings> character_settings     = new JPH::CharacterVirtualSettings();
+    character_settings->mShape = new JPH::CapsuleShape(player_height / 2.0f - player_radius, player_radius);
+
+    JPH::CharacterVirtual* player_character = new JPH::CharacterVirtual(
+        character_settings, JPH::RVec3(0.0, 0.0, 0.0), JPH::Quat::sIdentity(), 0, &world.physics.system
+    );
+    bool player_physics = false;
+
+    float physics_spawn_mass        = 0.2f;
+    float physics_spawn_restitution = 0.2f;
+    float physics_spawn_friction    = 0.3f;
+    float physics_fling_modifier    = 100.0f;
 
     add_viewport_source("Anti-Aliased Composite", smaa_output);
     add_viewport_source("Composite", composite_output);
@@ -2568,7 +2521,7 @@ int main(int argc, char* argv[]) {
         framegraph.add_pass("RT structure rebuild")
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 rebuild_tlas(
-                    rt_scene, device, vma_allocator, command_buffer, frame_index, scene.meshes, mesh_instances
+                    rt_scene, device, vma_allocator, command_buffer, frame_index, world.scene.meshes, mesh_instances
                 );
             });
 
@@ -5547,7 +5500,8 @@ int main(int argc, char* argv[]) {
 
     int pick_frame = UINT32_MAX;
 
-    Editor editor;
+    Editor editor(&world);
+    float  physics_time_accumulator = 0.0f;
 
     while (running) {
         FrameMark;
@@ -5588,16 +5542,16 @@ int main(int argc, char* argv[]) {
                 running = false;
                 break;
             case SDL_EVENT_KEY_DOWN:
-                input_system.register_key_press(window_event.key.scancode);
+                world.input.register_key_press(window_event.key.scancode);
                 break;
             case SDL_EVENT_KEY_UP:
-                input_system.register_key_release(window_event.key.scancode);
+                world.input.register_key_release(window_event.key.scancode);
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                input_system.register_button_press(window_event.button.button);
+                world.input.register_button_press(window_event.button.button);
 
                 if (window_event.button.button == SDL_BUTTON_RIGHT &&
-                    coords_in_scene_viewport(input_system.get_mouse_position())) {
+                    coords_in_scene_viewport(world.input.get_mouse_position())) {
                     SDL_SetWindowMouseGrab(window, true);
                     SDL_SetWindowRelativeMouseMode(window, true);
 
@@ -5605,7 +5559,7 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
-                input_system.register_button_release(window_event.button.button);
+                world.input.register_button_release(window_event.button.button);
 
                 if (window_event.button.button == SDL_BUTTON_RIGHT && capturing_mouse) {
                     SDL_SetWindowMouseGrab(window, false);
@@ -5621,7 +5575,7 @@ int main(int argc, char* argv[]) {
                 auto x = static_cast<float>(window_event.motion.x);
                 auto y = static_cast<float>(window_event.motion.y);
 
-                input_system.mouse_pos = {x, y};
+                world.input.mouse_pos = {x, y};
 
                 if (capturing_mouse) {
                     camera.orientation =
@@ -5643,13 +5597,13 @@ int main(int argc, char* argv[]) {
         }
 
         float current_player_speed = player_speed;
-        if (input_system.is_key_pressed(Key::LEFT_SHIFT) || input_system.is_key_pressed(Key::LEFT_CTRL)) {
-            if (input_system.is_key_pressed(Key::LEFT_CTRL)) {
+        if (world.input.is_key_pressed(Key::LEFT_SHIFT) || world.input.is_key_pressed(Key::LEFT_CTRL)) {
+            if (world.input.is_key_pressed(Key::LEFT_CTRL)) {
                 camera_speed = base_camera_speed / camera_speed_mod;
                 current_player_speed /= player_sprint_modifier;
             }
 
-            if (input_system.is_key_pressed(Key::LEFT_SHIFT)) {
+            if (world.input.is_key_pressed(Key::LEFT_SHIFT)) {
                 camera_speed = base_camera_speed * camera_speed_mod;
                 current_player_speed *= player_sprint_modifier;
             }
@@ -5658,23 +5612,23 @@ int main(int argc, char* argv[]) {
         }
 
         glm::vec3 velocity = glm::vec3(0.0);
-        if (input_system.is_key_pressed(Key::W)) {
+        if (world.input.is_key_pressed(Key::W)) {
             velocity.x = 1;
         }
 
-        if (input_system.is_key_pressed(Key::S)) {
+        if (world.input.is_key_pressed(Key::S)) {
             velocity.x = -1;
         }
 
-        if (input_system.is_key_pressed(Key::A)) {
+        if (world.input.is_key_pressed(Key::A)) {
             velocity.y = -1;
         }
 
-        if (input_system.is_key_pressed(Key::D)) {
+        if (world.input.is_key_pressed(Key::D)) {
             velocity.y = 1;
         }
 
-        if (input_system.is_key_just_pressed(Key::G)) {
+        if (world.input.is_key_just_pressed(Key::G)) {
             player_physics = !player_physics;
 
             if (player_physics) {
@@ -5682,38 +5636,38 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (input_system.is_key_just_pressed(Key::P)) {
+        if (world.input.is_key_just_pressed(Key::P)) {
             visualize_probes = !visualize_probes;
         }
 
-        if (input_system.is_key_just_pressed(Key::GRAVE)) {
+        if (world.input.is_key_just_pressed(Key::GRAVE)) {
             editor_overlay = !editor_overlay;
         }
 
-        if (input_system.is_key_just_pressed(Key::F5)) {
+        if (world.input.is_key_just_pressed(Key::F5)) {
             editor_mode = !editor_mode;
 
             if (editor_mode) {
                 // Entering editor state
                 editor_overlay = true;
 
-                auto physics_view = scene.entity_registry.view<components::Physics>();
+                auto physics_view = world.scene.entity_registry.view<components::Physics>();
                 for (auto [e, p] : physics_view.each()) {
                     if (!p.body_id.IsInvalid()) {
                         if (!p.is_static) {
-                            physics_body_interface.RemoveBody(p.body_id);
-                            physics_body_interface.DestroyBody(p.body_id);
+                            world.physics.system.GetBodyInterface().RemoveBody(p.body_id);
+                            world.physics.system.GetBodyInterface().DestroyBody(p.body_id);
                         }
                     }
                 }
 
-                script_system.clear();
-                scene.entity_registry.clear();
-                scene.materials.resize(scene.original_material_size);
+                world.script.clear();
+                world.scene.entity_registry.clear();
+                world.scene.materials.resize(world.scene.original_material_size);
 
                 cereal::BinaryInputArchive input(scene_state_snapshot);
 
-                entt::snapshot_loader(scene.entity_registry)
+                entt::snapshot_loader(world.scene.entity_registry)
                     .get<entt::entity>(input)
                     .get<components::Transform>(input)
                     .get<components::Name>(input)
@@ -5723,7 +5677,8 @@ int main(int argc, char* argv[]) {
                     .get<components::Script>(input)
                     .get<components::Physics>(input);
 
-                auto view = scene.entity_registry.view<components::Physics, components::Mesh, components::Transform>();
+                auto view =
+                    world.scene.entity_registry.view<components::Physics, components::Mesh, components::Transform>();
                 for (auto [e, p, m, t] : view.each()) {
                     if (p.is_static) {
                         if (static_body_load_map.contains(e)) {
@@ -5746,7 +5701,7 @@ int main(int argc, char* argv[]) {
 
                 cereal::BinaryOutputArchive output(scene_state_snapshot);
 
-                entt::snapshot(scene.entity_registry)
+                entt::snapshot(world.scene.entity_registry)
                     .get<entt::entity>(output)
                     .get<components::Transform>(output)
                     .get<components::Name>(output)
@@ -5756,7 +5711,7 @@ int main(int argc, char* argv[]) {
                     .get<components::Script>(output)
                     .get<components::Physics>(output);
 
-                auto physics_view = scene.entity_registry.view<components::Physics>();
+                auto physics_view = world.scene.entity_registry.view<components::Physics>();
                 for (auto [e, p] : physics_view.each()) {
                     if (!p.body_id.IsInvalid()) {
                         if (p.is_static) {
@@ -5765,9 +5720,9 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                auto view = scene.entity_registry.view<components::Script>();
+                auto view = world.scene.entity_registry.view<components::Script>();
                 for (auto [e, s] : view.each()) {
-                    script_system.initialize(s);
+                    world.script.initialize(s);
                 }
             }
         }
@@ -5778,14 +5733,14 @@ int main(int argc, char* argv[]) {
             capturing_mouse = true;
         }
 
-        if (input_system.is_key_just_pressed(Key::ESCAPE)) {
+        if (world.input.is_key_just_pressed(Key::ESCAPE)) {
             running = false;
         }
 
         {
             mesh_instances.clear();
             mesh_instance_entities.clear();
-            auto view = scene.entity_registry.view<components::Mesh>();
+            auto view = world.scene.entity_registry.view<components::Mesh>();
             for (auto& e : view) {
                 auto& c = view.get<components::Mesh>(e);
                 mesh_instances.push_back(c.mesh);
@@ -5794,7 +5749,7 @@ int main(int argc, char* argv[]) {
         }
 
         {
-            auto view = scene.entity_registry.view<components::Transform, components::Physics>();
+            auto view = world.scene.entity_registry.view<components::Transform, components::Physics>();
             for (auto [entity, transform, physics] : view.each()) {
                 if (physics.body_id.IsInvalid()) {
                     continue;
@@ -5805,10 +5760,12 @@ int main(int argc, char* argv[]) {
 
                 if (transform.world_scale != physics.last_scale && transform.world_scale != 0.0f) {
                     float scale_delta = transform.world_scale / physics.last_scale;
-                    auto  shape       = physics_body_interface.GetShape(physics.body_id);
+                    auto  shape       = world.physics.system.GetBodyInterface().GetShape(physics.body_id);
                     auto  new_shape   = shape->ScaleShape(JPH::Vec3(scale_delta, scale_delta, scale_delta));
                     if (new_shape.IsValid()) {
-                        physics_body_interface.SetShape(physics.body_id, new_shape.Get(), false, activation);
+                        world.physics.system.GetBodyInterface().SetShape(
+                            physics.body_id, new_shape.Get(), false, activation
+                        );
                     }
 
                     physics.last_scale = transform.world_scale;
@@ -5818,13 +5775,13 @@ int main(int argc, char* argv[]) {
                     continue;
                 }
 
-                physics_body_interface.SetPosition(
+                world.physics.system.GetBodyInterface().SetPosition(
                     physics.body_id,
                     JPH::Vec3(transform.world_position.x, transform.world_position.y, transform.world_position.z),
                     activation
                 );
 
-                physics_body_interface.SetRotation(
+                world.physics.system.GetBodyInterface().SetRotation(
                     physics.body_id,
                     JPH::Quat(
                         transform.world_rotation.x,
@@ -5838,13 +5795,13 @@ int main(int argc, char* argv[]) {
         }
 
         {
-            auto update_view = scene.entity_registry.view<components::Transform, components::Physics>();
+            auto update_view = world.scene.entity_registry.view<components::Transform, components::Physics>();
 
-            while (physics_time_accumulator >= physics_delta_time) {
+            while (physics_time_accumulator >= world.physics.frame_time) {
                 if (!editor_mode) {
-                    auto script_view = scene.entity_registry.view<components::Script>();
+                    auto script_view = world.scene.entity_registry.view<components::Script>();
                     for (auto [e, s] : script_view.each()) {
-                        script_system.call_on_fixed_update(s, physics_delta_time);
+                        world.script.call_on_fixed_update(s, world.physics.frame_time);
                     }
                 }
 
@@ -5855,19 +5812,19 @@ int main(int argc, char* argv[]) {
 
                     JPH::Vec3 p;
                     JPH::Quat r;
-                    physics_body_interface.GetPositionAndRotation(physics.body_id, p, r);
+                    world.physics.system.GetBodyInterface().GetPositionAndRotation(physics.body_id, p, r);
 
                     physics.last_position = p;
                     physics.last_rotation = r;
                 }
 
-                physics_system.Update(physics_delta_time, 1, &physics_temp_allocator, &physics_job_system);
-                physics_time_accumulator -= physics_delta_time;
+                world.physics.update();
+                physics_time_accumulator -= world.physics.frame_time;
             }
 
             auto interpolate_view =
-                scene.entity_registry.view<components::Transform, components::Physics, components::Mesh>();
-            float physics_alpha = physics_time_accumulator / physics_delta_time;
+                world.scene.entity_registry.view<components::Transform, components::Physics, components::Mesh>();
+            float physics_alpha = physics_time_accumulator / world.physics.frame_time;
             for (auto [entity, transform, physics, m] : interpolate_view.each()) {
                 if (physics.is_static || physics.body_id.IsInvalid()) {
                     continue;
@@ -5875,7 +5832,7 @@ int main(int argc, char* argv[]) {
 
                 JPH::Vec3 p;
                 JPH::Quat r;
-                physics_body_interface.GetPositionAndRotation(physics.body_id, p, r);
+                world.physics.system.GetBodyInterface().GetPositionAndRotation(physics.body_id, p, r);
 
                 glm::vec3 new_pos = glm::vec3(p.GetX(), p.GetY(), p.GetZ());
                 glm::quat new_rot = glm::quat(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
@@ -5889,7 +5846,7 @@ int main(int argc, char* argv[]) {
                     physics.last_rotation.GetW()
                 );
 
-                Mesh& geometry = scene.meshes[m.mesh.mesh_id];
+                Mesh& geometry = world.scene.meshes[m.mesh.mesh_id];
 
                 glm::vec3 center = (geometry.bounds_max + geometry.bounds_min) * 0.5f;
                 glm::vec3 offset = new_rot * (center * m.mesh.scale);
@@ -5900,14 +5857,14 @@ int main(int argc, char* argv[]) {
         }
 
         if (!editor_mode) {
-            auto script_view = scene.entity_registry.view<components::Script>();
+            auto script_view = world.scene.entity_registry.view<components::Script>();
             for (auto [e, s] : script_view.each()) {
-                script_system.call_on_update(s, delta_time);
+                world.script.call_on_update(s, delta_time);
             }
         }
 
         {
-            auto root_view = scene.entity_registry.view<components::Transform>(entt::exclude<components::Parent>);
+            auto root_view = world.scene.entity_registry.view<components::Transform>(entt::exclude<components::Parent>);
             for (auto [e, t] : root_view.each()) {
                 t.world_position = t.position;
                 t.world_scale    = t.scale;
@@ -5924,7 +5881,7 @@ int main(int argc, char* argv[]) {
             while (has_updates) {
                 has_updates = false;
 
-                auto child_view = scene.entity_registry.view<components::Transform, components::Parent>();
+                auto child_view = world.scene.entity_registry.view<components::Transform, components::Parent>();
                 for (auto [e, ct, p] : child_view.each()) {
                     if (processed.contains(e)) {
                         continue;
@@ -5934,7 +5891,7 @@ int main(int argc, char* argv[]) {
                         continue;
                     }
 
-                    auto& parent_transform = scene.entity_registry.get<components::Transform>(p.parent);
+                    auto& parent_transform = world.scene.entity_registry.get<components::Transform>(p.parent);
 
                     ct.world_rotation = parent_transform.world_rotation * ct.rotation;
                     ct.world_scale    = parent_transform.world_scale * ct.scale;
@@ -5946,7 +5903,7 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            auto view = scene.entity_registry.view<components::Transform, components::Mesh>();
+            auto view = world.scene.entity_registry.view<components::Transform, components::Mesh>();
             for (auto [e, t, m] : view.each()) {
                 m.mesh.position = t.world_position;
                 m.mesh.scale    = t.world_scale;
@@ -5956,7 +5913,7 @@ int main(int argc, char* argv[]) {
 
         if (!player_physics) {
             move_camera(camera, velocity, camera_speed * delta_time);
-            script_system.set_player_velocity(velocity);
+            world.script.set_player_velocity(velocity);
         } else {
             glm::vec3 oriented_velocity =
                 camera.orientation * glm::vec3(velocity.y, 0, -velocity.x) * current_player_speed;
@@ -5965,7 +5922,7 @@ int main(int argc, char* argv[]) {
             static bool                         jumped       = false;
             JPH::CharacterVirtual::EGroundState ground_state = player_character->GetGroundState();
 
-            if (input_system.is_key_pressed(Key::SPACE) &&
+            if (world.input.is_key_pressed(Key::SPACE) &&
                 ground_state == JPH::CharacterVirtual::EGroundState::OnGround) {
                 if (!jumped) {
                     desired_velocity.SetY(player_jump_velocity);
@@ -5979,7 +5936,7 @@ int main(int argc, char* argv[]) {
                         current_vel.SetY(0.0f);
                     }
 
-                    desired_velocity.SetY(current_vel.GetY() + physics_system.GetGravity().GetY() * delta_time);
+                    desired_velocity.SetY(current_vel.GetY() + world.physics.system.GetGravity().GetY() * delta_time);
                 }
                 jumped = false;
             }
@@ -5996,17 +5953,17 @@ int main(int argc, char* argv[]) {
             player_character->SetLinearVelocity(desired_velocity);
             player_character->ExtendedUpdate(
                 delta_time,
-                physics_system.GetGravity(),
+                world.physics.system.GetGravity(),
                 update_settings,
-                physics_system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
-                physics_system.GetDefaultLayerFilter(Layers::MOVING),
+                world.physics.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
+                world.physics.system.GetDefaultLayerFilter(Layers::MOVING),
                 {},
                 {},
-                physics_temp_allocator
+                *world.physics.temp_allocator
             );
 
             JPH::RVec3 char_vel = player_character->GetLinearVelocity();
-            script_system.set_player_velocity(glm::vec3(char_vel.GetX(), char_vel.GetY(), char_vel.GetZ()));
+            world.script.set_player_velocity(glm::vec3(char_vel.GetX(), char_vel.GetY(), char_vel.GetZ()));
             JPH::RVec3 char_pos = player_character->GetPosition();
             camera.position =
                 glm::vec3(char_pos.GetX(), char_pos.GetY(), char_pos.GetZ()) + glm::vec3(0, player_height * 0.4f, 0);
@@ -6028,8 +5985,8 @@ int main(int argc, char* argv[]) {
 
         update_camera(camera);
 
-        script_system.set_player_position(camera.position);
-        script_system.set_player_look_dir(camera.orientation * glm::vec3(0, 0, -1));
+        world.script.set_player_position(camera.position);
+        world.script.set_player_look_dir(camera.orientation * glm::vec3(0, 0, -1));
 
         luminance_constants.time_coef          = glm::clamp(1.0f - glm::exp(-delta_time * adaption_speed), 0.0f, 1.0f);
         luminance_constants.min_log2_luminance = min_log_lum;
@@ -6047,7 +6004,7 @@ int main(int argc, char* argv[]) {
 
         ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
         if (editor_overlay) {
-            editor.render_main_menu(scene, script_system, physics_system, [&](std::string path) {
+            editor.render_main_menu([&](std::string path) {
                 VkCommandBufferAllocateInfo alloc_info = {
                     .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                     .pNext              = nullptr,
@@ -6059,9 +6016,7 @@ int main(int argc, char* argv[]) {
                 VK_CHECK(vkAllocateCommandBuffers(device, &alloc_info, &command_buffer));
                 SceneSerializer::save(
                     path,
-                    scene,
-                    physics_system,
-                    script_system,
+                    &world,
                     buffers,
                     buffer_offsets,
                     compressed_texture_data,
@@ -6112,7 +6067,7 @@ int main(int argc, char* argv[]) {
             viewport_pos_size = glm::vec4(0, 0, swapchain.width, swapchain.height);
         }
 
-        editor.render_scene_node_property_window(scene, script_system, imgui_material_image_handles);
+        editor.render_scene_node_property_window(imgui_material_image_handles);
 
         ImGui::Begin(ICON_FA_FILE " Assets");
         if (ImGui::TreeNode("Textures")) {
@@ -6307,24 +6262,24 @@ int main(int argc, char* argv[]) {
         }
         ImGui::End();
 
-        editor.render_scene_hierarchy_window(scene);
+        editor.render_scene_hierarchy_window();
 
         if (editor.get_selected_entity() != entt::null) {
-            if (input_system.is_key_pressed(Key::LEFT_SHIFT)) {
-                if (input_system.is_key_just_pressed(Key::C)) {
+            if (world.input.is_key_pressed(Key::LEFT_SHIFT)) {
+                if (world.input.is_key_just_pressed(Key::C)) {
                     tranform_gizmo_op = ImGuizmo::OPERATION::SCALEU;
                 }
 
-                if (input_system.is_key_just_pressed(Key::R)) {
+                if (world.input.is_key_just_pressed(Key::R)) {
                     tranform_gizmo_op = ImGuizmo::OPERATION::ROTATE;
                 }
 
-                if (input_system.is_key_just_pressed(Key::T)) {
+                if (world.input.is_key_just_pressed(Key::T)) {
                     tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
                 }
             }
 
-            auto t = scene.get_component<components::Transform>(editor.get_selected_entity());
+            auto t = world.scene.get_component<components::Transform>(editor.get_selected_entity());
 
             glm::mat4 transform = glm::translate(glm::mat4(1.0f), t->world_position);
             transform           = transform * glm::mat4_cast(t->world_rotation);
@@ -6375,11 +6330,11 @@ int main(int argc, char* argv[]) {
                     t->scale *= scale.x;
                 }
 
-                auto p = scene.get_component<components::Physics>(editor.get_selected_entity());
+                auto p = world.scene.get_component<components::Physics>(editor.get_selected_entity());
                 if (p && !p->is_static && !p->body_id.IsInvalid()) {
                     JPH::EActivation activation = JPH::EActivation::Activate;
 
-                    auto last_position = physics_body_interface.GetPosition(p->body_id);
+                    auto last_position = world.physics.system.GetBodyInterface().GetPosition(p->body_id);
                     auto new_position  = JPH::Vec3(
                         last_position.GetX() + position.x,
                         last_position.GetY() + position.y,
@@ -6387,15 +6342,15 @@ int main(int argc, char* argv[]) {
                     );
 
                     if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
-                        physics_body_interface.SetPosition(p->body_id, new_position, activation);
+                        world.physics.system.GetBodyInterface().SetPosition(p->body_id, new_position, activation);
                         auto velocity = new_position - last_position;
                         velocity *= physics_fling_modifier;
 
-                        physics_body_interface.SetLinearVelocity(p->body_id, velocity);
+                        world.physics.system.GetBodyInterface().SetLinearVelocity(p->body_id, velocity);
                     }
 
                     if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
-                        physics_body_interface.SetRotation(
+                        world.physics.system.GetBodyInterface().SetRotation(
                             p->body_id,
                             JPH::Quat(t->rotation.x, t->rotation.y, t->rotation.z, t->rotation.w),
                             activation
@@ -6403,10 +6358,12 @@ int main(int argc, char* argv[]) {
                     }
 
                     if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
-                        auto shape     = physics_body_interface.GetShape(p->body_id);
+                        auto shape     = world.physics.system.GetBodyInterface().GetShape(p->body_id);
                         auto new_shape = shape->ScaleShape(JPH::Vec3(scale.x, scale.x, scale.x));
                         if (new_shape.IsValid()) {
-                            physics_body_interface.SetShape(p->body_id, new_shape.Get(), false, activation);
+                            world.physics.system.GetBodyInterface().SetShape(
+                                p->body_id, new_shape.Get(), false, activation
+                            );
                         }
                     }
                 }
@@ -6530,13 +6487,21 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        glm::vec2 mouse_pos = input_system.get_mouse_position();
-        if (input_system.is_key_pressed(Key::C) && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
-            if (input_system.is_button_just_pressed(Button::LEFT)) {
+        glm::vec2 mouse_pos = world.input.get_mouse_position();
+        if (editor.get_selected_entity() != entt::null && world.input.is_key_pressed(Key::LEFT_CTRL) &&
+            world.input.is_key_just_pressed(Key::C)) {
+            Entity clone = world.scene.clone_node(editor.get_selected_entity());
+            if (clone != entt::null) {
+                editor.set_selected_entity(clone);
+            }
+        }
+
+        if (world.input.is_key_pressed(Key::C) && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
+            if (world.input.is_button_just_pressed(Button::LEFT)) {
                 if (editor.get_selected_entity() != entt::null) {
-                    auto t = scene.get_component<components::Transform>(editor.get_selected_entity());
-                    auto m = scene.get_component<components::Mesh>(editor.get_selected_entity());
-                    auto n = scene.get_component<components::Name>(editor.get_selected_entity());
+                    auto t = world.scene.get_component<components::Transform>(editor.get_selected_entity());
+                    auto m = world.scene.get_component<components::Mesh>(editor.get_selected_entity());
+                    auto n = world.scene.get_component<components::Name>(editor.get_selected_entity());
 
                     if (t && m && n) {
                         glm::vec2 pos  = screen_pos_to_scene_vewport(mouse_pos);
@@ -6557,7 +6522,7 @@ int main(int argc, char* argv[]) {
                         glm::vec3 origin  = camera.position;
                         glm::vec3 ray_dir = glm::normalize(far - near);
 
-                        Mesh& mesh = scene.meshes[m->mesh.mesh_id];
+                        Mesh& mesh = world.scene.meshes[m->mesh.mesh_id];
 
                         glm::vec3 half_extent = (mesh.bounds_max - mesh.bounds_min) * 0.5f;
                         half_extent *= t->scale;
@@ -6662,24 +6627,25 @@ int main(int argc, char* argv[]) {
                         body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
                         body_settings.mMassPropertiesOverride.mMass = physics_spawn_mass;
 
-                        JPH::BodyID body_id =
-                            physics_body_interface.CreateAndAddBody(body_settings, JPH::EActivation::Activate);
-                        physics_body_interface.SetLinearVelocity(
+                        JPH::BodyID body_id = world.physics.system.GetBodyInterface().CreateAndAddBody(
+                            body_settings, JPH::EActivation::Activate
+                        );
+                        world.physics.system.GetBodyInterface().SetLinearVelocity(
                             body_id, JPH::Vec3(ray_dir.x, ray_dir.y, ray_dir.z) * 10
                         );
-                        physics_body_interface.SetFriction(body_id, physics_spawn_mass);
-                        physics_body_interface.SetRestitution(body_id, physics_spawn_restitution);
+                        world.physics.system.GetBodyInterface().SetFriction(body_id, physics_spawn_mass);
+                        world.physics.system.GetBodyInterface().SetRestitution(body_id, physics_spawn_restitution);
 
-                        Entity new_entity       = scene.create_entity(n->name + "_copy");
-                        auto   new_transform    = scene.get_component<components::Transform>(new_entity);
+                        Entity new_entity       = world.scene.create_node(n->name + "_copy");
+                        auto   new_transform    = world.scene.get_component<components::Transform>(new_entity);
                         new_transform->position = spawn_point;
                         new_transform->scale    = t->scale;
                         new_transform->rotation = t->rotation;
 
-                        auto& new_mesh = scene.add_component<components::Mesh>(new_entity);
+                        auto& new_mesh = world.scene.add_component<components::Mesh>(new_entity);
                         new_mesh.mesh  = m->mesh;
 
-                        auto& new_physics      = scene.add_component<components::Physics>(new_entity);
+                        auto& new_physics      = world.scene.add_component<components::Physics>(new_entity);
                         new_physics.body_id    = body_id;
                         new_physics.is_static  = false;
                         new_physics.last_scale = new_transform->scale;
@@ -6706,7 +6672,9 @@ int main(int argc, char* argv[]) {
             size_t frame_offset = (mesh_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
             VK_CHECK(vmaMapMemory(vma_allocator, mesh_buffer.allocation, &ptr));
             memcpy(
-                reinterpret_cast<char*>(ptr) + frame_offset, scene.meshes.data(), sizeof(Mesh) * scene.meshes.size()
+                reinterpret_cast<char*>(ptr) + frame_offset,
+                world.scene.meshes.data(),
+                sizeof(Mesh) * world.scene.meshes.size()
             );
             vmaUnmapMemory(vma_allocator, mesh_buffer.allocation);
             VK_CHECK(vmaFlushAllocation(vma_allocator, mesh_buffer.allocation, frame_offset, mesh_buffer.size));
@@ -6718,8 +6686,8 @@ int main(int argc, char* argv[]) {
             VK_CHECK(vmaMapMemory(vma_allocator, material_buffer.allocation, &ptr));
             memcpy(
                 reinterpret_cast<char*>(ptr) + frame_offset,
-                scene.materials.data(),
-                sizeof(Material) * scene.materials.size()
+                world.scene.materials.data(),
+                sizeof(Material) * world.scene.materials.size()
             );
             vmaUnmapMemory(vma_allocator, material_buffer.allocation);
             VK_CHECK(vmaFlushAllocation(vma_allocator, material_buffer.allocation, frame_offset, material_buffer.size));
@@ -6780,8 +6748,8 @@ int main(int argc, char* argv[]) {
 
         framegraph.execute(command_buffer, frame_index);
 
-        if (input_system.is_key_pressed(Key::LEFT_SHIFT) && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
-            if (input_system.is_button_just_pressed(Button::LEFT)) {
+        if (world.input.is_key_pressed(Key::LEFT_CTRL) && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
+            if (world.input.is_button_just_pressed(Button::LEFT)) {
                 glm::vec2 pos  = screen_pos_to_scene_vewport(mouse_pos);
                 glm::vec2 frac = pos / glm::vec2(viewport_pos_size.z, viewport_pos_size.w);
 
@@ -6897,7 +6865,7 @@ int main(int argc, char* argv[]) {
         last_frame_view_proj = camera.combined_matrix;
 
         {
-            auto view = scene.entity_registry.view<components::Transform, components::Mesh>();
+            auto view = world.scene.entity_registry.view<components::Transform, components::Mesh>();
             for (auto [e, t, m] : view.each()) {
                 m.mesh.last_position = m.mesh.position;
                 m.mesh.last_scale    = m.mesh.scale;
@@ -6905,7 +6873,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        input_system.update_key_states();
+        world.input.update_key_states();
     }
 
     VK_CHECK(vkDeviceWaitIdle(device));
@@ -6919,7 +6887,7 @@ int main(int argc, char* argv[]) {
 
     framegraph.destroy(device);
 
-    scene.destroy_scene(device, vma_allocator);
+    world.scene.destroy_scene(device, vma_allocator);
 
     destroy_swapchain(swapchain, window, instance, device);
     destroy_buffer(staging_buffer, device, vma_allocator);

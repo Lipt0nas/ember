@@ -2,8 +2,6 @@
 
 #include "components.hpp"
 #include "ember.hpp"
-#include "input_system.hpp"
-#include "physics.hpp"
 #include "scene.hpp"
 
 struct Script {
@@ -21,7 +19,9 @@ struct Script {
 
 class ScriptSystem {
 public:
-    ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system);
+    ScriptSystem();
+
+    void initialize(class World* world);
 
     void load_scripts(const std::filesystem::path& path);
     void reload_scripts();
@@ -51,20 +51,16 @@ public:
 private:
     std::filesystem::path script_source_dir;
 
-    Scene&              scene;
-    JPH::PhysicsSystem& physics_system;
-    InputSystem&        input_system;
-
-    class asIScriptEngine* engine;
-    class CScriptBuilder*  script_builder;
+    class asIScriptEngine* engine         = nullptr;
+    class CScriptBuilder*  script_builder = nullptr;
+    class World*           world          = nullptr;
 
     // NOTE: is there a need for more?
-    class asIScriptContext* context;
+    class asIScriptContext* context = nullptr;
 
     std::unordered_map<uint32_t, Script> scripts;
 
     Entity clone_node(const std::string& name);
-    Entity clone_node_internal(Entity e);
     Entity get_node(const std::string& name);
 
     bool cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance, float& t, uint32_t& entity);

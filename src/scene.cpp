@@ -1,5 +1,7 @@
 #include "scene.hpp"
 
+#include "world.hpp"
+
 #include <tracy/Tracy.hpp>
 
 #include <ktx.h>
@@ -9,11 +11,14 @@
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include <stb_image_resize2.h>
 
+void Scene::initialize(class World* world) {
+    this->world = world;
+}
+
 void Scene::load_scene(
     const std::filesystem::path& path,
     RendererBuffers&             buffers,
     BufferOffsets&               buffer_offsets,
-    JPH::PhysicsSystem*          physics_system,
     bool                         build_lods,
     bool                         fast_build,
     bool                         compress_textures,
@@ -904,7 +909,7 @@ void Scene::load_scene(
 
     vmaUnmapMemory(allocator, buffers.staging_buffer.allocation);
 
-    auto root_node = create_entity("Root Node");
+    auto root_node = create_node("Root Node");
 
     spdlog::info("Scene count: {}", model.scenes.size());
     int scene_id = model.defaultScene >= 0 ? model.defaultScene : (model.scenes.size() >= 1 ? 0 : -1);
@@ -946,7 +951,7 @@ void Scene::load_scene(
             for (int i = 0; i < mesh.primitives.size(); i++) {
                 int mesh_id = mesh_primitive_offsets[node.mesh] + i;
 
-                auto entity         = create_entity(node.name);
+                auto entity         = create_node(node.name);
                 auto transform      = get_component<components::Transform>(entity);
                 transform->position = position;
                 transform->scale    = scale;
@@ -971,7 +976,7 @@ void Scene::load_scene(
                     final_shape = mesh_collision_shapes[mesh_id];
                 }
 
-                JPH::BodyInterface& body_interface = physics_system->GetBodyInterface();
+                JPH::BodyInterface& body_interface = world->physics.system.GetBodyInterface();
 
                 JPH::BodyCreationSettings body_settings(
                     final_shape,
@@ -997,7 +1002,7 @@ void Scene::load_scene(
     }
 }
 
-Entity Scene::create_entity(const std::string& name) {
+Entity Scene::create_node(const std::string& name) {
     Entity e = entity_registry.create();
 
     entity_registry.emplace<components::Name>(e, name);
@@ -1046,4 +1051,69 @@ void Scene::remove_node_parent(Entity child) {
     }
 
     entity_registry.remove<components::Parent>(child);
+}
+
+Entity Scene::clone_node(Entity base) {
+    auto src_name = get_component<components::Name>(base);
+
+    Entity new_entity = create_node(src_name->name + "_clone");
+
+    auto src_transform                                = get_component<components::Transform>(base);
+    *get_component<components::Transform>(new_entity) = *src_transform;
+
+    auto src_physics = get_component<components::Physics>(base);
+    if (src_physics && !src_physics->body_id.IsInvalid()) {
+        auto& p              = add_component<components::Physics>(new_entity);
+        auto& body_interface = world->physics.system.GetBodyInterface();
+
+        JPH::EMotionType motion_type = body_interface.GetMotionType(src_physics->body_id);
+        JPH::Vec3        position    = body_interface.GetPosition(src_physics->body_id);
+        JPH::Quat        rotation    = body_interface.GetRotation(src_physics->body_id);
+
+        const JPH::Shape* shape = body_interface.GetShape(src_physics->body_id);
+
+        JPH::BodyCreationSettings settings(
+            shape,
+            JPH::RVec3(position),
+            rotation,
+            motion_type,
+            motion_type == JPH::EMotionType::Static ? Layers::NON_MOVING : Layers::MOVING
+        );
+
+        settings.mFriction      = body_interface.GetFriction(src_physics->body_id);
+        settings.mGravityFactor = body_interface.GetGravityFactor(src_physics->body_id);
+
+        JPH::Body*  new_body = body_interface.CreateBody(settings);
+        JPH::BodyID new_id   = new_body->GetID();
+
+        body_interface.AddBody(
+            new_id,
+            motion_type == JPH::EMotionType::Static ? JPH::EActivation::Activate : JPH::EActivation::DontActivate
+        );
+
+        p.body_id    = new_id;
+        p.is_static  = motion_type == JPH::EMotionType::Static;
+        p.last_scale = src_transform->scale;
+    }
+
+    auto src_mesh = get_component<components::Mesh>(base);
+    if (src_mesh) {
+        auto& m = add_component<components::Mesh>(new_entity);
+        m.mesh  = src_mesh->mesh;
+    }
+
+    auto src_parent = get_component<components::Parent>(base);
+    if (src_parent) {
+        set_node_parent(new_entity, src_parent->parent);
+    }
+
+    auto src_children = get_component<components::Children>(base);
+    if (src_children) {
+        for (Entity child : src_children->children) {
+            Entity new_child = clone_node(child);
+            set_node_parent(new_child, new_entity);
+        }
+    }
+
+    return new_entity;
 }

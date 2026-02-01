@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Jolt/Jolt.h>
+#include <spdlog/spdlog.h>
 
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 
@@ -160,4 +161,56 @@ public:
     virtual void OnBodyDeactivated(const JPH::BodyID& inBodyID, uint64_t inBodyUserData) override {
         // cout << "A body went to sleep" << endl;
     }
+};
+
+class PhysicsSystem {
+public:
+    JPH::PhysicsSystem system;
+
+    BPLayerInterfaceImpl              broad_phase_layer_interface;
+    ObjectVsBroadPhaseLayerFilterImpl object_vs_broad_phase_layer_filter;
+    ObjectLayerPairFilterImpl         object_vs_object_layer_filter;
+
+    MyBodyActivationListener body_activation_listener;
+    MyContactListener        contact_listener;
+
+    JPH::TempAllocatorImpl*   temp_allocator;
+    JPH::JobSystemThreadPool* job_system;
+
+    const float frame_time = 1.0f / 60.0f;
+
+    PhysicsSystem() {
+        spdlog::info("Initializing physics system");
+        JPH::RegisterDefaultAllocator();
+        JPH::Factory::sInstance = new JPH::Factory();
+        JPH::RegisterTypes();
+
+        temp_allocator = new JPH::TempAllocatorImpl(10 * 1024 * 1024);
+        job_system     = new JPH::JobSystemThreadPool(
+            JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, std::thread::hardware_concurrency() - 1
+        );
+
+        const uint32_t physics_max_bodies             = UINT16_MAX;
+        const uint32_t physics_num_body_mutexes       = 0;
+        const uint32_t physica_max_body_pairs         = UINT16_MAX;
+        const uint32_t physics_max_contact_contraints = 10240;
+
+        system.Init(
+            physics_max_bodies,
+            physics_num_body_mutexes,
+            physica_max_body_pairs,
+            physics_max_contact_contraints,
+            broad_phase_layer_interface,
+            object_vs_broad_phase_layer_filter,
+            object_vs_object_layer_filter
+        );
+        system.SetBodyActivationListener(&body_activation_listener);
+        system.SetContactListener(&contact_listener);
+    }
+
+    void update() {
+        system.Update(frame_time, 1, temp_allocator, job_system);
+    }
+
+private:
 };

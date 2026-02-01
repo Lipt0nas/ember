@@ -1,4 +1,7 @@
 #include "script_system.hpp"
+
+#include "world.hpp"
+
 #include "glm/gtc/random.hpp"
 
 #include <fstream>
@@ -1152,17 +1155,23 @@ namespace {
     }
 } // namespace
 
-ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, InputSystem& input_system)
-    : scene(scene), physics_system(physics_system), input_system(input_system) {
+ScriptSystem::ScriptSystem() {
+    spdlog::info("Initializing script system");
+
     engine = asCreateScriptEngine();
 
     engine->SetMessageCallback(asFUNCTION(script_message_callback), 0, asCALL_CDECL);
     engine->SetEngineProperty(asEP_DISALLOW_EMPTY_LIST_ELEMENTS, true);
     engine->SetEngineProperty(asEP_DISALLOW_VALUE_ASSIGN_FOR_REF_TYPE, true);
 
-    auto default_namespace = engine->GetDefaultNamespace();
-
+    context        = engine->CreateContext();
     script_builder = new CScriptBuilder();
+}
+
+void ScriptSystem::initialize(class World* world) {
+    this->world = world;
+
+    auto default_namespace = engine->GetDefaultNamespace();
 
     RegisterScriptArray(engine, true);
     RegisterStdString(engine);
@@ -1177,14 +1186,14 @@ ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, Inp
     register_glm_types(engine);
 
     engine->RegisterEnum("Key");
-    for (int i = 0; i < input_system.get_key_count(); i++) {
-        auto name = input_system.key_to_string(static_cast<Key>(i));
+    for (int i = 0; i < world->input.get_key_count(); i++) {
+        auto name = world->input.key_to_string(static_cast<Key>(i));
         engine->RegisterEnumValue("Key", name.c_str(), i);
     }
 
     engine->RegisterEnum("Button");
-    for (int i = 0; i < input_system.get_button_count(); i++) {
-        auto name = input_system.button_to_string(static_cast<Button>(i));
+    for (int i = 0; i < world->input.get_button_count(); i++) {
+        auto name = world->input.button_to_string(static_cast<Button>(i));
         engine->RegisterEnumValue("Button", name.c_str(), i);
     }
 
@@ -1201,63 +1210,63 @@ ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, Inp
         "vec2 get_mouse_position()",
         asMETHOD(InputSystem, InputSystem::get_mouse_position),
         asCALL_THISCALL_ASGLOBAL,
-        &input_system
+        &world->input
     );
 
     engine->RegisterGlobalFunction(
         "bool is_key_pressed(Key)",
         asMETHOD(InputSystem, InputSystem::is_key_pressed),
         asCALL_THISCALL_ASGLOBAL,
-        &input_system
+        &world->input
     );
 
     engine->RegisterGlobalFunction(
         "bool is_key_just_pressed(Key)",
         asMETHOD(InputSystem, InputSystem::is_key_just_pressed),
         asCALL_THISCALL_ASGLOBAL,
-        &input_system
+        &world->input
     );
 
     engine->RegisterGlobalFunction(
         "string key_to_string(Key)",
         asMETHOD(InputSystem, InputSystem::key_to_string),
         asCALL_THISCALL_ASGLOBAL,
-        &input_system
+        &world->input
     );
 
     engine->RegisterGlobalFunction(
         "Key string_to_key(string &in)",
         asMETHOD(InputSystem, InputSystem::string_to_key),
         asCALL_THISCALL_ASGLOBAL,
-        &input_system
+        &world->input
     );
 
     engine->RegisterGlobalFunction(
         "bool is_button_pressed(Button)",
         asMETHOD(InputSystem, InputSystem::is_button_pressed),
         asCALL_THISCALL_ASGLOBAL,
-        &input_system
+        &world->input
     );
 
     engine->RegisterGlobalFunction(
         "bool is_button_just_pressed(Button)",
         asMETHOD(InputSystem, InputSystem::is_button_just_pressed),
         asCALL_THISCALL_ASGLOBAL,
-        &input_system
+        &world->input
     );
 
     engine->RegisterGlobalFunction(
         "string button_to_string(Button)",
         asMETHOD(InputSystem, InputSystem::button_to_string),
         asCALL_THISCALL_ASGLOBAL,
-        &input_system
+        &world->input
     );
 
     engine->RegisterGlobalFunction(
         "Button string_to_button(string &in)",
         asMETHOD(InputSystem, InputSystem::string_to_button),
         asCALL_THISCALL_ASGLOBAL,
-        &input_system
+        &world->input
     );
 
     engine->SetDefaultNamespace("World");
@@ -1426,8 +1435,6 @@ ScriptSystem::ScriptSystem(Scene& scene, JPH::PhysicsSystem& physics_system, Inp
 
     engine->RegisterGlobalFunction("float ceil(float)", asFUNCTIONPR(glm::ceil, (float), float), asCALL_CDECL);
     engine->RegisterGlobalFunction("float floor(float)", asFUNCTIONPR(glm::floor, (float), float), asCALL_CDECL);
-
-    context = engine->CreateContext();
 }
 
 void ScriptSystem::load_scripts(const std::filesystem::path& path) {
@@ -1564,7 +1571,7 @@ void ScriptSystem::generate_predefined_file() {
 }
 
 void ScriptSystem::clear() {
-    auto view = scene.entity_registry.view<components::Script>();
+    auto view = world->scene.entity_registry.view<components::Script>();
     for (auto [e, s] : view.each()) {
         auto obj = (asIScriptObject*)s.object;
         if (obj) {
@@ -1645,72 +1652,15 @@ Entity ScriptSystem::clone_node(const std::string& name) {
     Entity base = get_node(name);
 
     if (base != entt::null) {
-        return clone_node_internal(base);
+        Entity e = world->scene.clone_node(base);
+        return e;
     }
 
     return entt::null;
 }
 
-Entity ScriptSystem::clone_node_internal(Entity e) {
-    auto src_name = scene.get_component<components::Name>(e);
-
-    Entity new_entity = scene.create_entity(src_name->name + "_clone");
-
-    auto src_physics = scene.get_component<components::Physics>(e);
-    if (src_physics) {
-        auto& p              = scene.add_component<components::Physics>(new_entity);
-        auto& body_interface = physics_system.GetBodyInterface();
-
-        JPH::EMotionType motion_type = body_interface.GetMotionType(src_physics->body_id);
-        JPH::Vec3        position    = body_interface.GetPosition(src_physics->body_id);
-        JPH::Quat        rotation    = body_interface.GetRotation(src_physics->body_id);
-
-        const JPH::Shape* shape = body_interface.GetShape(src_physics->body_id);
-
-        JPH::BodyCreationSettings settings(
-            shape,
-            JPH::RVec3(position),
-            rotation,
-            motion_type,
-            motion_type == JPH::EMotionType::Static ? Layers::NON_MOVING : Layers::MOVING
-        );
-
-        settings.mFriction      = body_interface.GetFriction(src_physics->body_id);
-        settings.mGravityFactor = body_interface.GetGravityFactor(src_physics->body_id);
-
-        JPH::Body*  new_body = body_interface.CreateBody(settings);
-        JPH::BodyID new_id   = new_body->GetID();
-
-        body_interface.AddBody(new_id, JPH::EActivation::Activate);
-
-        p.body_id   = new_id;
-        p.is_static = motion_type == JPH::EMotionType::Static;
-    }
-
-    auto src_mesh = scene.get_component<components::Mesh>(e);
-    if (src_mesh) {
-        auto& m = scene.add_component<components::Mesh>(new_entity);
-        m.mesh  = src_mesh->mesh;
-    }
-
-    auto src_parent = scene.get_component<components::Parent>(e);
-    if (src_parent) {
-        scene.set_node_parent(new_entity, src_parent->parent);
-    }
-
-    auto src_children = scene.get_component<components::Children>(e);
-    if (src_children) {
-        for (Entity child : src_children->children) {
-            Entity new_child = clone_node_internal(child);
-            scene.set_node_parent(new_child, new_entity);
-        }
-    }
-
-    return new_entity;
-}
-
 Entity ScriptSystem::get_node(const std::string& name) {
-    auto   view   = scene.entity_registry.view<components::Name>();
+    auto   view   = world->scene.entity_registry.view<components::Name>();
     Entity entity = entt::null;
     for (auto [e, n] : view.each()) {
         if (n.name == name) {
@@ -1729,11 +1679,11 @@ bool ScriptSystem::cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance,
 
     JPH::RayCastResult result;
 
-    bool hit = this->physics_system.GetNarrowPhaseQuery().CastRay(
+    bool hit = world->physics.system.GetNarrowPhaseQuery().CastRay(
         ray,
         result,
-        physics_system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING | Layers::NON_MOVING),
-        physics_system.GetDefaultLayerFilter(Layers::MOVING | Layers::NON_MOVING)
+        world->physics.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING | Layers::NON_MOVING),
+        world->physics.system.GetDefaultLayerFilter(Layers::MOVING | Layers::NON_MOVING)
     );
 
     t      = 0.0f;
@@ -1742,7 +1692,7 @@ bool ScriptSystem::cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance,
     if (hit) {
         t = result.mFraction;
 
-        auto view = scene.entity_registry.view<components::Physics>();
+        auto view = world->scene.entity_registry.view<components::Physics>();
         for (auto [e, p] : view.each()) {
             if (p.body_id == result.mBodyID) {
                 entity = (uint32_t)e;
@@ -1755,45 +1705,45 @@ bool ScriptSystem::cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance,
 }
 
 void ScriptSystem::set_node_position(Entity entity, glm::vec3 position) {
-    auto t      = scene.get_component<components::Transform>(entity);
+    auto t      = world->scene.get_component<components::Transform>(entity);
     t->position = position;
 
-    auto p = scene.get_component<components::Physics>(entity);
+    auto p = world->scene.get_component<components::Physics>(entity);
     if (p && !p->is_static) {
-        physics_system.GetBodyInterface().SetPosition(
+        world->physics.system.GetBodyInterface().SetPosition(
             p->body_id, JPH::Vec3(t->position.x, t->position.y, t->position.z), JPH::EActivation::Activate
         );
     }
 }
 
 void ScriptSystem::set_node_scale(Entity entity, float scale) {
-    scene.get_component<components::Transform>(entity)->scale = scale;
+    world->scene.get_component<components::Transform>(entity)->scale = scale;
 }
 
 glm::vec3 ScriptSystem::get_node_position(Entity entity) {
-    return scene.get_component<components::Transform>(entity)->position;
+    return world->scene.get_component<components::Transform>(entity)->position;
 }
 
 float ScriptSystem::get_node_scale(Entity entity) {
-    return scene.get_component<components::Transform>(entity)->scale;
+    return world->scene.get_component<components::Transform>(entity)->scale;
 }
 
 std::string ScriptSystem::get_node_name(Entity entity) {
-    return scene.get_component<components::Name>(entity)->name;
+    return world->scene.get_component<components::Name>(entity)->name;
 }
 
 void ScriptSystem::set_node_physics_body_box(Entity entity, glm::vec3 half_extents) {
-    auto p = scene.get_component<components::Physics>(entity);
+    auto p = world->scene.get_component<components::Physics>(entity);
 
     if (!p) {
         return;
     }
 
-    auto t = scene.get_component<components::Transform>(entity);
+    auto t = world->scene.get_component<components::Transform>(entity);
 
     if (!p->body_id.IsInvalid()) {
-        physics_system.GetBodyInterface().RemoveBody(p->body_id);
-        physics_system.GetBodyInterface().DestroyBody(p->body_id);
+        world->physics.system.GetBodyInterface().RemoveBody(p->body_id);
+        world->physics.system.GetBodyInterface().DestroyBody(p->body_id);
     }
 
     auto body_settings = JPH::BodyCreationSettings(
@@ -1808,57 +1758,62 @@ void ScriptSystem::set_node_physics_body_box(Entity entity, glm::vec3 half_exten
     body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
     body_settings.mMassPropertiesOverride.mMass = 1.0f;
 
-    JPH::BodyID body_id = physics_system.GetBodyInterface().CreateAndAddBody(body_settings, JPH::EActivation::Activate);
-    p->body_id          = body_id;
-    p->is_static        = false;
-    p->last_scale       = t->scale;
+    JPH::BodyID body_id =
+        world->physics.system.GetBodyInterface().CreateAndAddBody(body_settings, JPH::EActivation::Activate);
+    p->body_id    = body_id;
+    p->is_static  = false;
+    p->last_scale = t->scale;
 }
 
 void ScriptSystem::set_node_physics_linear_velocity(Entity entity, glm::vec3 velocity) {
-    auto p = scene.get_component<components::Physics>(entity);
+    auto p = world->scene.get_component<components::Physics>(entity);
 
     if (p) {
-        physics_system.GetBodyInterface().SetLinearVelocity(p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z));
+        world->physics.system.GetBodyInterface().SetLinearVelocity(
+            p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z)
+        );
     }
 }
 
 void ScriptSystem::set_node_physics_angular_velocity(Entity entity, glm::vec3 velocity) {
-    auto p = scene.get_component<components::Physics>(entity);
+    auto p = world->scene.get_component<components::Physics>(entity);
 
     if (p) {
-        physics_system.GetBodyInterface().SetAngularVelocity(p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z));
+        world->physics.system.GetBodyInterface().SetAngularVelocity(
+            p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z)
+        );
     }
 }
 
 void ScriptSystem::disable_node_physics(Entity entity) {
-    auto p = scene.get_component<components::Physics>(entity);
+    auto p = world->scene.get_component<components::Physics>(entity);
 
     if (p) {
-        physics_system.GetBodyInterface().DeactivateBody(p->body_id);
+        world->physics.system.GetBodyInterface().DeactivateBody(p->body_id);
     }
 }
 
 void ScriptSystem::enable_node_physics(Entity entity) {
-    auto p = scene.get_component<components::Physics>(entity);
+    auto p = world->scene.get_component<components::Physics>(entity);
 
     if (p) {
-        physics_system.GetBodyInterface().ActivateBody(p->body_id);
+        world->physics.system.GetBodyInterface().ActivateBody(p->body_id);
     }
 }
 
 void ScriptSystem::node_dedicate_material(Entity entity) {
-    auto m = scene.get_component<components::Mesh>(entity);
+    auto m = world->scene.get_component<components::Mesh>(entity);
 
     if (m && m->mesh.material_id != 0) {
-        scene.materials.push_back(scene.materials[m->mesh.material_id]);
-        m->mesh.material_id = scene.materials.size() - 1;
+        world->scene.materials.push_back(world->scene.materials[m->mesh.material_id]);
+        m->mesh.material_id = world->scene.materials.size() - 1;
     }
 }
 
 void ScriptSystem::node_set_material_emissive(Entity entity, glm::vec3 emissive) {
-    auto m = scene.get_component<components::Mesh>(entity);
+    auto m = world->scene.get_component<components::Mesh>(entity);
 
     if (m && m->mesh.material_id != 0) {
-        scene.materials[m->mesh.material_id].emissive_factor = emissive;
+        world->scene.materials[m->mesh.material_id].emissive_factor = emissive;
     }
 }

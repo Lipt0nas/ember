@@ -3,7 +3,6 @@
 #include "components.hpp"
 #include "ember.hpp"
 #include "geometry.hpp"
-#include "physics.hpp"
 #include "resources.hpp"
 
 #include <filesystem>
@@ -48,11 +47,12 @@ public:
 
     entt::registry entity_registry;
 
+    void initialize(class World* world);
+
     void load_scene(
         const std::filesystem::path& path,
         RendererBuffers&             buffers,
         BufferOffsets&               buffer_offsets,
-        JPH::PhysicsSystem*          physics_system,
         bool                         build_lods,
         bool                         fast_build,
         bool                         compress_textures,
@@ -65,9 +65,11 @@ public:
 
     void destroy_scene(VkDevice device, VmaAllocator allocator);
 
-    Entity create_entity(const std::string& name = "");
-    void   set_node_parent(Entity child, Entity parent);
-    void   remove_node_parent(Entity child);
+    Entity create_node(const std::string& name = "");
+    Entity clone_node(Entity base);
+
+    void set_node_parent(Entity child, Entity parent);
+    void remove_node_parent(Entity child);
 
     template <typename T, typename... Args> T& add_component(Entity entity, Args&&... args) {
         return entity_registry.emplace<T>(entity, std::forward<Args>(args)...);
@@ -76,4 +78,7 @@ public:
     template <typename T> T* get_component(Entity entity) {
         return entity_registry.try_get<T>(entity);
     }
+
+private:
+    class World* world = nullptr;
 };
