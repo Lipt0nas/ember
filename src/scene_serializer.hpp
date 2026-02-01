@@ -16,6 +16,8 @@ struct GeometryDataHeader {
 
 struct TextureDataHeader {
     uint32_t texture_count;
+    bool     is_compressed;
+    uint64_t compressed_data_size;
 };
 
 struct TextureHeader {
@@ -54,6 +56,7 @@ public:
         ScriptSystem&                script_system,
         RendererBuffers&             buffers,
         BufferOffsets&               buffer_offsets,
+        std::vector<unsigned char>&  compressed_texture_data,
         VkDevice                     device,
         VkQueue                      queue,
         VmaAllocator                 allocator,
@@ -61,15 +64,16 @@ public:
     );
 
     static void save(
-        const std::filesystem::path& path,
-        const Scene&                 scene,
-        const JPH::PhysicsSystem&    physics_system,
-        const ScriptSystem&          script_system,
-        const RendererBuffers&       buffers,
-        const BufferOffsets&         buffer_offsets,
-        VkDevice                     device,
-        VkQueue                      queue,
-        VmaAllocator                 allocator,
-        VkCommandBuffer              command_buffer
+        const std::filesystem::path&      path,
+        const Scene&                      scene,
+        const JPH::PhysicsSystem&         physics_system,
+        const ScriptSystem&               script_system,
+        const RendererBuffers&            buffers,
+        const BufferOffsets&              buffer_offsets,
+        const std::vector<unsigned char>& compressed_texture_data,
+        VkDevice                          device,
+        VkQueue                           queue,
+        VmaAllocator                      allocator,
+        VkCommandBuffer                   command_buffer
     );
 };

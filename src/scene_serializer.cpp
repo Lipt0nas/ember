@@ -3,6 +3,8 @@
 #include <cereal/archives/binary.hpp>
 #include <cereal/archives/json.hpp>
 
+#include <ktx.h>
+
 namespace glm {
     template <class Archive> void serialize(Archive& archive, glm::vec3& v) {
         archive(cereal::make_nvp("x", v.x), cereal::make_nvp("y", v.y), cereal::make_nvp("z", v.z));
@@ -30,7 +32,7 @@ template <typename Archive> void serialize(Archive& archive, GeometryDataHeader&
 }
 
 template <typename Archive> void serialize(Archive& archive, TextureDataHeader& header) {
-    archive(header.texture_count);
+    archive(header.texture_count, header.is_compressed, header.compressed_data_size);
 }
 
 template <typename Archive> void serialize(Archive& archive, TextureHeader& header) {
@@ -103,6 +105,7 @@ void SceneSerializer::load(
     ScriptSystem&                script_system,
     RendererBuffers&             buffers,
     BufferOffsets&               buffer_offsets,
+    std::vector<unsigned char>&  compressed_texture_data,
     VkDevice                     device,
     VkQueue                      queue,
     VmaAllocator                 allocator,
@@ -306,31 +309,109 @@ void SceneSerializer::load(
         TextureDataHeader header;
         archive(header);
 
+        if (header.is_compressed) {
+            compressed_texture_data.resize(header.compressed_data_size);
+            archive.loadBinary(compressed_texture_data.data(), header.compressed_data_size);
+        }
+
+        size_t compressed_offset = 0;
         for (uint32_t i = 0; i < header.texture_count; i++) {
             TextureHeader texture_header;
             archive(texture_header);
 
-            Image image = create_image(
-                static_cast<VkFormat>(texture_header.format),
-                texture_header.width,
-                texture_header.height,
-                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                true,
-                allocator,
-                device
-            );
+            Image image;
 
-            for (uint32_t mip = 0; mip < texture_header.mip_levels; mip++) {
-                MipLevelHeader mip_header;
-                archive(mip_header);
+            if (header.is_compressed) {
+                ktx_size_t file_size;
+                memcpy(&file_size, compressed_texture_data.data() + compressed_offset, sizeof(ktx_size_t));
+                compressed_offset += sizeof(ktx_size_t);
 
-                void* staging_buffer_ptr = nullptr;
-                VK_CHECK(vmaMapMemory(allocator, buffers.staging_buffer.allocation, &staging_buffer_ptr));
-                archive.loadBinary(staging_buffer_ptr, mip_header.size);
-                vmaUnmapMemory(allocator, buffers.staging_buffer.allocation);
+                ktxTexture2*   ktx_texture;
+                KTX_error_code result = ktxTexture2_CreateFromMemory(
+                    compressed_texture_data.data() + compressed_offset,
+                    file_size,
+                    KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+                    &ktx_texture
+                );
 
-                copy_image_mip(buffers.staging_buffer, image, mip, command_buffer, queue, device);
+                if (result != KTX_SUCCESS) {
+                    spdlog::error("Failed to load KTX2 texture {}: {}", i, (int)result);
+                    continue;
+                }
+
+                compressed_offset += file_size;
+
+                ktx_transcode_fmt_e transcode_fmt;
+                if (texture_header.format == VK_FORMAT_BC7_SRGB_BLOCK ||
+                    texture_header.format == VK_FORMAT_BC7_UNORM_BLOCK) {
+                    transcode_fmt = KTX_TTF_BC7_RGBA;
+                } else if (texture_header.format == VK_FORMAT_BC5_UNORM_BLOCK ||
+                           texture_header.format == VK_FORMAT_BC5_SNORM_BLOCK) {
+                    transcode_fmt = KTX_TTF_BC5_RG;
+                } else {
+                    spdlog::error("Unsupported compressed format: {}", (uint32_t)texture_header.format);
+                    ktxTexture_Destroy(ktxTexture(ktx_texture));
+                    continue;
+                }
+
+                result = ktxTexture2_TranscodeBasis(ktx_texture, transcode_fmt, 0);
+                if (result != KTX_SUCCESS) {
+                    spdlog::error("Failed to transcode texture {}: {}", i, (int)result);
+                    ktxTexture_Destroy(ktxTexture(ktx_texture));
+                    continue;
+                }
+
+                image = create_image(
+                    static_cast<VkFormat>(texture_header.format),
+                    texture_header.width,
+                    texture_header.height,
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    true,
+                    allocator,
+                    device
+                );
+
+                for (uint32_t mip = 0; mip < ktx_texture->numLevels; mip++) {
+                    ktx_size_t mip_offset;
+                    ktxTexture_GetImageOffset(ktxTexture(ktx_texture), mip, 0, 0, &mip_offset);
+                    ktx_size_t mip_size = ktxTexture_GetImageSize(ktxTexture(ktx_texture), mip);
+
+                    ktx_uint8_t* src_data = ktxTexture_GetData(ktxTexture(ktx_texture)) + mip_offset;
+
+                    void* staging_buffer_ptr = nullptr;
+                    VK_CHECK(vmaMapMemory(allocator, buffers.staging_buffer.allocation, &staging_buffer_ptr));
+                    std::memcpy(staging_buffer_ptr, src_data, mip_size);
+                    vmaUnmapMemory(allocator, buffers.staging_buffer.allocation);
+
+                    copy_image_mip(buffers.staging_buffer, image, mip, command_buffer, queue, device);
+                }
+
+                ktxTexture_Destroy(ktxTexture(ktx_texture));
+
+            } else {
+                image = create_image(
+                    static_cast<VkFormat>(texture_header.format),
+                    texture_header.width,
+                    texture_header.height,
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    true,
+                    allocator,
+                    device
+                );
+
+                for (uint32_t mip = 0; mip < texture_header.mip_levels; mip++) {
+                    MipLevelHeader mip_header;
+                    archive(mip_header);
+
+                    void* staging_buffer_ptr = nullptr;
+                    VK_CHECK(vmaMapMemory(allocator, buffers.staging_buffer.allocation, &staging_buffer_ptr));
+                    archive.loadBinary(staging_buffer_ptr, mip_header.size);
+                    vmaUnmapMemory(allocator, buffers.staging_buffer.allocation);
+
+                    copy_image_mip(buffers.staging_buffer, image, mip, command_buffer, queue, device);
+                }
             }
 
             VkCommandBufferBeginInfo begin_info = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -365,16 +446,17 @@ void SceneSerializer::load(
 }
 
 void SceneSerializer::save(
-    const std::filesystem::path& path,
-    const Scene&                 scene,
-    const JPH::PhysicsSystem&    physics_system,
-    const ScriptSystem&          script_system,
-    const RendererBuffers&       buffers,
-    const BufferOffsets&         buffer_offsets,
-    VkDevice                     device,
-    VkQueue                      queue,
-    VmaAllocator                 allocator,
-    VkCommandBuffer              command_buffer
+    const std::filesystem::path&      path,
+    const Scene&                      scene,
+    const JPH::PhysicsSystem&         physics_system,
+    const ScriptSystem&               script_system,
+    const RendererBuffers&            buffers,
+    const BufferOffsets&              buffer_offsets,
+    const std::vector<unsigned char>& compressed_texture_data,
+    VkDevice                          device,
+    VkQueue                           queue,
+    VmaAllocator                      allocator,
+    VkCommandBuffer                   command_buffer
 ) {
     if (!std::filesystem::exists(path)) {
         std::filesystem::create_directories(path);
@@ -494,12 +576,31 @@ void SceneSerializer::save(
         cereal::BinaryOutputArchive archive(os);
 
         TextureDataHeader header = {
-            .texture_count = static_cast<uint32_t>(scene.images.size()),
+            .texture_count        = static_cast<uint32_t>(scene.images.size()),
+            .is_compressed        = !compressed_texture_data.empty(),
+            .compressed_data_size = compressed_texture_data.size(),
         };
         archive(header);
 
+        if (header.is_compressed) {
+            archive.saveBinary(compressed_texture_data.data(), header.compressed_data_size);
+        }
+
         for (uint32_t i = 0; i < scene.images.size(); i++) {
             auto& resource = scene.images[i];
+
+            TextureHeader texture_header = {
+                .width         = resource.image.width,
+                .height        = resource.image.height,
+                .format        = resource.image.format,
+                .mip_levels    = resource.image.levels,
+                .sampler_index = resource.sampler_index,
+            };
+            archive(texture_header);
+
+            if (header.is_compressed) {
+                continue;
+            }
 
             uint32_t bytes_per_block;
             uint32_t block_size = 4;
@@ -520,15 +621,6 @@ void SceneSerializer::save(
                 bytes_per_block = 4;
                 block_size      = 1;
             }
-
-            TextureHeader texture_header = {
-                .width         = resource.image.width,
-                .height        = resource.image.height,
-                .format        = resource.image.format,
-                .mip_levels    = resource.image.levels,
-                .sampler_index = resource.sampler_index,
-            };
-            archive(texture_header);
 
             VkCommandBufferBeginInfo begin_info = {
                 .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,

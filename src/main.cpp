@@ -1843,8 +1843,9 @@ int main(int argc, char* argv[]) {
         .meshlet_primitive_buffer = meshlet_primitive_indices_buffer,
         .meshlet_bounds_buffer    = meshlet_bounds_buffer
     };
-
     BufferOffsets buffer_offsets;
+
+    std::vector<unsigned char> compressed_texture_data;
 
     if (std::filesystem::is_directory(scene_load_path)) {
         VkCommandBufferAllocateInfo alloc_info = {
@@ -1863,6 +1864,7 @@ int main(int argc, char* argv[]) {
             script_system,
             buffers,
             buffer_offsets,
+            compressed_texture_data,
             device,
             graphics_queue,
             vma_allocator,
@@ -1880,6 +1882,7 @@ int main(int argc, char* argv[]) {
             build_lods,
             fast_scene_build,
             compress_textures,
+            compressed_texture_data,
             device,
             graphics_queue,
             vma_allocator,
@@ -1894,13 +1897,14 @@ int main(int argc, char* argv[]) {
 
     spdlog::info(
         "Geometry buffer sizes:\n\tVertex: {}MB\n\tIndex: {}MB\n\tMeshlet: {}MB\n\tMeshlet Vertex Indices: "
-        "{}MB\n\tMeshlet Primitive Indices: {}MB\n\tMeshlet Bounds: {}MB",
+        "{}MB\n\tMeshlet Primitive Indices: {}MB\n\tMeshlet Bounds: {}MB\n\tCompressed Texture Data: {}MB",
         static_cast<float>(buffer_offsets.vertex_buffer) / 1024.0f / 1024.0f,
         static_cast<float>(buffer_offsets.index_buffer) / 1024.0f / 1024.0f,
         static_cast<float>(buffer_offsets.meshlet_buffer) / 1024.0f / 1024.0f,
         static_cast<float>(buffer_offsets.meshlet_vertex_indices) / 1024.0f / 1024.0f,
         static_cast<float>(buffer_offsets.meshlet_primitive_buffer) / 1024.0f / 1024.0f,
-        static_cast<float>(buffer_offsets.meshlet_bounds_buffer) / 1024.0f / 1024.0f
+        static_cast<float>(buffer_offsets.meshlet_bounds_buffer) / 1024.0f / 1024.0f,
+        static_cast<float>(compressed_texture_data.size()) / 1024.0f / 1024.0f
     );
 
     // This is updated by a system at the beginning of a frame
@@ -6060,6 +6064,7 @@ int main(int argc, char* argv[]) {
                     script_system,
                     buffers,
                     buffer_offsets,
+                    compressed_texture_data,
                     device,
                     graphics_queue,
                     vma_allocator,
