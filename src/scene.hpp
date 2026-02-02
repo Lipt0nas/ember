@@ -75,6 +75,11 @@ public:
         return entity_registry.emplace<T>(entity, std::forward<Args>(args)...);
     }
 
+    template <typename T> void remove_component(Entity entity) {
+        spdlog::info("Removing component");
+        entity_registry.remove<T>(entity);
+    }
+
     template <typename T> T* get_component(Entity entity) {
         return entity_registry.try_get<T>(entity);
     }
@@ -82,3 +87,5 @@ public:
 private:
     class World* world = nullptr;
 };
+
+template <> void Scene::remove_component<components::Physics>(Entity entity);

@@ -5,7 +5,129 @@
 
 #include <imgui.h>
 
-Editor::Editor(World* world) {
+template <> void Editor::render_component_ui<components::Transform>(Entity e) {
+    auto* t = world->scene.get_component<components::Transform>(e);
+    ImGui::SeparatorText("Local Transform");
+    draw_vec3_controls("Position", t->position);
+
+    glm::vec3 temp_scale = glm::vec3(t->scale);
+    if (draw_vec3_controls("Scale", temp_scale, 1.0f, true)) {
+        if (temp_scale.x < 0.0f) {
+            temp_scale.x = 0.0f;
+        }
+
+        t->scale = temp_scale.x;
+    }
+
+    // NOTE: this doesn't work, might need to store rotation as euler angles
+    glm::vec3 temp_rotation = glm::vec3(t->rotation.x, t->rotation.y, t->rotation.z);
+    if (draw_vec3_controls("Rotation", temp_rotation)) {
+        t->rotation =
+            glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(temp_rotation.x), glm::vec3(1, 0, 0)) * t->rotation;
+        t->rotation =
+            glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(temp_rotation.y), glm::vec3(0, 1, 0)) * t->rotation;
+        t->rotation =
+            glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(temp_rotation.z), glm::vec3(0, 0, 1)) * t->rotation;
+    }
+
+    ImGui::SeparatorText("World Transform");
+    glm::vec3 temp_position = t->world_position;
+    draw_vec3_controls("World Position", temp_position);
+
+    temp_scale = glm::vec3(t->world_scale);
+    draw_vec3_controls("World Scale", temp_scale, 1.0f, true);
+
+    temp_rotation = glm::vec3(t->world_rotation.x, t->world_rotation.y, t->world_rotation.z);
+    draw_vec3_controls("World Rotation", temp_rotation);
+}
+
+template <> void Editor::render_component_ui<components::Mesh>(Entity e) {
+    auto* m = world->scene.get_component<components::Mesh>(e);
+    if (ImGui::TreeNode("Material")) {
+        auto& material = world->scene.materials[m->mesh.material_id];
+
+        std::vector<uint32_t*> material_indices = {
+            &material.albedo_index, &material.normals_index, &material.material_index, &material.emissive_index
+        };
+
+        for (auto id : material_indices) {
+            if (*id != 0) {
+                ImGui::Image(imgui_material_image_handles.at(*id), ImVec2(50, 50));
+            } else {
+                ImGui::Text("Empty");
+            }
+            if (ImGui::BeginDragDropTarget()) {
+                const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("texture_id");
+                if (payload) {
+                    *id = *(uint32_t*)payload->Data;
+                }
+                ImGui::EndDragDropTarget();
+            }
+            ImGui::SameLine();
+        }
+
+        ImGui::NewLine();
+
+        ImGui::SliderFloat("Roughness Factor", &material.roughness_factor, 0.0, 1.0f);
+        ImGui::SliderFloat("Metallic Factor", &material.metallic_factor, 0.0, 1.0f);
+        ImGui::SliderFloat("Normal Scale", &material.normal_scale, 0.0, 1.0f);
+
+        ImGui::ColorEdit4("Albedo Factor", &material.albedo_factor.x);
+        ImGui::ColorEdit3(
+            "Emissive Factor", &material.emissive_factor.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR
+        );
+
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNode("Mesh##prop")) {
+        ImGui::Text("Unimplemented");
+        ImGui::TreePop();
+    }
+}
+
+template <> void Editor::render_component_ui<components::Script>(Entity e) {
+    auto* s       = world->scene.get_component<components::Script>(e);
+    auto  scripts = world->script.get_scripts();
+
+    std::string current_name = "None";
+    if (scripts.contains(s->script_id)) {
+        current_name = scripts.at(s->script_id).name;
+    }
+
+    if (ImGui::BeginCombo("Script Source", current_name.c_str())) {
+        for (auto& [id, script] : scripts) {
+            // Currently scripts that don't have node behavior are distinguished by having no constructor
+            if (!script.constructor || !script.valid) {
+                continue;
+            }
+
+            if (ImGui::Selectable(script.name.c_str(), id == s->script_id)) {
+                s->script_id = id;
+            }
+        }
+        ImGui::EndCombo();
+    }
+}
+
+template <> void Editor::render_component_ui<components::Physics>(Entity e) {
+    auto* p = world->scene.get_component<components::Physics>(e);
+
+    if (p->body_id.IsInvalid()) {
+        ImGui::Text("Invalid");
+    } else {
+        ImGui::Text("BodyID: %u", p->body_id.GetIndex());
+        ImGui::Text("Static : %u", p->is_static);
+    }
+}
+
+template <> void Editor::render_component_ui<components::Name>(Entity e) {
+    auto* n = world->scene.get_component<components::Name>(e);
+    ImGui::Text("%s", n->name.c_str());
+}
+
+Editor::Editor(World* world, std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles)
+    : imgui_material_image_handles(imgui_material_image_handles) {
     this->world = world;
 
     this->register_component<components::Transform>("Transform", false);
@@ -121,6 +243,18 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
             }
             ImGui::EndMenu();
         }
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Remove Component")) {
+            for (auto [component_id, info] : this->node_component_map) {
+                if (this->entity_has_component(component_id, e) && info.removable) {
+                    if (ImGui::MenuItem(info.name.c_str())) {
+                        info.remove_component(e);
+                    }
+                }
+            }
+            ImGui::EndMenu();
+        }
+
         ImGui::EndPopup();
     }
 
@@ -151,137 +285,28 @@ bool Editor::entity_has_component(entt::id_type component_type, Entity entity) {
     return view.iterate(*storage).contains(entity);
 }
 
-void Editor::render_scene_node_property_window(
-    const std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles
-) {
+void Editor::render_scene_node_property_window() {
     ImGui::Begin(ICON_FA_WRENCH " Node Properties");
     if (selected_entity != entt::null) {
-        auto* t = world->scene.get_component<components::Transform>(selected_entity);
-        if (t) {
-            if (ImGui::CollapsingHeader("Transform")) {
-                ImGui::SeparatorText("Local Transform");
-                draw_vec3_controls("Position", t->position);
-
-                glm::vec3 temp_scale = glm::vec3(t->scale);
-                if (draw_vec3_controls("Scale", temp_scale, 1.0f, true)) {
-                    if (temp_scale.x < 0.0f) {
-                        temp_scale.x = 0.0f;
-                    }
-
-                    t->scale = temp_scale.x;
-                }
-
-                // NOTE: this doesn't work, might need to store rotation as euler angles
-                glm::vec3 temp_rotation = glm::vec3(t->rotation.x, t->rotation.y, t->rotation.z);
-                if (draw_vec3_controls("Rotation", temp_rotation)) {
-                    t->rotation =
-                        glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(temp_rotation.x), glm::vec3(1, 0, 0)) *
-                        t->rotation;
-                    t->rotation =
-                        glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(temp_rotation.y), glm::vec3(0, 1, 0)) *
-                        t->rotation;
-                    t->rotation =
-                        glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(temp_rotation.z), glm::vec3(0, 0, 1)) *
-                        t->rotation;
-                }
-
-                ImGui::SeparatorText("World Transform");
-                glm::vec3 temp_position = t->world_position;
-                draw_vec3_controls("World Position", temp_position);
-
-                temp_scale = glm::vec3(t->world_scale);
-                draw_vec3_controls("World Scale", temp_scale, 1.0f, true);
-
-                temp_rotation = glm::vec3(t->world_rotation.x, t->world_rotation.y, t->world_rotation.z);
-                draw_vec3_controls("World Rotation", temp_rotation);
-            }
-        }
-
-        auto* m = world->scene.get_component<components::Mesh>(selected_entity);
-        if (m) {
-            if (ImGui::CollapsingHeader("Material")) {
-                auto& material = world->scene.materials[m->mesh.material_id];
-
-                std::vector<uint32_t*> material_indices = {
-                    &material.albedo_index, &material.normals_index, &material.material_index, &material.emissive_index
-                };
-
-                for (auto id : material_indices) {
-                    if (*id != 0) {
-                        ImGui::Image(imgui_material_image_handles.at(*id), ImVec2(50, 50));
+        for (auto [component_id, info] : this->node_component_map) {
+            if (this->entity_has_component(component_id, selected_entity)) {
+                ImGui::PushID(component_id);
+                if (info.removable) {
+                    if (ImGui::Button(ICON_FA_TIMES_CIRCLE)) {
+                        info.remove_component(selected_entity);
+                        ImGui::PopID();
+                        continue;
                     } else {
-                        ImGui::Text("Empty");
+                        ImGui::SameLine();
                     }
-                    if (ImGui::BeginDragDropTarget()) {
-                        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("texture_id");
-                        if (payload) {
-                            *id = *(uint32_t*)payload->Data;
-                        }
-                        ImGui::EndDragDropTarget();
-                    }
-                    ImGui::SameLine();
                 }
 
-                ImGui::NewLine();
-
-                ImGui::SliderFloat("Roughness Factor", &material.roughness_factor, 0.0, 1.0f);
-                ImGui::SliderFloat("Metallic Factor", &material.metallic_factor, 0.0, 1.0f);
-                ImGui::SliderFloat("Normal Scale", &material.normal_scale, 0.0, 1.0f);
-
-                ImGui::ColorEdit4("Albedo Factor", &material.albedo_factor.x);
-                ImGui::ColorEdit3(
-                    "Emissive Factor", &material.emissive_factor.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR
-                );
-            }
-        }
-
-        auto* s = world->scene.get_component<components::Script>(selected_entity);
-        if (s) {
-            if (ImGui::CollapsingHeader("Script")) {
-                auto scripts = world->script.get_scripts();
-
-                std::string current_name = "None";
-                if (scripts.contains(s->script_id)) {
-                    current_name = scripts.at(s->script_id).name;
+                if (ImGui::CollapsingHeader(info.name.c_str())) {
+                    ImGui::PushID("Widget");
+                    info.render_ui(selected_entity);
+                    ImGui::PopID();
                 }
-
-                if (ImGui::BeginCombo("Script Source", current_name.c_str())) {
-                    for (auto& [id, script] : scripts) {
-                        // Currently scripts that don't have node behavior are distinguished by having no constructor
-                        if (!script.constructor || !script.valid) {
-                            continue;
-                        }
-
-                        if (ImGui::Selectable(script.name.c_str(), id == s->script_id)) {
-                            s->script_id = id;
-                        }
-                    }
-                    ImGui::EndCombo();
-                }
-            }
-        }
-
-        auto* n = world->scene.get_component<components::Name>(selected_entity);
-        if (n) {
-            if (ImGui::CollapsingHeader("Name")) {
-            }
-        }
-
-        auto* p = world->scene.get_component<components::Parent>(selected_entity);
-        if (p) {
-            if (ImGui::CollapsingHeader("Parent")) {
-            }
-        }
-
-        auto* c = world->scene.get_component<components::Children>(selected_entity);
-        if (c) {
-            if (ImGui::CollapsingHeader("Children")) {
-            }
-        }
-
-        auto* ph = world->scene.get_component<components::Physics>(selected_entity);
-        if (ph) {
-            if (ImGui::CollapsingHeader("Physics")) {
+                ImGui::PopID();
             }
         }
     }

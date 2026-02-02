@@ -5500,7 +5500,7 @@ int main(int argc, char* argv[]) {
 
     int pick_frame = UINT32_MAX;
 
-    Editor editor(&world);
+    Editor editor(&world, imgui_material_image_handles);
     float  physics_time_accumulator = 0.0f;
 
     while (running) {
@@ -6067,7 +6067,7 @@ int main(int argc, char* argv[]) {
             viewport_pos_size = glm::vec4(0, 0, swapchain.width, swapchain.height);
         }
 
-        editor.render_scene_node_property_window(imgui_material_image_handles);
+        editor.render_scene_node_property_window();
 
         ImGui::Begin(ICON_FA_FILE " Assets");
         if (ImGui::TreeNode("Textures")) {
