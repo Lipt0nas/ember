@@ -11,6 +11,11 @@
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include <stb_image_resize2.h>
 
+template <> void Scene::remove_component<components::Physics>(Entity entity) {
+    spdlog::info("Removing physics");
+    entity_registry.remove<components::Physics>(entity);
+}
+
 void Scene::initialize(class World* world) {
     this->world = world;
 }

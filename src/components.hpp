@@ -16,9 +16,9 @@ namespace components {
         float     scale    = 1.0f;
         glm::quat rotation = {0, 0, 0, 1};
 
-        glm::vec3 world_position;
-        float     world_scale;
-        glm::quat world_rotation;
+        glm::vec3 world_position = {};
+        float     world_scale    = 1.0f;
+        glm::quat world_rotation = {0, 0, 0, 1};
     };
 
     struct Parent {
