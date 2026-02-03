@@ -1112,6 +1112,12 @@ Entity Scene::clone_node(Entity base) {
         set_node_parent(new_entity, src_parent->parent);
     }
 
+    auto src_tag = get_component<components::Tag>(base);
+    if (src_tag) {
+        auto& tag = add_component<components::Tag>(new_entity);
+        tag.tags  = src_tag->tags;
+    }
+
     auto src_children = get_component<components::Children>(base);
     if (src_children) {
         for (Entity child : src_children->children) {
@@ -1121,4 +1127,34 @@ Entity Scene::clone_node(Entity base) {
     }
 
     return new_entity;
+}
+
+bool Scene::node_has_tag(Entity node, const std::string tag) {
+    auto t = get_component<components::Tag>(node);
+
+    if (t) {
+        for (const auto& etag : t->tags) {
+            if (etag.compare(tag) == 0) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+std::vector<Entity> Scene::get_nodes_with_tag(const std::string tag) {
+    auto view = entity_registry.view<components::Tag>();
+
+    std::vector<Entity> nodes;
+    for (auto [e, t] : view.each()) {
+        for (const auto& etag : t.tags) {
+            if (etag.compare(tag) == 0) {
+                nodes.push_back(e);
+                break;
+            }
+        }
+    }
+
+    return nodes;
 }

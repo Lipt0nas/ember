@@ -1275,6 +1275,20 @@ void ScriptSystem::initialize(class World* world) {
     );
 
     engine->RegisterGlobalFunction(
+        "bool node_has_tag(uint node, string &in)",
+        asMETHOD(Scene, Scene::node_has_tag),
+        asCALL_THISCALL_ASGLOBAL,
+        &world->scene
+    );
+
+    engine->RegisterGlobalFunction(
+        "array<uint>@ get_nodes_with_tag(string &in)",
+        asMETHOD(ScriptSystem, ScriptSystem::get_nodes_with_tag),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
         "bool cast_ray(vec3, vec3, float, float &out, uint &out)",
         asMETHOD(ScriptSystem, ScriptSystem::cast_ray),
         asCALL_THISCALL_ASGLOBAL,
@@ -1816,4 +1830,18 @@ void ScriptSystem::node_set_material_emissive(Entity entity, glm::vec3 emissive)
     if (m && m->mesh.material_id != 0) {
         world->scene.materials[m->mesh.material_id].emissive_factor = emissive;
     }
+}
+
+CScriptArray* ScriptSystem::get_nodes_with_tag(const std::string& tag) {
+    auto nodes = world->scene.get_nodes_with_tag(tag);
+    spdlog::info("getting");
+
+    auto array_type = engine->GetTypeInfoByDecl("array<uint>");
+    auto array      = CScriptArray::Create(array_type, nodes.size());
+
+    for (size_t i = 0; i < nodes.size(); i++) {
+        array->SetValue(i, &nodes[i]);
+    }
+
+    return array;
 }

@@ -55,6 +55,10 @@ namespace components {
         void* object = nullptr;
     };
 
+    struct Tag {
+        std::vector<std::string> tags;
+    };
+
     template <typename Archive> void serialize(Archive& archive, Transform& transform) {
         archive(
             transform.position.x,
@@ -90,6 +94,10 @@ namespace components {
 
     template <typename Archive> void serialize(Archive& archive, Script& script) {
         archive(script.script_id);
+    }
+
+    template <typename Archive> void serialize(Archive& archive, Tag& tag) {
+        archive(tag.tags);
     }
 
 } // namespace components
