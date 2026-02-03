@@ -5724,7 +5724,11 @@ int main(int argc, char* argv[]) {
 
                 auto view = world.scene.entity_registry.view<components::Script>();
                 for (auto [e, s] : view.each()) {
-                    world.script.initialize(s);
+                    world.script.construct_script_objects(e, s);
+                }
+
+                for (auto [e, s] : view.each()) {
+                    world.script.call_on_start(s);
                 }
             }
         }

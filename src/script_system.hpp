@@ -13,6 +13,7 @@ struct Script {
     class asIScriptModule* module;
 
     class asIScriptFunction* constructor;
+    class asIScriptFunction* on_start;
     class asIScriptFunction* on_update;
     class asIScriptFunction* on_fixed_update;
 };
@@ -32,7 +33,8 @@ public:
 
     const std::unordered_map<uint32_t, Script>& get_scripts();
 
-    void initialize(components::Script& script);
+    void construct_script_objects(Entity entity, components::Script& script);
+    void call_on_start(const components::Script& script);
     void call_on_update(const components::Script& script, float delta);
     void call_on_fixed_update(const components::Script& script, float delta);
 
@@ -49,6 +51,20 @@ public:
     }
 
 private:
+    struct EventSubscription {
+        uint32_t                 node;
+        class asIScriptFunction* callback;
+    };
+    std::unordered_map<int, std::vector<EventSubscription>> event_subscriptions;
+
+    void     subscribe_to_event(Entity entity, int event_type, class asIScriptFunction* callback);
+    void     unsubscribe_from_event(Entity, int event_type);
+    void     publish_event(class asIScriptObject* msg);
+    void     publish_event_to_node(Entity target, class asIScriptObject* msg);
+    void     publish_event_to_tag(const std::string& tag, class asIScriptObject* msg);
+    uint32_t get_event_type_from_message(class asIScriptObject* object);
+    void     invoke_event_callback(const EventSubscription& sub, class asIScriptObject* msg);
+
     std::filesystem::path script_source_dir;
 
     class asIScriptEngine* engine         = nullptr;
@@ -97,4 +113,9 @@ private:
     glm::vec3 get_player_velocity() {
         return player_velocity;
     }
+
+    int      node_id_property_index = -1;
+    uint32_t get_node_id_from_object(class asIScriptObject* object);
+
+    std::string prelude_code;
 };

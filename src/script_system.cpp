@@ -1181,8 +1181,6 @@ void ScriptSystem::initialize(class World* world) {
     RegisterScriptDictionary(engine);
     RegisterScriptGrid(engine);
 
-    engine->RegisterInterface("INode");
-
     register_glm_types(engine);
 
     engine->RegisterEnum("Key");
@@ -1449,6 +1447,97 @@ void ScriptSystem::initialize(class World* world) {
 
     engine->RegisterGlobalFunction("float ceil(float)", asFUNCTIONPR(glm::ceil, (float), float), asCALL_CDECL);
     engine->RegisterGlobalFunction("float floor(float)", asFUNCTIONPR(glm::floor, (float), float), asCALL_CDECL);
+
+    engine->SetDefaultNamespace("Events");
+
+    engine->RegisterInterface("IEvent");
+    engine->RegisterInterfaceMethod("IEvent", "int get_event_type() const");
+    engine->RegisterFuncdef("void EventCallback(IEvent@)");
+
+    engine->RegisterGlobalFunction(
+        "void subscribe(uint, int, EventCallback@)",
+        asMETHOD(ScriptSystem, subscribe_to_event),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
+        "void unsubscribe(uint, int)", asMETHOD(ScriptSystem, unsubscribe_from_event), asCALL_THISCALL_ASGLOBAL, this
+    );
+
+    engine->RegisterGlobalFunction(
+        "void publish(IEvent@)", asMETHOD(ScriptSystem, publish_event), asCALL_THISCALL_ASGLOBAL, this
+    );
+
+    engine->RegisterGlobalFunction(
+        "void publish_to_node(uint, IEvent@)",
+        asMETHOD(ScriptSystem, publish_event_to_node),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
+        "void publish_to_tag(string &in, IEvent@)",
+        asMETHOD(ScriptSystem, publish_event_to_tag),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    prelude_code = R"(
+        shared class Node {
+            protected uint node_id;
+
+            void update(float dt) {}
+            void fixed_update(float dt) {}
+
+            void subscribe(int event_type, Events::EventCallback@ callback) {
+                Events::subscribe(this.node_id, event_type, callback);
+            }
+
+            void unsubscribe(int event_type) {
+                Events::unsubscribe(this.node_id, event_type);
+            }
+        }
+
+        shared abstract class Event : Events::IEvent {
+            private int type;
+
+            Event(int type) {
+                this.type = type;
+            }
+
+            int get_event_type() const {
+                return type;
+            }
+        }
+    )";
+
+    // Compile a dummy module to be able to see the types defined in the prelude without needing to compile any actual
+    // code
+    asIScriptModule* prelude_module = engine->GetModule("_Prelude", asGM_ALWAYS_CREATE);
+    prelude_module->AddScriptSection("prelude", prelude_code.c_str());
+    prelude_module->Build();
+
+    asITypeInfo* node_type = prelude_module->GetTypeInfoByName("Node");
+    if (!node_type) {
+        spdlog::error("Failed to find Node type");
+        return;
+    }
+
+    int prop_count = node_type->GetPropertyCount();
+    for (int i = 0; i < prop_count; i++) {
+        const char* prop_name;
+        node_type->GetProperty(i, &prop_name);
+
+        if (strcmp(prop_name, "node_id") == 0) {
+            node_id_property_index = i;
+            break;
+        }
+    }
+
+    if (node_id_property_index == -1) {
+        spdlog::error("Failed to cache node_id index");
+    }
 }
 
 void ScriptSystem::load_scripts(const std::filesystem::path& path) {
@@ -1491,6 +1580,12 @@ void ScriptSystem::load_scripts(const std::filesystem::path& path) {
             continue;
         }
 
+        r = script_builder->AddSectionFromMemory("__prelude__", prelude_code.c_str(), prelude_code.length());
+        if (r < 0) {
+            spdlog::error("Failed include prelude {}", filename);
+            continue;
+        }
+
         r = script_builder->AddSectionFromMemory(filename.c_str(), source.c_str(), source.length());
         if (r < 0) {
             spdlog::error("Failed to load script {}", filename);
@@ -1505,40 +1600,35 @@ void ScriptSystem::load_scripts(const std::filesystem::path& path) {
 
         asIScriptModule* script_module = script_builder->GetModule();
 
-        asITypeInfo* type       = nullptr;
+        asITypeInfo* node_type  = nullptr;
         int          type_count = script_module->GetObjectTypeCount();
         for (int i = 0; i < type_count; i++) {
-            bool found_type     = false;
-            type                = script_module->GetObjectTypeByIndex(i);
-            int interface_count = type->GetInterfaceCount();
-            for (int j = 0; j < interface_count; j++) {
-                if (strcmp(type->GetInterface(j)->GetName(), "INode") == 0) {
-                    found_type = true;
+            asITypeInfo* type = script_module->GetObjectTypeByIndex(i);
+            if (type->GetBaseType()) {
+                if (strcmp(type->GetBaseType()->GetName(), "Node") == 0) {
+                    node_type = type;
                     break;
                 }
             }
-
-            if (found_type == true) {
-                break;
-            }
-
-            type = nullptr;
         }
 
         asIScriptFunction* constructor     = nullptr;
+        asIScriptFunction* on_start        = nullptr;
         asIScriptFunction* on_update       = nullptr;
         asIScriptFunction* on_fixed_update = nullptr;
 
-        if (type) {
-            std::string constructor_name = std::string(type->GetName()) + "@ " + std::string(type->GetName()) + "()";
-            constructor                  = type->GetFactoryByDecl(constructor_name.c_str());
+        if (node_type) {
+            std::string constructor_name =
+                std::string(node_type->GetName()) + "@ " + std::string(node_type->GetName()) + "()";
+            constructor = node_type->GetFactoryByDecl(constructor_name.c_str());
             if (!constructor) {
                 spdlog::warn("Script doesn't have a default constructor, it will not be loaded");
                 continue;
             }
 
-            on_update       = type->GetMethodByDecl("void update(float)");
-            on_fixed_update = type->GetMethodByDecl("void fixed_update(float)");
+            on_start        = node_type->GetMethodByDecl("void start()");
+            on_update       = node_type->GetMethodByDecl("void update(float)");
+            on_fixed_update = node_type->GetMethodByDecl("void fixed_update(float)");
         }
 
         scripts[hash] = {
@@ -1548,6 +1638,7 @@ void ScriptSystem::load_scripts(const std::filesystem::path& path) {
                 .source          = source,
                 .module          = script_module,
                 .constructor     = constructor,
+                .on_start        = on_start,
                 .on_update       = on_update,
                 .on_fixed_update = on_fixed_update,
             },
@@ -1585,6 +1676,15 @@ void ScriptSystem::generate_predefined_file() {
 }
 
 void ScriptSystem::clear() {
+    for (auto& [event_type, subscriptions] : event_subscriptions) {
+        for (auto& sub : subscriptions) {
+            if (sub.callback) {
+                sub.callback->Release();
+            }
+        }
+    }
+    event_subscriptions.clear();
+
     auto view = world->scene.entity_registry.view<components::Script>();
     for (auto [e, s] : view.each()) {
         auto obj = (asIScriptObject*)s.object;
@@ -1598,7 +1698,7 @@ const std::unordered_map<uint32_t, Script>& ScriptSystem::get_scripts() {
     return scripts;
 }
 
-void ScriptSystem::initialize(components::Script& s) {
+void ScriptSystem::construct_script_objects(Entity entity, components::Script& s) {
     if (scripts.contains(s.script_id)) {
         auto& script = scripts.at(s.script_id);
         if (script.valid && script.constructor && !s.object) {
@@ -1612,8 +1712,33 @@ void ScriptSystem::initialize(components::Script& s) {
                     context->GetExceptionLineNumber()
                 );
             } else if (r == asEXECUTION_FINISHED) {
-                s.object = *((asIScriptObject**)context->GetAddressOfReturnValue());
-                ((asIScriptObject*)s.object)->AddRef();
+                s.object    = *((asIScriptObject**)context->GetAddressOfReturnValue());
+                auto object = ((asIScriptObject*)s.object);
+                object->AddRef();
+
+                asITypeInfo* type        = object->GetObjectType();
+                uint32_t*    node_id_ptr = (uint32_t*)object->GetAddressOfProperty(node_id_property_index);
+                *node_id_ptr             = (uint32_t)entity;
+            }
+            context->Unprepare();
+        }
+    }
+}
+
+void ScriptSystem::call_on_start(const components::Script& s) {
+    if (scripts.contains(s.script_id)) {
+        auto& script = scripts.at(s.script_id);
+        if (script.valid && script.on_start && s.object) {
+            context->Prepare(script.on_start);
+            context->SetObject(s.object);
+            int r = context->Execute();
+            if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
+                spdlog::error(
+                    "Exception executing script: {} ({}:{})",
+                    context->GetExceptionString(),
+                    context->GetExceptionFunction()->GetDeclaration(),
+                    context->GetExceptionLineNumber()
+                );
             }
             context->Unprepare();
         }
@@ -1834,7 +1959,6 @@ void ScriptSystem::node_set_material_emissive(Entity entity, glm::vec3 emissive)
 
 CScriptArray* ScriptSystem::get_nodes_with_tag(const std::string& tag) {
     auto nodes = world->scene.get_nodes_with_tag(tag);
-    spdlog::info("getting");
 
     auto array_type = engine->GetTypeInfoByDecl("array<uint>");
     auto array      = CScriptArray::Create(array_type, nodes.size());
@@ -1844,4 +1968,199 @@ CScriptArray* ScriptSystem::get_nodes_with_tag(const std::string& tag) {
     }
 
     return array;
+}
+
+void ScriptSystem::subscribe_to_event(Entity entity, int event_type, class asIScriptFunction* callback) {
+    if (!callback) {
+        spdlog::debug("null callback when registering event");
+        return;
+    }
+    callback->AddRef();
+
+    event_subscriptions[event_type].push_back({
+        .node     = (uint32_t)entity,
+        .callback = callback,
+    });
+}
+
+void ScriptSystem::unsubscribe_from_event(Entity entity, int event_type) {
+    auto it = event_subscriptions.find(event_type);
+    if (it == event_subscriptions.end()) {
+        return;
+    }
+
+    auto& subs = it->second;
+    subs.erase(
+        std::remove_if(
+            subs.begin(),
+            subs.end(),
+            [entity](const EventSubscription& sub) {
+                if (sub.node == (uint32_t)entity) {
+                    if (sub.callback) {
+                        sub.callback->Release();
+                    }
+                    return true;
+                }
+                return false;
+            }
+        ),
+        subs.end()
+    );
+
+    if (subs.empty()) {
+        event_subscriptions.erase(it);
+    }
+}
+
+void ScriptSystem::publish_event(asIScriptObject* msg) {
+    if (!msg) {
+        spdlog::debug("Trying to publish null event");
+        return;
+    }
+
+    int event_type = get_event_type_from_message(msg);
+    if (event_type < 0) {
+        spdlog::debug("Failed to get event type from message");
+        return;
+    }
+
+    auto it = event_subscriptions.find(event_type);
+    if (it == event_subscriptions.end()) {
+        return;
+    }
+
+    asITypeInfo* msg_type = msg->GetObjectType();
+
+    for (auto& sub : it->second) {
+        invoke_event_callback(sub, msg);
+    }
+}
+
+void ScriptSystem::publish_event_to_node(Entity target, asIScriptObject* msg) {
+    if (!msg) {
+        spdlog::debug("Trying to publish null event");
+        return;
+    }
+
+    int event_type = get_event_type_from_message(msg);
+    if (event_type < 0) {
+        spdlog::debug("Failed to get event type from message");
+        return;
+    }
+
+    auto it = event_subscriptions.find(event_type);
+    if (it == event_subscriptions.end()) {
+        return;
+    }
+
+    asITypeInfo* msg_type = msg->GetObjectType();
+
+    for (auto& sub : it->second) {
+        if (sub.node == (uint32_t)target) {
+            invoke_event_callback(sub, msg);
+        }
+    }
+}
+
+void ScriptSystem::publish_event_to_tag(const std::string& tag, class asIScriptObject* msg) {
+    if (!msg) {
+        spdlog::error("Cannot publish null event");
+        return;
+    }
+
+    int event_type = get_event_type_from_message(msg);
+    if (event_type < 0) {
+        spdlog::error("Failed to get event type from message");
+        return;
+    }
+
+    auto it = event_subscriptions.find(event_type);
+    if (it == event_subscriptions.end()) {
+        return;
+    }
+
+    asITypeInfo* msg_type = msg->GetObjectType();
+
+    auto entities = world->scene.get_nodes_with_tag(tag);
+    for (auto& sub : it->second) {
+        for (auto e : entities) {
+            if (sub.node == (uint32_t)e) {
+                invoke_event_callback(sub, msg);
+                break;
+            }
+        }
+    }
+}
+
+uint32_t ScriptSystem::get_event_type_from_message(asIScriptObject* msg) {
+    asIScriptFunction* get_type_func = msg->GetObjectType()->GetMethodByName("get_event_type");
+
+    if (!get_type_func) {
+        spdlog::error("Message type {} doesn't implement get_event_type()", msg->GetObjectType()->GetName());
+        return -1;
+    }
+
+    asIScriptContext* ctx = engine->CreateContext();
+    if (!ctx) {
+        spdlog::error("Failed to create script context");
+        return -1;
+    }
+
+    int r = ctx->Prepare(get_type_func);
+    if (r < 0) {
+        spdlog::error("Failed to prepare context");
+        ctx->Release();
+        return -1;
+    }
+
+    ctx->SetObject(msg);
+    r = ctx->Execute();
+
+    if (r != asEXECUTION_FINISHED) {
+        spdlog::error("Failed to execute get_event_type()");
+        ctx->Release();
+        return -1;
+    }
+
+    int event_type = ctx->GetReturnDWord();
+    ctx->Release();
+
+    return event_type;
+}
+
+uint32_t ScriptSystem::get_node_id_from_object(class asIScriptObject* object) {
+    uint32_t* node_id_ptr = (uint32_t*)object->GetAddressOfProperty(node_id_property_index);
+    if (!node_id_ptr) {
+        spdlog::error("Failed to get node_id from script object");
+        return 0;
+    }
+    return *node_id_ptr;
+}
+
+void ScriptSystem::invoke_event_callback(const EventSubscription& sub, class asIScriptObject* msg) {
+    asIScriptContext* ctx = engine->CreateContext();
+    if (!ctx) {
+        spdlog::error("Failed to create script context");
+        return;
+    }
+
+    int r = ctx->Prepare(sub.callback);
+    if (r < 0) {
+        spdlog::error("Failed to prepare callback");
+        ctx->Release();
+        return;
+    }
+
+    ctx->SetArgObject(0, msg);
+
+    r = ctx->Execute();
+    if (r != asEXECUTION_FINISHED) {
+        if (r == asEXECUTION_EXCEPTION) {
+            spdlog::error("Exception in callback: {}", ctx->GetExceptionString());
+        } else {
+            spdlog::error("Callback execution failed with code {}", r);
+        }
+    }
+
+    ctx->Release();
 }
