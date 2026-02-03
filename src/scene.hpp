@@ -68,6 +68,9 @@ public:
     Entity create_node(const std::string& name = "");
     Entity clone_node(Entity base);
 
+    bool                node_has_tag(Entity e, const std::string tag);
+    std::vector<Entity> get_nodes_with_tag(const std::string tag);
+
     void set_node_parent(Entity child, Entity parent);
     void remove_node_parent(Entity child);
 

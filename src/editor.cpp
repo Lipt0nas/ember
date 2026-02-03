@@ -4,6 +4,7 @@
 #include "imgui_internal.h"
 
 #include <imgui.h>
+#include <imgui_stdlib.h>
 
 template <> void Editor::render_component_ui<components::Transform>(Entity e) {
     auto* t = world->scene.get_component<components::Transform>(e);
@@ -121,6 +122,33 @@ template <> void Editor::render_component_ui<components::Physics>(Entity e) {
     }
 }
 
+template <> void Editor::render_component_ui<components::Tag>(Entity e) {
+    auto* t = world->scene.get_component<components::Tag>(e);
+    auto* n = world->scene.get_component<components::Name>(e);
+
+    std::string tag_to_remove = "";
+    for (size_t i = 0; i < t->tags.size(); i++) {
+        std::string id  = std::string(n->name + "##tag") + std::to_string(i);
+        auto&       tag = t->tags[i];
+
+        ImGui::PushID(id.c_str());
+        ImGui::InputText("", &tag);
+        ImGui::SameLine();
+        if (ImGui::Button(ICON_FA_TIMES_CIRCLE)) {
+            tag_to_remove = tag;
+        }
+        ImGui::PopID();
+    }
+
+    if (!tag_to_remove.empty()) {
+        std::erase(t->tags, tag_to_remove);
+    }
+
+    if (ImGui::Button(ICON_FA_PLUS_CIRCLE)) {
+        t->tags.push_back("NewTag");
+    }
+}
+
 template <> void Editor::render_component_ui<components::Name>(Entity e) {
     auto* n = world->scene.get_component<components::Name>(e);
     ImGui::Text("%s", n->name.c_str());
@@ -136,6 +164,7 @@ Editor::Editor(World* world, std::unordered_map<uint32_t, VkDescriptorSet>& imgu
     this->register_component<components::Mesh>("Mesh", true);
     this->register_component<components::Physics>("Physics", true);
     this->register_component<components::Script>("Script", true);
+    this->register_component<components::Tag>("Tag", true);
 }
 
 void Editor::render_main_menu(std::function<void(std::string)> scene_save_callback) {

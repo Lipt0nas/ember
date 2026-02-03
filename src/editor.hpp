@@ -88,3 +88,4 @@ template <> void Editor::render_component_ui<components::Mesh>(Entity e);
 template <> void Editor::render_component_ui<components::Script>(Entity e);
 template <> void Editor::render_component_ui<components::Name>(Entity e);
 template <> void Editor::render_component_ui<components::Physics>(Entity e);
+template <> void Editor::render_component_ui<components::Tag>(Entity e);

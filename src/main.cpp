@@ -585,7 +585,7 @@ int main(int argc, char* argv[]) {
     std::random_device rd;
     rng.seed((int)rd());
 
-    spdlog::set_level(spdlog::level::info);
+    spdlog::set_level(args.get_arg<bool>("debug", false) ? spdlog::level::trace : spdlog::level::info);
     spdlog::info("Starting ember");
 
     VK_CHECK(volkInitialize());
@@ -5675,7 +5675,8 @@ int main(int argc, char* argv[]) {
                     .get<components::Parent>(input)
                     .get<components::Children>(input)
                     .get<components::Script>(input)
-                    .get<components::Physics>(input);
+                    .get<components::Physics>(input)
+                    .get<components::Tag>(input);
 
                 auto view =
                     world.scene.entity_registry.view<components::Physics, components::Mesh, components::Transform>();
@@ -5709,7 +5710,8 @@ int main(int argc, char* argv[]) {
                     .get<components::Parent>(output)
                     .get<components::Children>(output)
                     .get<components::Script>(output)
-                    .get<components::Physics>(output);
+                    .get<components::Physics>(output)
+                    .get<components::Tag>(output);
 
                 auto physics_view = world.scene.entity_registry.view<components::Physics>();
                 for (auto [e, p] : physics_view.each()) {

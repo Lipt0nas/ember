@@ -161,7 +161,8 @@ void SceneSerializer::load(
             .get<components::Mesh>(archive)
             .get<components::Parent>(archive)
             .get<components::Children>(archive)
-            .get<components::Script>(archive);
+            .get<components::Script>(archive)
+            .get<components::Tag>(archive);
 
         // NOTE: Physics can only be serialized during runtime only right now
         // .get<components::Physics>(archive);
@@ -511,7 +512,8 @@ void SceneSerializer::save(
             .get<components::Mesh>(archive)
             .get<components::Parent>(archive)
             .get<components::Children>(archive)
-            .get<components::Script>(archive);
+            .get<components::Script>(archive)
+            .get<components::Tag>(archive);
 
         // NOTE: Physics can only be serialized during runtime only right now
         // .get<components::Physics>(archive);

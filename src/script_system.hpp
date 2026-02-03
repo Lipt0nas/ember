@@ -63,6 +63,8 @@ private:
     Entity clone_node(const std::string& name);
     Entity get_node(const std::string& name);
 
+    class CScriptArray* get_nodes_with_tag(const std::string& tag);
+
     bool cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance, float& t, uint32_t& entity);
 
     void set_node_position(Entity entity, glm::vec3 position);
