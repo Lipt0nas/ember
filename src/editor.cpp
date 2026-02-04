@@ -220,7 +220,7 @@ void Editor::render_scene_hierarchy_window() {
     ImGui::Begin(ICON_FA_SITEMAP " Scene Hierarchy");
     if (ImGui::BeginPopupContextItem()) {
         if (ImGui::MenuItem("Create Node")) {
-            world->scene.create_node("New Node");
+            world->scene.create_node();
         }
         ImGui::EndPopup();
     }
@@ -246,14 +246,21 @@ Entity Editor::get_selected_entity() {
 }
 
 void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
-    auto children = world->scene.get_component<components::Children>(e);
-    auto name     = world->scene.get_component<components::Name>(e);
+    bool has_children = false;
+    auto children     = world->scene.get_component<components::Children>(e);
+    if (children) {
+        if (!children->children.empty()) {
+            has_children = true;
+        }
+    }
+
+    auto name = world->scene.get_component<components::Name>(e);
 
     ImGuiTreeNodeFlags flags =
         ((selected_entity == e) ? ImGuiTreeNodeFlags_Selected : 0) | ImGuiTreeNodeFlags_OpenOnArrow;
     flags |= ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnDoubleClick;
 
-    if (!children) {
+    if (!has_children) {
         flags |= ImGuiTreeNodeFlags_Leaf;
     }
 
@@ -261,9 +268,25 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
     bool opened = ImGui::TreeNodeEx(&e, flags, "%s", name->name.c_str());
     ImGui::PopID();
 
+    if (ImGui::BeginDragDropSource(
+            ImGuiDragDropFlags_SourceNoHoldToOpenOthers | ImGuiDragDropFlags_SourceNoDisableHover
+        )) {
+        ImGui::SetDragDropPayload("hierarchy_node", &e, sizeof(Entity));
+        ImGui::EndDragDropSource();
+    }
+
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("hierarchy_node");
+        if (payload) {
+            Entity new_child = *(Entity*)payload->Data;
+            world->scene.set_node_parent(new_child, e);
+        }
+        ImGui::EndDragDropTarget();
+    }
+
     if (ImGui::BeginPopupContextItem()) {
         if (ImGui::MenuItem("Add New Node")) {
-            auto node = world->scene.create_node("New Node");
+            auto node = world->scene.create_node();
             world->scene.set_node_parent(node, e);
         }
 

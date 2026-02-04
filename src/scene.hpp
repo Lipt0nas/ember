@@ -65,7 +65,7 @@ public:
 
     void destroy_scene(VkDevice device, VmaAllocator allocator);
 
-    Entity create_node(const std::string& name = "");
+    Entity create_node(const std::string& name = "New Node");
     Entity clone_node(Entity base);
 
     bool                node_has_tag(Entity e, const std::string tag);
