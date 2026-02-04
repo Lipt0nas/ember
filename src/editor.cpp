@@ -151,7 +151,7 @@ template <> void Editor::render_component_ui<components::Tag>(Entity e) {
 
 template <> void Editor::render_component_ui<components::Name>(Entity e) {
     auto* n = world->scene.get_component<components::Name>(e);
-    ImGui::Text("%s", n->name.c_str());
+    ImGui::InputText("##name", &n->name);
 }
 
 Editor::Editor(World* world, std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles)
@@ -262,6 +262,12 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
     ImGui::PopID();
 
     if (ImGui::BeginPopupContextItem()) {
+        if (ImGui::MenuItem("Add New Node")) {
+            auto node = world->scene.create_node("New Node");
+            world->scene.set_node_parent(node, e);
+        }
+
+        ImGui::Separator();
         if (ImGui::BeginMenu("Add Component")) {
             for (auto [component_id, info] : this->node_component_map) {
                 if (!this->entity_has_component(component_id, e)) {
