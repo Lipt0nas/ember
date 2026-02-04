@@ -187,3 +187,7 @@ const std::vector<DebugVertex>& IcosphereGenerator::get_vertices() const {
 const std::vector<uint32_t>& IcosphereGenerator::get_indices() const {
     return indices;
 }
+
+glm::vec3 rotate_quat(glm::vec3 v, glm::quat q) {
+    return v + 2.0f * glm::cross(glm::vec3(q.x, q.y, q.z), glm::cross(glm::vec3(q.x, q.y, q.z), v) + q.w * v);
+}
