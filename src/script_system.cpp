@@ -1180,6 +1180,18 @@ namespace {
         o->dirty    = true;
         o->rotation = rotation;
     }
+
+    glm::vec3 node_get_world_position(components::Transform* o) {
+        return o->world_position;
+    }
+
+    float node_get_world_scale(components::Transform* o) {
+        return o->world_scale;
+    }
+
+    glm::quat node_get_world_rotation(components::Transform* o) {
+        return o->world_rotation;
+    }
 } // namespace
 
 void node_get_component(asIScriptGeneric* gen) {
@@ -1463,6 +1475,15 @@ void ScriptSystem::initialize(class World* world) {
         );
         engine->RegisterObjectMethod(
             "Transform", "void set_rotation(quat) property", asFUNCTION(node_set_rotation), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Transform", "vec3 get_world_position() property", asFUNCTION(node_get_world_position), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Transform", "float get_world_scale() property", asFUNCTION(node_get_world_scale), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Transform", "quat get_world_rotation() property", asFUNCTION(node_get_world_rotation), asCALL_CDECL_OBJLAST
         );
         engine->RegisterObjectMethod(
             "Transform",
