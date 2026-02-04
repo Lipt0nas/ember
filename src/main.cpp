@@ -5777,7 +5777,7 @@ int main(int argc, char* argv[]) {
                     physics.last_scale = transform.world_scale;
                 }
 
-                if (!physics.is_static) {
+                if (!physics.is_static && !transform.dirty) {
                     continue;
                 }
 
@@ -5797,6 +5797,10 @@ int main(int argc, char* argv[]) {
                     ),
                     activation
                 );
+
+                if (!physics.is_static && transform.dirty) {
+                    transform.dirty = false;
+                }
             }
         }
 

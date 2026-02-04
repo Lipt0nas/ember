@@ -90,6 +90,8 @@ uint16_t pack_tangent(glm::vec3 tangent);
 
 void generate_tangents(std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
 
+glm::vec3 rotate_quat(glm::vec3 v, glm::quat q);
+
 class IcosphereGenerator {
 private:
     std::vector<DebugVertex>                          vertices;

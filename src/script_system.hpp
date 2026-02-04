@@ -50,6 +50,18 @@ public:
         this->player_velocity = velocity;
     }
 
+    friend void node_get_component(class asIScriptGeneric* gen);
+    friend void node_physics_set_linear_velocity(glm::vec3 velocity, components::Physics* p);
+    friend void node_physics_set_angular_velocity(glm::vec3 velocity, components::Physics* p);
+    friend void node_physics_set_friction(float friction, components::Physics* p);
+    friend void node_physics_set_restitution(float restitution, components::Physics* p);
+    friend void node_physics_set_active(bool active, components::Physics* p);
+    friend void node_physics_set_box_body(glm::vec3 half_extents, float mass, components::Physics* p);
+
+    friend void      node_mesh_material_make_dedicated(components::Mesh* m);
+    friend Material* node_mesh_get_material(components::Mesh* m);
+    friend Mesh*     node_mesh_get_mesh(components::Mesh* m);
+
 private:
     struct EventSubscription {
         uint32_t                 node;
@@ -83,22 +95,6 @@ private:
 
     bool cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance, float& t, uint32_t& entity);
 
-    void set_node_position(Entity entity, glm::vec3 position);
-    void set_node_scale(Entity entity, float scale);
-
-    glm::vec3   get_node_position(Entity entity);
-    float       get_node_scale(Entity entity);
-    std::string get_node_name(Entity entity);
-
-    void set_node_physics_body_box(Entity entity, glm::vec3 half_extents);
-    void set_node_physics_linear_velocity(Entity entity, glm::vec3 velocity);
-    void set_node_physics_angular_velocity(Entity entity, glm::vec3 velocity);
-    void disable_node_physics(Entity entity);
-    void enable_node_physics(Entity entity);
-
-    void node_dedicate_material(Entity entity);
-    void node_set_material_emissive(Entity entity, glm::vec3 emissive);
-
     glm::vec3 player_pos;
     glm::vec3 get_player_position() {
         return player_pos;
@@ -118,4 +114,6 @@ private:
     uint32_t get_node_id_from_object(class asIScriptObject* object);
 
     std::string prelude_code;
+
+    std::unordered_map<int, std::function<void*(Scene& scene, Entity e)>> component_retrieve_map;
 };

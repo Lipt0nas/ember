@@ -87,6 +87,10 @@ public:
         return entity_registry.try_get<T>(entity);
     }
 
+    template <typename T> Entity get_node_from_component(T& component) {
+        return entt::to_entity(entity_registry.storage<T>(), component);
+    }
+
 private:
     class World* world = nullptr;
 };

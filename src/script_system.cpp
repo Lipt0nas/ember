@@ -1153,12 +1153,171 @@ namespace {
                 stream << "}\n";
         }
     }
+
+    glm::vec3 node_get_position(components::Transform* o) {
+        return o->position;
+    }
+
+    void node_set_position(glm::vec3 position, components::Transform* o) {
+        o->dirty    = true;
+        o->position = position;
+    }
+
+    float node_get_scale(components::Transform* o) {
+        return o->scale;
+    }
+
+    void node_set_scale(float scale, components::Transform* o) {
+        o->dirty = true;
+        o->scale = scale;
+    }
+
+    glm::quat node_get_rotation(components::Transform* o) {
+        return o->rotation;
+    }
+
+    void node_set_rotation(glm::quat rotation, components::Transform* o) {
+        o->dirty    = true;
+        o->rotation = rotation;
+    }
 } // namespace
+
+void node_get_component(asIScriptGeneric* gen) {
+    auto type_id = gen->GetEngine()->GetTypeInfoById(gen->GetReturnTypeId())->GetTypeId();
+
+    uint32_t entity = gen->GetArgDWord(0);
+
+    ScriptSystem* system = reinterpret_cast<ScriptSystem*>(gen->GetEngine()->GetUserData());
+    auto          it     = system->component_retrieve_map.find(type_id);
+
+    if (it != system->component_retrieve_map.end()) {
+        gen->SetReturnAddress(it->second(system->world->scene, (Entity)entity));
+    }
+}
+
+void node_physics_set_linear_velocity(glm::vec3 velocity, components::Physics* p) {
+    if (p->is_static || p->body_id.IsInvalid()) {
+        return;
+    }
+
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+    auto entity = system->world->scene.get_node_from_component(*p);
+    if (system->world->scene.entity_registry.valid(entity)) {
+        system->world->physics.system.GetBodyInterface().SetLinearVelocity(
+            p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z)
+        );
+    }
+}
+
+void node_physics_set_angular_velocity(glm::vec3 velocity, components::Physics* p) {
+    if (p->is_static || p->body_id.IsInvalid()) {
+        return;
+    }
+
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+    auto entity = system->world->scene.get_node_from_component(*p);
+    if (system->world->scene.entity_registry.valid(entity)) {
+        system->world->physics.system.GetBodyInterface().SetAngularVelocity(
+            p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z)
+        );
+    }
+}
+
+void node_physics_set_active(bool active, components::Physics* p) {
+    if (p->body_id.IsInvalid()) {
+        return;
+    }
+
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+    auto entity = system->world->scene.get_node_from_component(*p);
+
+    if (system->world->scene.entity_registry.valid(entity)) {
+        if (active) {
+            system->world->physics.system.GetBodyInterface().ActivateBody(p->body_id);
+        } else {
+            system->world->physics.system.GetBodyInterface().DeactivateBody(p->body_id);
+        }
+    }
+}
+
+void node_physics_set_friction(float friction, components::Physics* p) {
+    if (p->body_id.IsInvalid()) {
+        return;
+    }
+
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+    auto entity = system->world->scene.get_node_from_component(*p);
+
+    if (system->world->scene.entity_registry.valid(entity)) {
+        system->world->physics.system.GetBodyInterface().SetFriction(p->body_id, friction);
+    }
+}
+
+void node_physics_set_restitution(float restitution, components::Physics* p) {
+    if (p->body_id.IsInvalid()) {
+        return;
+    }
+
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+    auto entity = system->world->scene.get_node_from_component(*p);
+
+    if (system->world->scene.entity_registry.valid(entity)) {
+        system->world->physics.system.GetBodyInterface().SetRestitution(p->body_id, restitution);
+    }
+}
+
+void node_physics_set_box_body(glm::vec3 half_extents, float mass, components::Physics* p) {
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+    auto entity = system->world->scene.get_node_from_component(*p);
+
+    auto t = system->world->scene.get_component<components::Transform>(entity);
+
+    if (!p->body_id.IsInvalid()) {
+        system->world->physics.system.GetBodyInterface().RemoveBody(p->body_id);
+        system->world->physics.system.GetBodyInterface().DestroyBody(p->body_id);
+    }
+
+    auto body_settings = JPH::BodyCreationSettings(
+        new JPH::BoxShape(JPH::RVec3(half_extents.x, half_extents.y, half_extents.z)),
+        JPH::Vec3(t->position.x, t->position.y, t->position.z),
+        JPH::Quat::sIdentity(),
+        JPH::EMotionType::Dynamic,
+        Layers::MOVING
+    );
+    body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
+    body_settings.mMassPropertiesOverride.mMass = mass;
+
+    JPH::BodyID body_id =
+        system->world->physics.system.GetBodyInterface().CreateAndAddBody(body_settings, JPH::EActivation::Activate);
+    p->body_id    = body_id;
+    p->is_static  = false;
+    p->last_scale = t->scale;
+}
+
+Material* node_mesh_get_material(components::Mesh* m) {
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+
+    return &system->world->scene.materials[m->mesh.material_id];
+}
+
+Mesh* node_mesh_get_mesh(components::Mesh* m) {
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+
+    return &system->world->scene.meshes[m->mesh.mesh_id];
+}
+
+void node_mesh_material_make_dedicated(components::Mesh* m) {
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+
+    system->world->scene.materials.push_back(system->world->scene.materials[m->mesh.material_id]);
+    m->mesh.material_id = system->world->scene.materials.size() - 1;
+}
 
 ScriptSystem::ScriptSystem() {
     spdlog::info("Initializing script system");
 
     engine = asCreateScriptEngine();
+    engine->SetUserData(this);
 
     engine->SetMessageCallback(asFUNCTION(script_message_callback), 0, asCALL_CDECL);
     engine->SetEngineProperty(asEP_DISALLOW_EMPTY_LIST_ELEMENTS, true);
@@ -1194,6 +1353,23 @@ void ScriptSystem::initialize(class World* world) {
         auto name = world->input.button_to_string(static_cast<Button>(i));
         engine->RegisterEnumValue("Button", name.c_str(), i);
     }
+
+    engine->RegisterObjectType("Material", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    engine->RegisterObjectProperty("Material", "uint albedo_index", asOFFSET(Material, albedo_index));
+    engine->RegisterObjectProperty("Material", "uint normals_index", asOFFSET(Material, normals_index));
+    engine->RegisterObjectProperty("Material", "uint material_index", asOFFSET(Material, material_index));
+    engine->RegisterObjectProperty("Material", "uint emissive_index", asOFFSET(Material, emissive_index));
+    engine->RegisterObjectProperty("Material", "vec3 emissive_factor", asOFFSET(Material, emissive_factor));
+    engine->RegisterObjectProperty("Material", "vec3 albedo_factor", asOFFSET(Material, albedo_factor));
+    engine->RegisterObjectProperty("Material", "float roughness_factor", asOFFSET(Material, roughness_factor));
+    engine->RegisterObjectProperty("Material", "float metallic_factor", asOFFSET(Material, metallic_factor));
+    engine->RegisterObjectProperty("Material", "float normal_scale", asOFFSET(Material, normal_scale));
+
+    engine->RegisterObjectType("Mesh", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    engine->RegisterObjectProperty("Mesh", "vec3 center", asOFFSET(Mesh, center));
+    engine->RegisterObjectProperty("Mesh", "float radius", asOFFSET(Mesh, radius));
+    engine->RegisterObjectProperty("Mesh", "vec3 bounds_min", asOFFSET(Mesh, bounds_min));
+    engine->RegisterObjectProperty("Mesh", "vec3 bounds_max", asOFFSET(Mesh, bounds_max));
 
     engine->SetDefaultNamespace("Log");
     engine->RegisterGlobalFunction("void trace(string &in)", asFUNCTION(script_log_trace), asCALL_CDECL);
@@ -1267,7 +1443,167 @@ void ScriptSystem::initialize(class World* world) {
         &world->input
     );
 
+    engine->SetDefaultNamespace("Components");
+    {
+        engine->RegisterObjectType("Transform", 0, asOBJ_REF | asOBJ_NOCOUNT);
+        engine->RegisterObjectMethod(
+            "Transform", "vec3 get_position() property", asFUNCTION(node_get_position), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Transform", "void set_position(vec3) property", asFUNCTION(node_set_position), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Transform", "float get_scale() property", asFUNCTION(node_get_scale), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Transform", "void set_scale(float) property", asFUNCTION(node_set_scale), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Transform", "quat get_rotation() property", asFUNCTION(node_get_rotation), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Transform", "void set_rotation(quat) property", asFUNCTION(node_set_rotation), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Transform",
+            "vec3 transform(vec3)",
+            asFUNCTION(+[](glm::vec3 point, components::Transform* t) {
+                return rotate_quat(point, t->world_rotation) * t->world_scale + t->world_position;
+            }),
+            asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Transform",
+            "vec3 transform_translate(vec3)",
+            asFUNCTION(+[](glm::vec3 point, components::Transform* t) {
+                return point + t->world_position;
+            }),
+            asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Transform",
+            "vec3 transform_scale(vec3)",
+            asFUNCTION(+[](glm::vec3 point, components::Transform* t) {
+                return point * t->world_scale;
+            }),
+            asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Transform",
+            "vec3 transform_rotate(vec3)",
+            asFUNCTION(+[](glm::vec3 point, components::Transform* t) {
+                return rotate_quat(point, t->rotation);
+            }),
+            asCALL_CDECL_OBJLAST
+        );
+
+        auto type = engine->GetTypeInfoByName("Transform");
+        if (!type) {
+            spdlog::error("Failed to get type info for Transform component");
+            return;
+        }
+
+        component_retrieve_map.insert({
+            type->GetTypeId(),
+            [](Scene& scene, Entity e) {
+                return scene.get_component<components::Transform>(e);
+            },
+        });
+    }
+
+    {
+        engine->RegisterObjectType("Name", 0, asOBJ_REF | asOBJ_NOCOUNT);
+        engine->RegisterObjectProperty("Name", "string name", asOFFSET(components::Name, name));
+
+        auto type = engine->GetTypeInfoByName("Name");
+        if (!type) {
+            spdlog::error("Failed to get type info for Name component");
+            return;
+        }
+
+        component_retrieve_map.insert({
+            type->GetTypeId(),
+            [](Scene& scene, Entity e) {
+                return scene.get_component<components::Name>(e);
+            },
+        });
+    }
+
+    {
+        engine->RegisterObjectType("Physics", 0, asOBJ_REF | asOBJ_NOCOUNT);
+        engine->RegisterObjectMethod(
+            "Physics",
+            "void set_linear_velocity(vec3)",
+            asFUNCTION(node_physics_set_linear_velocity),
+            asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Physics",
+            "void set_angular_velocity(vec3)",
+            asFUNCTION(node_physics_set_angular_velocity),
+            asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Physics", "void set_friction(float)", asFUNCTION(node_physics_set_friction), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Physics", "void set_restitution(float)", asFUNCTION(node_physics_set_restitution), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Physics", "void set_active(bool)", asFUNCTION(node_physics_set_active), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Physics",
+            "void set_box_body(vec3, float = 1.0f)",
+            asFUNCTION(node_physics_set_box_body),
+            asCALL_CDECL_OBJLAST
+        );
+
+        auto type = engine->GetTypeInfoByName("Physics");
+        if (!type) {
+            spdlog::error("Failed to get type info for Physics component");
+            return;
+        }
+
+        component_retrieve_map.insert({
+            type->GetTypeId(),
+            [](Scene& scene, Entity e) {
+                return scene.get_component<components::Physics>(e);
+            },
+        });
+    }
+
+    {
+        engine->RegisterObjectType("Mesh", 0, asOBJ_REF | asOBJ_NOCOUNT);
+        engine->RegisterObjectMethod(
+            "Mesh", "Material@ get_material()", asFUNCTION(node_mesh_get_material), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Mesh", "::Mesh@ get_mesh()", asFUNCTION(node_mesh_get_mesh), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Mesh", "void dedicate_material()", asFUNCTION(node_mesh_material_make_dedicated), asCALL_CDECL_OBJLAST
+        );
+
+        auto type = engine->GetTypeInfoByName("Mesh");
+        if (!type) {
+            spdlog::error("Failed to get type info for Mesh component");
+            return;
+        }
+
+        component_retrieve_map.insert({
+            type->GetTypeId(),
+            [](Scene& scene, Entity e) {
+                return scene.get_component<components::Mesh>(e);
+            },
+        });
+    }
+
     engine->SetDefaultNamespace("World");
+    engine->RegisterGlobalFunction(
+        "T@ get_node_component<T>(uint node_id)", asFUNCTION(node_get_component), asCALL_GENERIC
+    );
+
     engine->RegisterGlobalFunction(
         "uint clone_node(string &in)", asMETHOD(ScriptSystem, ScriptSystem::clone_node), asCALL_THISCALL_ASGLOBAL, this
     );
@@ -1310,90 +1646,6 @@ void ScriptSystem::initialize(class World* world) {
     engine->RegisterGlobalFunction(
         "vec3 get_player_velocity()",
         asMETHOD(ScriptSystem, ScriptSystem::get_player_velocity),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "vec3 get_node_position(uint)",
-        asMETHOD(ScriptSystem, ScriptSystem::get_node_position),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "string get_node_name(uint)",
-        asMETHOD(ScriptSystem, ScriptSystem::get_node_name),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "float get_node_scale(uint)",
-        asMETHOD(ScriptSystem, ScriptSystem::get_node_scale),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "void set_node_position(uint, vec3)",
-        asMETHOD(ScriptSystem, ScriptSystem::set_node_position),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "void set_node_scale(uint, float)",
-        asMETHOD(ScriptSystem, ScriptSystem::set_node_scale),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "void set_node_physics_body_box(uint, vec3)",
-        asMETHOD(ScriptSystem, ScriptSystem::set_node_physics_body_box),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "void set_node_physics_linear_velocity(uint, vec3)",
-        asMETHOD(ScriptSystem, ScriptSystem::set_node_physics_linear_velocity),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "void set_node_physics_angular_velocity(uint, vec3)",
-        asMETHOD(ScriptSystem, ScriptSystem::set_node_physics_angular_velocity),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "void disable_node_physics(uint)",
-        asMETHOD(ScriptSystem, ScriptSystem::disable_node_physics),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "void enable_node_physics(uint)",
-        asMETHOD(ScriptSystem, ScriptSystem::enable_node_physics),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "void node_dedicate_material(uint)",
-        asMETHOD(ScriptSystem, ScriptSystem::node_dedicate_material),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "void node_set_material_emissive(uint, vec3)",
-        asMETHOD(ScriptSystem, ScriptSystem::node_set_material_emissive),
         asCALL_THISCALL_ASGLOBAL,
         this
     );
@@ -1496,6 +1748,14 @@ void ScriptSystem::initialize(class World* world) {
 
             void unsubscribe(int event_type) {
                 Events::unsubscribe(this.node_id, event_type);
+            }
+
+            Components::Transform@ get_transform() {
+                return World::get_node_component<Components::Transform>(this.node_id);
+            }
+
+            Components::Name@ get_name() {
+                return World::get_node_component<Components::Name>(this.node_id);
             }
         }
 
@@ -1841,120 +2101,6 @@ bool ScriptSystem::cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance,
     }
 
     return hit;
-}
-
-void ScriptSystem::set_node_position(Entity entity, glm::vec3 position) {
-    auto t      = world->scene.get_component<components::Transform>(entity);
-    t->position = position;
-
-    auto p = world->scene.get_component<components::Physics>(entity);
-    if (p && !p->is_static) {
-        world->physics.system.GetBodyInterface().SetPosition(
-            p->body_id, JPH::Vec3(t->position.x, t->position.y, t->position.z), JPH::EActivation::Activate
-        );
-    }
-}
-
-void ScriptSystem::set_node_scale(Entity entity, float scale) {
-    world->scene.get_component<components::Transform>(entity)->scale = scale;
-}
-
-glm::vec3 ScriptSystem::get_node_position(Entity entity) {
-    return world->scene.get_component<components::Transform>(entity)->position;
-}
-
-float ScriptSystem::get_node_scale(Entity entity) {
-    return world->scene.get_component<components::Transform>(entity)->scale;
-}
-
-std::string ScriptSystem::get_node_name(Entity entity) {
-    return world->scene.get_component<components::Name>(entity)->name;
-}
-
-void ScriptSystem::set_node_physics_body_box(Entity entity, glm::vec3 half_extents) {
-    auto p = world->scene.get_component<components::Physics>(entity);
-
-    if (!p) {
-        return;
-    }
-
-    auto t = world->scene.get_component<components::Transform>(entity);
-
-    if (!p->body_id.IsInvalid()) {
-        world->physics.system.GetBodyInterface().RemoveBody(p->body_id);
-        world->physics.system.GetBodyInterface().DestroyBody(p->body_id);
-    }
-
-    auto body_settings = JPH::BodyCreationSettings(
-        new JPH::BoxShape(JPH::RVec3(half_extents.x, half_extents.y, half_extents.z)),
-        JPH::Vec3(t->position.x, t->position.y, t->position.z),
-        JPH::Quat::sIdentity(),
-        JPH::EMotionType::Dynamic,
-        Layers::MOVING
-    );
-    body_settings.mFriction                     = 0.8f;
-    body_settings.mRestitution                  = 0.0f;
-    body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
-    body_settings.mMassPropertiesOverride.mMass = 1.0f;
-
-    JPH::BodyID body_id =
-        world->physics.system.GetBodyInterface().CreateAndAddBody(body_settings, JPH::EActivation::Activate);
-    p->body_id    = body_id;
-    p->is_static  = false;
-    p->last_scale = t->scale;
-}
-
-void ScriptSystem::set_node_physics_linear_velocity(Entity entity, glm::vec3 velocity) {
-    auto p = world->scene.get_component<components::Physics>(entity);
-
-    if (p) {
-        world->physics.system.GetBodyInterface().SetLinearVelocity(
-            p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z)
-        );
-    }
-}
-
-void ScriptSystem::set_node_physics_angular_velocity(Entity entity, glm::vec3 velocity) {
-    auto p = world->scene.get_component<components::Physics>(entity);
-
-    if (p) {
-        world->physics.system.GetBodyInterface().SetAngularVelocity(
-            p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z)
-        );
-    }
-}
-
-void ScriptSystem::disable_node_physics(Entity entity) {
-    auto p = world->scene.get_component<components::Physics>(entity);
-
-    if (p) {
-        world->physics.system.GetBodyInterface().DeactivateBody(p->body_id);
-    }
-}
-
-void ScriptSystem::enable_node_physics(Entity entity) {
-    auto p = world->scene.get_component<components::Physics>(entity);
-
-    if (p) {
-        world->physics.system.GetBodyInterface().ActivateBody(p->body_id);
-    }
-}
-
-void ScriptSystem::node_dedicate_material(Entity entity) {
-    auto m = world->scene.get_component<components::Mesh>(entity);
-
-    if (m && m->mesh.material_id != 0) {
-        world->scene.materials.push_back(world->scene.materials[m->mesh.material_id]);
-        m->mesh.material_id = world->scene.materials.size() - 1;
-    }
-}
-
-void ScriptSystem::node_set_material_emissive(Entity entity, glm::vec3 emissive) {
-    auto m = world->scene.get_component<components::Mesh>(entity);
-
-    if (m && m->mesh.material_id != 0) {
-        world->scene.materials[m->mesh.material_id].emissive_factor = emissive;
-    }
 }
 
 CScriptArray* ScriptSystem::get_nodes_with_tag(const std::string& tag) {

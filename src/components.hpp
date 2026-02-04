@@ -19,6 +19,8 @@ namespace components {
         glm::vec3 world_position = {};
         float     world_scale    = 1.0f;
         glm::quat world_rotation = {0, 0, 0, 1};
+
+        bool dirty = false;
     };
 
     struct Parent {
