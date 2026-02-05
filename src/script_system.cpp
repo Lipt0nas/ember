@@ -1676,6 +1676,13 @@ void ScriptSystem::initialize(class World* world) {
 
     engine->SetDefaultNamespace("World");
     engine->RegisterGlobalFunction(
+        "void delete_node(Node, bool = false)",
+        asMETHOD(ScriptSystem, ScriptSystem::delete_node),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
         "array<Node>@ find_nodes_with_tag(string &in)",
         asMETHOD(ScriptSystem, ScriptSystem::find_nodes_with_tag),
         asCALL_THISCALL_ASGLOBAL,
@@ -2209,6 +2216,10 @@ Entity ScriptSystem::find_node(const std::string& name) {
     }
 
     return entity;
+}
+
+void ScriptSystem::delete_node(Entity node, bool delete_children) {
+    world->scene.delete_node(node, delete_children);
 }
 
 bool ScriptSystem::cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance, float& t, uint32_t& entity) {

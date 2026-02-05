@@ -106,6 +106,7 @@ private:
 
     std::unordered_map<uint32_t, Script> scripts;
 
+    void                delete_node(Entity node, bool delete_children);
     Entity              find_node(const std::string& name);
     class CScriptArray* find_nodes_with_tag(const std::string& tag);
 

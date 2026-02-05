@@ -5649,7 +5649,8 @@ int main(int argc, char* argv[]) {
 
             if (editor_mode) {
                 // Entering editor state
-                editor_overlay = true;
+                editor_overlay   = true;
+                world.is_running = false;
 
                 auto physics_view = world.scene.entity_registry.view<components::Physics>();
                 for (auto [e, p] : physics_view.each()) {
@@ -5693,7 +5694,8 @@ int main(int argc, char* argv[]) {
                 capturing_mouse = false;
             } else {
                 // Entering play state
-                editor_overlay = false;
+                editor_overlay   = false;
+                world.is_running = true;
 
                 scene_state_snapshot.str("");
                 scene_state_snapshot.clear();
@@ -6504,6 +6506,11 @@ int main(int argc, char* argv[]) {
             if (clone != entt::null) {
                 editor.set_selected_entity(clone);
             }
+        }
+
+        if (editor.get_selected_entity() != entt::null && world.input.is_key_pressed(Key::DELETE)) {
+            world.scene.delete_node(editor.get_selected_entity());
+            editor.set_selected_entity(entt::null);
         }
 
         if (world.input.is_key_pressed(Key::C) && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {

@@ -13,6 +13,9 @@ public:
     ScriptSystem  script;
     Scene         scene;
 
+    // True when in the "play" state
+    bool is_running = false;
+
     World();
 
     void initialize();
