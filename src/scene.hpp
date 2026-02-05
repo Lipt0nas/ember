@@ -66,6 +66,7 @@ public:
     void destroy_scene(VkDevice device, VmaAllocator allocator);
 
     Entity create_node(const std::string& name = "New Node");
+    void   delete_node(Entity node, bool delete_children = false);
     Entity clone_node(Entity base);
 
     bool                node_has_tag(Entity e, const std::string tag);
@@ -79,8 +80,9 @@ public:
     }
 
     template <typename T> void remove_component(Entity entity) {
-        spdlog::info("Removing component");
-        entity_registry.remove<T>(entity);
+        if (entity_registry.all_of<T>(entity)) {
+            remove_component_internal<T>(entity);
+        }
     }
 
     template <typename T> T* get_component(Entity entity) {
@@ -95,6 +97,11 @@ private:
     class World* world = nullptr;
 
     Entity clone_node_internal(Entity base, Entity cloned_parent);
+    void   remove_all_components(Entity node);
+
+    template <typename T> void remove_component_internal(Entity node) {
+        entity_registry.remove<T>(node);
+    }
 };
 
-template <> void Scene::remove_component<components::Physics>(Entity entity);
+template <> void Scene::remove_component_internal<components::Physics>(Entity entity);

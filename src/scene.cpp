@@ -11,9 +11,14 @@
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include <stb_image_resize2.h>
 
-template <> void Scene::remove_component<components::Physics>(Entity entity) {
-    spdlog::info("Removing physics");
-    entity_registry.remove<components::Physics>(entity);
+template <> void Scene::remove_component_internal<components::Physics>(Entity node) {
+    auto p = get_component<components::Physics>(node);
+
+    if (!p->body_id.IsInvalid()) {
+        world->physics.system.GetBodyInterface().RemoveBody(p->body_id);
+    }
+
+    entity_registry.remove<components::Physics>(node);
 }
 
 void Scene::initialize(class World* world) {
@@ -1016,6 +1021,30 @@ Entity Scene::create_node(const std::string& name) {
     return e;
 }
 
+void Scene::delete_node(Entity node, bool delete_children) {
+    auto c = get_component<components::Children>(node);
+    if (c) {
+        auto children_copy = c->children;
+
+        for (auto child : children_copy) {
+            if (delete_children) {
+                delete_node(child, delete_children);
+            } else {
+                auto p = get_component<components::Parent>(node);
+                if (p) {
+                    set_node_parent(child, p->parent);
+                } else {
+                    remove_node_parent(child);
+                }
+            }
+        }
+    }
+    remove_node_parent(node);
+    remove_all_components(node);
+
+    entity_registry.destroy(node);
+}
+
 void Scene::destroy_scene(VkDevice device, VmaAllocator allocator) {
     for (auto image : images) {
         destroy_image(image.image, device, allocator);
@@ -1173,4 +1202,23 @@ std::vector<Entity> Scene::find_nodes_with_tag(const std::string tag) {
     }
 
     return nodes;
+}
+
+void Scene::remove_all_components(Entity node) {
+    using AllComponents = std::tuple<
+        components::Transform,
+        components::Parent,
+        components::Children,
+        components::Name,
+        components::Mesh,
+        components::Physics,
+        components::Script,
+        components::Tag>;
+
+    std::apply(
+        [&](auto... args) {
+            (remove_component<decltype(args)>(node), ...);
+        },
+        AllComponents{}
+    );
 }

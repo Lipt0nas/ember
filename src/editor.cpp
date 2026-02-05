@@ -412,6 +412,8 @@ Entity Editor::get_selected_entity() {
 }
 
 void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
+    int delete_mode = 0;
+
     bool has_children = false;
     auto children     = world->scene.get_component<components::Children>(e);
     if (children) {
@@ -479,6 +481,17 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
             ImGui::EndMenu();
         }
 
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Delete")) {
+            if (ImGui::MenuItem("This Node Only")) {
+                delete_mode = 1;
+            }
+            if (ImGui::MenuItem("This Node And Children")) {
+                delete_mode = 2;
+            }
+            ImGui::EndMenu();
+        }
+
         ImGui::EndPopup();
     }
 
@@ -494,6 +507,14 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
         }
 
         ImGui::TreePop();
+    }
+
+    if (delete_mode != 0) {
+        if (selected_entity == e) {
+            selected_entity = entt::null;
+        }
+
+        world->scene.delete_node(e, delete_mode == 2);
     }
 }
 
