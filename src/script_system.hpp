@@ -78,22 +78,7 @@ public:
         this->player_velocity = velocity;
     }
 
-    friend void   node_get_component(class asIScriptGeneric* gen);
-    friend Entity clone_node(void* obj);
-    friend Entity find_child(void* obj, const std::string& name);
-    friend bool   node_is_valid(void* obj);
-    friend bool   node_has_tag(void* obj, const std::string& tag);
-
-    friend void node_physics_set_linear_velocity(glm::vec3 velocity, components::Physics* p);
-    friend void node_physics_set_angular_velocity(glm::vec3 velocity, components::Physics* p);
-    friend void node_physics_set_friction(float friction, components::Physics* p);
-    friend void node_physics_set_restitution(float restitution, components::Physics* p);
-    friend void node_physics_set_active(bool active, components::Physics* p);
-    friend void node_physics_set_box_body(glm::vec3 half_extents, float mass, components::Physics* p);
-
-    friend void      node_mesh_material_make_dedicated(components::Mesh* m);
-    friend Material* node_mesh_get_material(components::Mesh* m);
-    friend Mesh*     node_mesh_get_mesh(components::Mesh* m);
+    friend void node_get_component(class asIScriptGeneric* gen);
 
 private:
     struct EventSubscription {
