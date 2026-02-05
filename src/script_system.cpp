@@ -1196,198 +1196,191 @@ namespace {
     Entity node_to_handle(void* obj) {
         return *reinterpret_cast<Entity*>(obj);
     }
-} // namespace
 
-bool node_is_valid(void* obj) {
-    Entity id = *reinterpret_cast<Entity*>(obj);
-    if (id == entt::null) {
-        return false;
+    World* get_world_from_context() {
+        return reinterpret_cast<World*>(asGetActiveContext()->GetEngine()->GetUserData());
     }
 
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+    bool node_is_valid(void* obj) {
+        Entity id = *reinterpret_cast<Entity*>(obj);
+        if (id == entt::null) {
+            return false;
+        }
 
-    return system->world->scene.entity_registry.valid(id);
-}
+        return get_world_from_context()->scene.entity_registry.valid(id);
+    }
 
-Entity clone_node(void* obj) {
-    Entity id = *reinterpret_cast<Entity*>(obj);
-    if (id == entt::null) {
+    Entity clone_node(void* obj) {
+        Entity id = *reinterpret_cast<Entity*>(obj);
+        if (id == entt::null) {
+            return entt::null;
+        }
+
+        return get_world_from_context()->scene.clone_node(id);
+    }
+
+    Entity find_child(void* obj, const std::string& name) {
+        Entity id = *reinterpret_cast<Entity*>(obj);
+        if (id == entt::null) {
+            return entt::null;
+        }
+
+        auto world = get_world_from_context();
+
+        auto c = world->scene.get_component<components::Children>(id);
+        if (c) {
+            for (Entity child : c->children) {
+                auto n = world->scene.get_component<components::Name>(child);
+                if (n->name == name) {
+                    return child;
+                }
+            }
+        }
+
         return entt::null;
     }
 
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+    bool node_has_tag(void* obj, const std::string& tag) {
+        Entity id = *reinterpret_cast<Entity*>(obj);
+        if (id == entt::null) {
+            return false;
+        }
 
-    return system->world->scene.clone_node(id);
-}
-
-Entity find_child(void* obj, const std::string& name) {
-    Entity id = *reinterpret_cast<Entity*>(obj);
-    if (id == entt::null) {
-        return entt::null;
+        return get_world_from_context()->scene.node_has_tag(id, tag);
     }
 
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+    void node_physics_set_linear_velocity(glm::vec3 velocity, components::Physics* p) {
+        if (p->is_static || p->body_id.IsInvalid()) {
+            return;
+        }
 
-    auto c = system->world->scene.get_component<components::Children>(id);
-    if (c) {
-        for (Entity child : c->children) {
-            auto n = system->world->scene.get_component<components::Name>(child);
-            if (n->name == name) {
-                return child;
+        auto world  = get_world_from_context();
+        auto entity = world->scene.get_node_from_component(*p);
+        if (world->scene.entity_registry.valid(entity)) {
+            world->physics.system.GetBodyInterface().SetLinearVelocity(
+                p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z)
+            );
+        }
+    }
+
+    void node_physics_set_angular_velocity(glm::vec3 velocity, components::Physics* p) {
+        if (p->is_static || p->body_id.IsInvalid()) {
+            return;
+        }
+
+        auto world  = get_world_from_context();
+        auto entity = world->scene.get_node_from_component(*p);
+        if (world->scene.entity_registry.valid(entity)) {
+            world->physics.system.GetBodyInterface().SetAngularVelocity(
+                p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z)
+            );
+        }
+    }
+
+    void node_physics_set_active(bool active, components::Physics* p) {
+        if (p->body_id.IsInvalid()) {
+            return;
+        }
+
+        auto world  = get_world_from_context();
+        auto entity = world->scene.get_node_from_component(*p);
+
+        if (world->scene.entity_registry.valid(entity)) {
+            if (active) {
+                world->physics.system.GetBodyInterface().ActivateBody(p->body_id);
+            } else {
+                world->physics.system.GetBodyInterface().DeactivateBody(p->body_id);
             }
         }
     }
 
-    return entt::null;
-}
+    void node_physics_set_friction(float friction, components::Physics* p) {
+        if (p->body_id.IsInvalid()) {
+            return;
+        }
 
-bool node_has_tag(void* obj, const std::string& tag) {
-    Entity id = *reinterpret_cast<Entity*>(obj);
-    if (id == entt::null) {
-        return false;
+        auto world  = get_world_from_context();
+        auto entity = world->scene.get_node_from_component(*p);
+
+        if (world->scene.entity_registry.valid(entity)) {
+            world->physics.system.GetBodyInterface().SetFriction(p->body_id, friction);
+        }
     }
 
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+    void node_physics_set_restitution(float restitution, components::Physics* p) {
+        if (p->body_id.IsInvalid()) {
+            return;
+        }
 
-    return system->world->scene.node_has_tag(id, tag);
-}
+        auto world  = get_world_from_context();
+        auto entity = world->scene.get_node_from_component(*p);
+
+        if (world->scene.entity_registry.valid(entity)) {
+            world->physics.system.GetBodyInterface().SetRestitution(p->body_id, restitution);
+        }
+    }
+
+    void node_physics_set_box_body(glm::vec3 half_extents, float mass, components::Physics* p) {
+        auto world  = get_world_from_context();
+        auto entity = world->scene.get_node_from_component(*p);
+
+        auto t = world->scene.get_component<components::Transform>(entity);
+
+        if (!p->body_id.IsInvalid()) {
+            world->physics.system.GetBodyInterface().RemoveBody(p->body_id);
+            world->physics.system.GetBodyInterface().DestroyBody(p->body_id);
+        }
+
+        auto body_settings = JPH::BodyCreationSettings(
+            new JPH::BoxShape(JPH::RVec3(half_extents.x, half_extents.y, half_extents.z)),
+            JPH::Vec3(t->position.x, t->position.y, t->position.z),
+            JPH::Quat::sIdentity(),
+            JPH::EMotionType::Dynamic,
+            Layers::MOVING
+        );
+        body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
+        body_settings.mMassPropertiesOverride.mMass = mass;
+
+        JPH::BodyID body_id =
+            world->physics.system.GetBodyInterface().CreateAndAddBody(body_settings, JPH::EActivation::Activate);
+        p->body_id    = body_id;
+        p->is_static  = false;
+        p->last_scale = t->scale;
+    }
+
+    Material* node_mesh_get_material(components::Mesh* m) {
+        return &get_world_from_context()->scene.materials[m->mesh.material_id];
+    }
+
+    Mesh* node_mesh_get_mesh(components::Mesh* m) {
+        return &get_world_from_context()->scene.meshes[m->mesh.mesh_id];
+    }
+
+    void node_mesh_material_make_dedicated(components::Mesh* m) {
+        auto world = get_world_from_context();
+
+        world->scene.materials.push_back(world->scene.materials[m->mesh.material_id]);
+        m->mesh.material_id = world->scene.materials.size() - 1;
+    }
+} // namespace
 
 void node_get_component(asIScriptGeneric* gen) {
     auto type_id = gen->GetEngine()->GetTypeInfoById(gen->GetReturnTypeId())->GetTypeId();
 
     Entity entity = *reinterpret_cast<Entity*>(gen->GetObject());
 
-    ScriptSystem* system = reinterpret_cast<ScriptSystem*>(gen->GetEngine()->GetUserData());
-    auto          it     = system->component_retrieve_map.find(type_id);
+    auto world = get_world_from_context();
+    auto it    = world->script.component_retrieve_map.find(type_id);
 
-    if (it != system->component_retrieve_map.end()) {
-        gen->SetReturnAddress(it->second(system->world->scene, entity));
+    if (it != world->script.component_retrieve_map.end()) {
+        gen->SetReturnAddress(it->second(world->scene, entity));
     }
-}
-
-void node_physics_set_linear_velocity(glm::vec3 velocity, components::Physics* p) {
-    if (p->is_static || p->body_id.IsInvalid()) {
-        return;
-    }
-
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
-    auto entity = system->world->scene.get_node_from_component(*p);
-    if (system->world->scene.entity_registry.valid(entity)) {
-        system->world->physics.system.GetBodyInterface().SetLinearVelocity(
-            p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z)
-        );
-    }
-}
-
-void node_physics_set_angular_velocity(glm::vec3 velocity, components::Physics* p) {
-    if (p->is_static || p->body_id.IsInvalid()) {
-        return;
-    }
-
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
-    auto entity = system->world->scene.get_node_from_component(*p);
-    if (system->world->scene.entity_registry.valid(entity)) {
-        system->world->physics.system.GetBodyInterface().SetAngularVelocity(
-            p->body_id, JPH::Vec3(velocity.x, velocity.y, velocity.z)
-        );
-    }
-}
-
-void node_physics_set_active(bool active, components::Physics* p) {
-    if (p->body_id.IsInvalid()) {
-        return;
-    }
-
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
-    auto entity = system->world->scene.get_node_from_component(*p);
-
-    if (system->world->scene.entity_registry.valid(entity)) {
-        if (active) {
-            system->world->physics.system.GetBodyInterface().ActivateBody(p->body_id);
-        } else {
-            system->world->physics.system.GetBodyInterface().DeactivateBody(p->body_id);
-        }
-    }
-}
-
-void node_physics_set_friction(float friction, components::Physics* p) {
-    if (p->body_id.IsInvalid()) {
-        return;
-    }
-
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
-    auto entity = system->world->scene.get_node_from_component(*p);
-
-    if (system->world->scene.entity_registry.valid(entity)) {
-        system->world->physics.system.GetBodyInterface().SetFriction(p->body_id, friction);
-    }
-}
-
-void node_physics_set_restitution(float restitution, components::Physics* p) {
-    if (p->body_id.IsInvalid()) {
-        return;
-    }
-
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
-    auto entity = system->world->scene.get_node_from_component(*p);
-
-    if (system->world->scene.entity_registry.valid(entity)) {
-        system->world->physics.system.GetBodyInterface().SetRestitution(p->body_id, restitution);
-    }
-}
-
-void node_physics_set_box_body(glm::vec3 half_extents, float mass, components::Physics* p) {
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
-    auto entity = system->world->scene.get_node_from_component(*p);
-
-    auto t = system->world->scene.get_component<components::Transform>(entity);
-
-    if (!p->body_id.IsInvalid()) {
-        system->world->physics.system.GetBodyInterface().RemoveBody(p->body_id);
-        system->world->physics.system.GetBodyInterface().DestroyBody(p->body_id);
-    }
-
-    auto body_settings = JPH::BodyCreationSettings(
-        new JPH::BoxShape(JPH::RVec3(half_extents.x, half_extents.y, half_extents.z)),
-        JPH::Vec3(t->position.x, t->position.y, t->position.z),
-        JPH::Quat::sIdentity(),
-        JPH::EMotionType::Dynamic,
-        Layers::MOVING
-    );
-    body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
-    body_settings.mMassPropertiesOverride.mMass = mass;
-
-    JPH::BodyID body_id =
-        system->world->physics.system.GetBodyInterface().CreateAndAddBody(body_settings, JPH::EActivation::Activate);
-    p->body_id    = body_id;
-    p->is_static  = false;
-    p->last_scale = t->scale;
-}
-
-Material* node_mesh_get_material(components::Mesh* m) {
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
-
-    return &system->world->scene.materials[m->mesh.material_id];
-}
-
-Mesh* node_mesh_get_mesh(components::Mesh* m) {
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
-
-    return &system->world->scene.meshes[m->mesh.mesh_id];
-}
-
-void node_mesh_material_make_dedicated(components::Mesh* m) {
-    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
-
-    system->world->scene.materials.push_back(system->world->scene.materials[m->mesh.material_id]);
-    m->mesh.material_id = system->world->scene.materials.size() - 1;
 }
 
 ScriptSystem::ScriptSystem() {
     spdlog::info("Initializing script system");
 
     engine = asCreateScriptEngine();
-    engine->SetUserData(this);
 
     engine->SetMessageCallback(asFUNCTION(script_message_callback), 0, asCALL_CDECL);
     engine->SetEngineProperty(asEP_DISALLOW_EMPTY_LIST_ELEMENTS, true);
@@ -1399,6 +1392,7 @@ ScriptSystem::ScriptSystem() {
 
 void ScriptSystem::initialize(class World* world) {
     this->world = world;
+    engine->SetUserData(world);
 
     auto default_namespace = engine->GetDefaultNamespace();
 
