@@ -78,7 +78,12 @@ public:
         this->player_velocity = velocity;
     }
 
-    friend void node_get_component(class asIScriptGeneric* gen);
+    friend void   node_get_component(class asIScriptGeneric* gen);
+    friend Entity clone_node(void* obj);
+    friend Entity find_child(void* obj, const std::string& name);
+    friend bool   node_is_valid(void* obj);
+    friend bool   node_has_tag(void* obj, const std::string& tag);
+
     friend void node_physics_set_linear_velocity(glm::vec3 velocity, components::Physics* p);
     friend void node_physics_set_angular_velocity(glm::vec3 velocity, components::Physics* p);
     friend void node_physics_set_friction(float friction, components::Physics* p);
@@ -116,13 +121,8 @@ private:
 
     std::unordered_map<uint32_t, Script> scripts;
 
-    Entity clone_node(const std::string& name);
-    Entity get_node(const std::string& name);
-    bool   is_node_valid(Entity node);
-
-    Entity get_child_node(Entity parent, const std::string& name);
-
-    class CScriptArray* get_nodes_with_tag(const std::string& tag);
+    Entity              find_node(const std::string& name);
+    class CScriptArray* find_nodes_with_tag(const std::string& tag);
 
     bool cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance, float& t, uint32_t& entity);
 
@@ -147,4 +147,6 @@ private:
     std::string prelude_code;
 
     std::unordered_map<int, std::function<void*(Scene& scene, Entity e)>> component_retrieve_map;
+
+    void register_node_type(class asIScriptEngine* engine);
 };

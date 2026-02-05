@@ -1159,7 +1159,7 @@ bool Scene::node_has_tag(Entity node, const std::string tag) {
     return false;
 }
 
-std::vector<Entity> Scene::get_nodes_with_tag(const std::string tag) {
+std::vector<Entity> Scene::find_nodes_with_tag(const std::string tag) {
     auto view = entity_registry.view<components::Tag>();
 
     std::vector<Entity> nodes;

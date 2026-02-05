@@ -1192,18 +1192,76 @@ namespace {
     glm::quat node_get_world_rotation(components::Transform* o) {
         return o->world_rotation;
     }
+
+    Entity node_to_handle(void* obj) {
+        return *reinterpret_cast<Entity*>(obj);
+    }
 } // namespace
+
+bool node_is_valid(void* obj) {
+    Entity id = *reinterpret_cast<Entity*>(obj);
+    if (id == entt::null) {
+        return false;
+    }
+
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+
+    return system->world->scene.entity_registry.valid(id);
+}
+
+Entity clone_node(void* obj) {
+    Entity id = *reinterpret_cast<Entity*>(obj);
+    if (id == entt::null) {
+        return entt::null;
+    }
+
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+
+    return system->world->scene.clone_node(id);
+}
+
+Entity find_child(void* obj, const std::string& name) {
+    Entity id = *reinterpret_cast<Entity*>(obj);
+    if (id == entt::null) {
+        return entt::null;
+    }
+
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+
+    auto c = system->world->scene.get_component<components::Children>(id);
+    if (c) {
+        for (Entity child : c->children) {
+            auto n = system->world->scene.get_component<components::Name>(child);
+            if (n->name == name) {
+                return child;
+            }
+        }
+    }
+
+    return entt::null;
+}
+
+bool node_has_tag(void* obj, const std::string& tag) {
+    Entity id = *reinterpret_cast<Entity*>(obj);
+    if (id == entt::null) {
+        return false;
+    }
+
+    auto system = reinterpret_cast<ScriptSystem*>(asGetActiveContext()->GetEngine()->GetUserData());
+
+    return system->world->scene.node_has_tag(id, tag);
+}
 
 void node_get_component(asIScriptGeneric* gen) {
     auto type_id = gen->GetEngine()->GetTypeInfoById(gen->GetReturnTypeId())->GetTypeId();
 
-    uint32_t entity = gen->GetArgDWord(0);
+    Entity entity = *reinterpret_cast<Entity*>(gen->GetObject());
 
     ScriptSystem* system = reinterpret_cast<ScriptSystem*>(gen->GetEngine()->GetUserData());
     auto          it     = system->component_retrieve_map.find(type_id);
 
     if (it != system->component_retrieve_map.end()) {
-        gen->SetReturnAddress(it->second(system->world->scene, (Entity)entity));
+        gen->SetReturnAddress(it->second(system->world->scene, entity));
     }
 }
 
@@ -1382,6 +1440,8 @@ void ScriptSystem::initialize(class World* world) {
     engine->RegisterObjectProperty("Mesh", "float radius", asOFFSET(Mesh, radius));
     engine->RegisterObjectProperty("Mesh", "vec3 bounds_min", asOFFSET(Mesh, bounds_min));
     engine->RegisterObjectProperty("Mesh", "vec3 bounds_max", asOFFSET(Mesh, bounds_max));
+
+    register_node_type(engine);
 
     engine->SetDefaultNamespace("Log");
     engine->RegisterGlobalFunction("void trace(string &in)", asFUNCTION(script_log_trace), asCALL_CDECL);
@@ -1622,29 +1682,14 @@ void ScriptSystem::initialize(class World* world) {
 
     engine->SetDefaultNamespace("World");
     engine->RegisterGlobalFunction(
-        "T@ get_node_component<T>(uint node_id)", asFUNCTION(node_get_component), asCALL_GENERIC
-    );
-
-    engine->RegisterGlobalFunction(
-        "uint clone_node(string &in)", asMETHOD(ScriptSystem, ScriptSystem::clone_node), asCALL_THISCALL_ASGLOBAL, this
-    );
-
-    engine->RegisterGlobalFunction(
-        "bool node_has_tag(uint node, string &in)",
-        asMETHOD(Scene, Scene::node_has_tag),
-        asCALL_THISCALL_ASGLOBAL,
-        &world->scene
-    );
-
-    engine->RegisterGlobalFunction(
-        "array<uint>@ get_nodes_with_tag(string &in)",
-        asMETHOD(ScriptSystem, ScriptSystem::get_nodes_with_tag),
+        "array<Node>@ find_nodes_with_tag(string &in)",
+        asMETHOD(ScriptSystem, ScriptSystem::find_nodes_with_tag),
         asCALL_THISCALL_ASGLOBAL,
         this
     );
 
     engine->RegisterGlobalFunction(
-        "bool cast_ray(vec3, vec3, float, float &out, uint &out)",
+        "bool cast_ray(vec3, vec3, float, float &out, Node &out)",
         asMETHOD(ScriptSystem, ScriptSystem::cast_ray),
         asCALL_THISCALL_ASGLOBAL,
         this
@@ -1672,18 +1717,7 @@ void ScriptSystem::initialize(class World* world) {
     );
 
     engine->RegisterGlobalFunction(
-        "uint get_node(string &in)", asMETHOD(ScriptSystem, ScriptSystem::get_node), asCALL_THISCALL_ASGLOBAL, this
-    );
-
-    engine->RegisterGlobalFunction(
-        "bool is_node_valid(uint)", asMETHOD(ScriptSystem, ScriptSystem::is_node_valid), asCALL_THISCALL_ASGLOBAL, this
-    );
-
-    engine->RegisterGlobalFunction(
-        "uint get_child_node(uint, string &in)",
-        asMETHOD(ScriptSystem, ScriptSystem::get_child_node),
-        asCALL_THISCALL_ASGLOBAL,
-        this
+        "Node find_node(string &in)", asMETHOD(ScriptSystem, ScriptSystem::find_node), asCALL_THISCALL_ASGLOBAL, this
     );
 
     engine->SetDefaultNamespace("Random");
@@ -1739,14 +1773,14 @@ void ScriptSystem::initialize(class World* world) {
     engine->RegisterFuncdef("void EventCallback(IEvent@)");
 
     engine->RegisterGlobalFunction(
-        "void subscribe(uint, int, EventCallback@)",
+        "void subscribe(Node, int, EventCallback@)",
         asMETHOD(ScriptSystem, subscribe_to_event),
         asCALL_THISCALL_ASGLOBAL,
         this
     );
 
     engine->RegisterGlobalFunction(
-        "void unsubscribe(uint, int)", asMETHOD(ScriptSystem, unsubscribe_from_event), asCALL_THISCALL_ASGLOBAL, this
+        "void unsubscribe(Node, int)", asMETHOD(ScriptSystem, unsubscribe_from_event), asCALL_THISCALL_ASGLOBAL, this
     );
 
     engine->RegisterGlobalFunction(
@@ -1754,7 +1788,7 @@ void ScriptSystem::initialize(class World* world) {
     );
 
     engine->RegisterGlobalFunction(
-        "void publish_to_node(uint, IEvent@)",
+        "void publish_to_node(Node, IEvent@)",
         asMETHOD(ScriptSystem, publish_event_to_node),
         asCALL_THISCALL_ASGLOBAL,
         this
@@ -1768,26 +1802,26 @@ void ScriptSystem::initialize(class World* world) {
     );
 
     prelude_code = R"(
-        shared class Node {
+        shared class NodeBehavior {
             protected uint node_id;
 
             void update(float dt) {}
             void fixed_update(float dt) {}
 
-            void subscribe(int event_type, Events::EventCallback@ callback) {
+            Node opImplConv() const {
+                return Node(node_id);
+            }
+
+            Node node() {
+                return this;
+            }
+
+            void subscribe_to_event(int event_type, Events::EventCallback@ callback) {
                 Events::subscribe(this.node_id, event_type, callback);
             }
 
-            void unsubscribe(int event_type) {
+            void unsubscribe_from_event(int event_type) {
                 Events::unsubscribe(this.node_id, event_type);
-            }
-
-            Components::Transform@ get_transform() {
-                return World::get_node_component<Components::Transform>(this.node_id);
-            }
-
-            Components::Name@ get_name() {
-                return World::get_node_component<Components::Name>(this.node_id);
             }
         }
 
@@ -1810,7 +1844,7 @@ void ScriptSystem::initialize(class World* world) {
     prelude_module->AddScriptSection("prelude", prelude_code.c_str());
     prelude_module->Build();
 
-    asITypeInfo* node_type = prelude_module->GetTypeInfoByName("Node");
+    asITypeInfo* node_type = prelude_module->GetTypeInfoByName("NodeBehavior");
     if (!node_type) {
         spdlog::error("Failed to find Node type");
         return;
@@ -1897,7 +1931,7 @@ void ScriptSystem::load_scripts(const std::filesystem::path& path) {
         for (int i = 0; i < type_count; i++) {
             asITypeInfo* type = script_module->GetObjectTypeByIndex(i);
             if (type->GetBaseType()) {
-                if (strcmp(type->GetBaseType()->GetName(), "Node") == 0) {
+                if (strcmp(type->GetBaseType()->GetName(), "NodeBehavior") == 0) {
                     node_type = type;
                     break;
                 }
@@ -2170,22 +2204,7 @@ void ScriptSystem::call_on_fixed_update(const components::Script& s, float delta
     }
 }
 
-Entity ScriptSystem::clone_node(const std::string& name) {
-    Entity base = get_node(name);
-
-    if (base != entt::null) {
-        Entity e = world->scene.clone_node(base);
-        return e;
-    }
-
-    return entt::null;
-}
-
-bool ScriptSystem::is_node_valid(Entity node) {
-    return node != entt::null;
-}
-
-Entity ScriptSystem::get_node(const std::string& name) {
+Entity ScriptSystem::find_node(const std::string& name) {
     auto   view   = world->scene.entity_registry.view<components::Name>();
     Entity entity = entt::null;
     for (auto [e, n] : view.each()) {
@@ -2196,22 +2215,6 @@ Entity ScriptSystem::get_node(const std::string& name) {
     }
 
     return entity;
-}
-
-Entity ScriptSystem::get_child_node(Entity parent, const std::string& name) {
-    auto c = world->scene.get_component<components::Children>(parent);
-
-    if (c) {
-        for (Entity child : c->children) {
-            auto n = world->scene.get_component<components::Name>(child);
-
-            if (n->name == name) {
-                return child;
-            }
-        }
-    }
-
-    return entt::null;
 }
 
 bool ScriptSystem::cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance, float& t, uint32_t& entity) {
@@ -2246,10 +2249,10 @@ bool ScriptSystem::cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance,
     return hit;
 }
 
-CScriptArray* ScriptSystem::get_nodes_with_tag(const std::string& tag) {
-    auto nodes = world->scene.get_nodes_with_tag(tag);
+CScriptArray* ScriptSystem::find_nodes_with_tag(const std::string& tag) {
+    auto nodes = world->scene.find_nodes_with_tag(tag);
 
-    auto array_type = engine->GetTypeInfoByDecl("array<uint>");
+    auto array_type = engine->GetTypeInfoByDecl("array<Node>");
     auto array      = CScriptArray::Create(array_type, nodes.size());
 
     for (size_t i = 0; i < nodes.size(); i++) {
@@ -2370,7 +2373,7 @@ void ScriptSystem::publish_event_to_tag(const std::string& tag, class asIScriptO
 
     asITypeInfo* msg_type = msg->GetObjectType();
 
-    auto entities = world->scene.get_nodes_with_tag(tag);
+    auto entities = world->scene.find_nodes_with_tag(tag);
     for (auto& sub : it->second) {
         for (auto e : entities) {
             if (sub.node == (uint32_t)e) {
@@ -2452,4 +2455,26 @@ void ScriptSystem::invoke_event_callback(const EventSubscription& sub, class asI
     }
 
     ctx->Release();
+}
+
+void ScriptSystem::register_node_type(class asIScriptEngine* engine) {
+    engine->RegisterObjectType("Node", sizeof(Entity), asOBJ_VALUE | asOBJ_POD | asGetTypeTraits<Entity>());
+    engine->RegisterObjectBehaviour(
+        "Node",
+        asBEHAVE_CONSTRUCT,
+        "void f(uint)",
+        asFUNCTION(+[](Entity id, void* mem) {
+            new (mem) Entity(id);
+        }),
+        asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod("Node", "uint get_id() const", asFUNCTION(node_to_handle), asCALL_CDECL_OBJFIRST);
+    engine->RegisterObjectMethod("Node", "bool is_valid() const", asFUNCTION(node_is_valid), asCALL_CDECL_OBJFIRST);
+
+    engine->RegisterObjectMethod("Node", "T@ get_component<T>()", asFUNCTION(node_get_component), asCALL_GENERIC);
+    engine->RegisterObjectMethod("Node", "Node clone()", asFUNCTION(clone_node), asCALL_CDECL_OBJFIRST);
+
+    engine->RegisterObjectMethod("Node", "Node find_child(string &in)", asFUNCTION(find_child), asCALL_CDECL_OBJFIRST);
+
+    engine->RegisterObjectMethod("Node", "bool has_tag(string &in)", asFUNCTION(node_has_tag), asCALL_CDECL_OBJFIRST);
 }
