@@ -1,12 +1,3 @@
-#version 460
-
-#extension GL_EXT_buffer_reference : require
-#extension GL_EXT_scalar_block_layout : require
-#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
-#extension GL_GOOGLE_include_directive : enable
-#extension GL_EXT_nonuniform_qualifier : enable
-#extension GL_EXT_ray_query: require
-
 #include "common.glsl"
 #include "ddgi_common.glsl"
 
@@ -81,7 +72,11 @@ void main() {
         vec3 bent_normal = mat3(inverse(scene.view)) * normalize(bent_normal_ao.xyz * 2.0 - 1.0);
         vec3 normal = unpack_normals(normal_metallic);
         float ao = bent_normal_ao.a;
+        #if defined(RT_ENABLED)
         float shadow = texture(shadow_buffer, uv).r;
+        #else
+        float shadow = 1.0f;
+        #endif
 
         float roughness = albedo_rougness.a;
         float metallic = normal_metallic.a;
@@ -118,6 +113,7 @@ void main() {
         vec3 diffuse = albedo * D_Oren_Nayar(NoV, NdotL, a, L, V);
         vec3 Lo = (kD * diffuse + specular) * radiance * NdotL;
 
+        #if defined(RT_ENABLED)
         vec3 F_ibl = F_Schlick_Roughness(NoV, F0, roughness);
         vec3 kS_ibl = F_ibl;
         vec3 kD_ibl = (vec3(1.0) - kS_ibl) * (1.0 - metallic);
@@ -151,6 +147,9 @@ void main() {
         specular_ibl *= compensation;
 
         vec3 ambient = diffuse_ibl * ao + specular_ibl;
+        #else
+        vec3 ambient = ao * get_sky_color(V, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, vec4(0.0)) * albedo / PI;
+        #endif
         vec3 color = Lo + ambient + emissive;
 
         final_color = color;
