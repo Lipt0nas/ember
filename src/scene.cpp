@@ -1059,9 +1059,18 @@ void Scene::remove_node_parent(Entity child) {
 }
 
 Entity Scene::clone_node(Entity base) {
+    return clone_node_internal(base, entt::null);
+}
+
+Entity Scene::clone_node_internal(Entity base, Entity cloned_parent) {
     auto src_name = get_component<components::Name>(base);
 
-    Entity new_entity = create_node(src_name->name + "_clone");
+    std::string new_name = src_name->name;
+    if (cloned_parent == entt::null) {
+        new_name += "_clone";
+    }
+
+    Entity new_entity = create_node(new_name);
 
     auto src_transform                                = get_component<components::Transform>(base);
     *get_component<components::Transform>(new_entity) = *src_transform;
@@ -1107,23 +1116,30 @@ Entity Scene::clone_node(Entity base) {
         m.mesh  = src_mesh->mesh;
     }
 
-    auto src_parent = get_component<components::Parent>(base);
+    auto src_children = get_component<components::Children>(base);
+    if (src_children) {
+        for (Entity child : src_children->children) {
+            Entity new_child = clone_node_internal(child, new_entity);
+            set_node_parent(new_child, new_entity);
+        }
+    }
+
+    Entity parent     = cloned_parent == entt::null ? base : cloned_parent;
+    auto   src_parent = get_component<components::Parent>(parent);
     if (src_parent) {
         set_node_parent(new_entity, src_parent->parent);
+    }
+
+    auto src_script = get_component<components::Script>(base);
+    if (src_script) {
+        auto& script     = add_component<components::Script>(new_entity);
+        script.script_id = src_script->script_id;
     }
 
     auto src_tag = get_component<components::Tag>(base);
     if (src_tag) {
         auto& tag = add_component<components::Tag>(new_entity);
         tag.tags  = src_tag->tags;
-    }
-
-    auto src_children = get_component<components::Children>(base);
-    if (src_children) {
-        for (Entity child : src_children->children) {
-            Entity new_child = clone_node(child);
-            set_node_parent(new_child, new_entity);
-        }
     }
 
     return new_entity;

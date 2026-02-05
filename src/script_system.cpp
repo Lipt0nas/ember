@@ -1675,6 +1675,17 @@ void ScriptSystem::initialize(class World* world) {
         "uint get_node(string &in)", asMETHOD(ScriptSystem, ScriptSystem::get_node), asCALL_THISCALL_ASGLOBAL, this
     );
 
+    engine->RegisterGlobalFunction(
+        "bool is_node_valid(uint)", asMETHOD(ScriptSystem, ScriptSystem::is_node_valid), asCALL_THISCALL_ASGLOBAL, this
+    );
+
+    engine->RegisterGlobalFunction(
+        "uint get_child_node(uint, string &in)",
+        asMETHOD(ScriptSystem, ScriptSystem::get_child_node),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
     engine->SetDefaultNamespace("Random");
     engine->RegisterGlobalFunction("float random_float(float, float)", asFUNCTION(script_rand_float), asCALL_CDECL);
     engine->RegisterGlobalFunction("int random_int(int, int)", asFUNCTION(script_rand_int), asCALL_CDECL);
@@ -1893,10 +1904,11 @@ void ScriptSystem::load_scripts(const std::filesystem::path& path) {
             }
         }
 
-        asIScriptFunction* constructor     = nullptr;
-        asIScriptFunction* on_start        = nullptr;
-        asIScriptFunction* on_update       = nullptr;
-        asIScriptFunction* on_fixed_update = nullptr;
+        asIScriptFunction*                     constructor     = nullptr;
+        asIScriptFunction*                     on_start        = nullptr;
+        asIScriptFunction*                     on_update       = nullptr;
+        asIScriptFunction*                     on_fixed_update = nullptr;
+        std::vector<ScriptPropertyDescription> editable_properties;
 
         if (node_type) {
             std::string constructor_name =
@@ -1910,18 +1922,89 @@ void ScriptSystem::load_scripts(const std::filesystem::path& path) {
             on_start        = node_type->GetMethodByDecl("void start()");
             on_update       = node_type->GetMethodByDecl("void update(float)");
             on_fixed_update = node_type->GetMethodByDecl("void fixed_update(float)");
+
+            int prop_count = node_type->GetPropertyCount();
+            for (int i = 0; i < prop_count; i++) {
+                auto metadata = script_builder->GetMetadataForTypeProperty(node_type->GetTypeId(), i);
+                for (auto& meta : metadata) {
+                    if (meta.compare("editable") == 0) {
+                        const char* name;
+                        int         type_id;
+                        int         offset;
+                        node_type->GetProperty(i, &name, &type_id, nullptr, nullptr, &offset);
+
+                        auto type_info = engine->GetTypeInfoById(type_id);
+
+                        ScriptPropertyDescription::Type type = ScriptPropertyDescription::Type::UNKNOWN;
+                        ScriptProperty                  default_value;
+                        std::vector<std::string>        enum_values;
+
+                        if (type_info && (type_info->GetFlags() & asOBJ_ENUM)) {
+                            type                = ScriptPropertyDescription::Type::ENUM;
+                            default_value.value = 0;
+
+                            for (int e = 0; e < type_info->GetEnumValueCount(); e++) {
+                                int         enum_val;
+                                const char* enum_name = type_info->GetEnumValueByIndex(e, &enum_val);
+                                enum_values.push_back(enum_name);
+                            }
+                        } else if (type_id == asTYPEID_BOOL) {
+                            type                = ScriptPropertyDescription::Type::BOOL;
+                            default_value.value = false;
+                        } else if (type_id == asTYPEID_INT32) {
+                            type                = ScriptPropertyDescription::Type::INT;
+                            default_value.value = 0;
+                        } else if (type_id == asTYPEID_FLOAT) {
+                            type                = ScriptPropertyDescription::Type::FLOAT;
+                            default_value.value = 0.0f;
+                        } else if (type_id == engine->GetTypeIdByDecl("string")) {
+                            type                = ScriptPropertyDescription::Type::STRING;
+                            default_value.value = "";
+                        } else if (type_id == engine->GetTypeIdByDecl("vec2")) {
+                            type                = ScriptPropertyDescription::Type::VEC2;
+                            default_value.value = glm::vec2(0.0f);
+                        } else if (type_id == engine->GetTypeIdByDecl("vec3")) {
+                            type                = ScriptPropertyDescription::Type::VEC3;
+                            default_value.value = glm::vec3(0.0f);
+                        } else if (type_id == engine->GetTypeIdByDecl("vec4")) {
+                            type                = ScriptPropertyDescription::Type::VEC4;
+                            default_value.value = glm::vec4(0.0f);
+                        } else if (type_id == engine->GetTypeIdByDecl("quat")) {
+                            type                = ScriptPropertyDescription::Type::QUAT;
+                            default_value.value = glm::quat(0.0f, 0.0f, 0.0f, 1.0f);
+                        } else {
+                            spdlog::warn("Unsupported type: {}", name);
+                        }
+
+                        if (type != ScriptPropertyDescription::Type::UNKNOWN) {
+                            editable_properties.push_back(
+                                ScriptPropertyDescription{
+                                    .type          = type,
+                                    .default_value = default_value,
+                                    .name          = name,
+                                    .index         = i,
+                                    .type_id       = type_id,
+                                    .offset        = offset,
+                                    .enum_values   = enum_values,
+                                }
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         scripts[hash] = {
             Script{
-                .valid           = true,
-                .name            = filename,
-                .source          = source,
-                .module          = script_module,
-                .constructor     = constructor,
-                .on_start        = on_start,
-                .on_update       = on_update,
-                .on_fixed_update = on_fixed_update,
+                .valid               = true,
+                .name                = filename,
+                .source              = source,
+                .module              = script_module,
+                .constructor         = constructor,
+                .on_start            = on_start,
+                .on_update           = on_update,
+                .on_fixed_update     = on_fixed_update,
+                .editable_properties = editable_properties,
             },
         };
     }
@@ -2000,6 +2083,25 @@ void ScriptSystem::construct_script_objects(Entity entity, components::Script& s
                 asITypeInfo* type        = object->GetObjectType();
                 uint32_t*    node_id_ptr = (uint32_t*)object->GetAddressOfProperty(node_id_property_index);
                 *node_id_ptr             = (uint32_t)entity;
+
+                for (auto& property : script.editable_properties) {
+                    auto it = s.property_overrides.find(property.name);
+
+                    if (it != s.property_overrides.end()) {
+                        auto id = object->GetPropertyTypeId(property.index);
+
+                        if (property.type_id == id) {
+                            auto prop = object->GetAddressOfProperty(property.index);
+                            std::visit(
+                                [prop](auto&& value) {
+                                    using T                = std::decay_t<decltype(value)>;
+                                    *static_cast<T*>(prop) = value;
+                                },
+                                it->second.value
+                            );
+                        }
+                    }
+                }
             }
             context->Unprepare();
         }
@@ -2079,6 +2181,10 @@ Entity ScriptSystem::clone_node(const std::string& name) {
     return entt::null;
 }
 
+bool ScriptSystem::is_node_valid(Entity node) {
+    return node != entt::null;
+}
+
 Entity ScriptSystem::get_node(const std::string& name) {
     auto   view   = world->scene.entity_registry.view<components::Name>();
     Entity entity = entt::null;
@@ -2090,6 +2196,22 @@ Entity ScriptSystem::get_node(const std::string& name) {
     }
 
     return entity;
+}
+
+Entity ScriptSystem::get_child_node(Entity parent, const std::string& name) {
+    auto c = world->scene.get_component<components::Children>(parent);
+
+    if (c) {
+        for (Entity child : c->children) {
+            auto n = world->scene.get_component<components::Name>(child);
+
+            if (n->name == name) {
+                return child;
+            }
+        }
+    }
+
+    return entt::null;
 }
 
 bool ScriptSystem::cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance, float& t, uint32_t& entity) {

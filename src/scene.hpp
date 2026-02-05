@@ -93,6 +93,8 @@ public:
 
 private:
     class World* world = nullptr;
+
+    Entity clone_node_internal(Entity base, Entity cloned_parent);
 };
 
 template <> void Scene::remove_component<components::Physics>(Entity entity);

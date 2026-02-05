@@ -4,6 +4,32 @@
 #include "ember.hpp"
 #include "scene.hpp"
 
+struct ScriptPropertyDescription {
+    enum class Type {
+        UNKNOWN,
+        BOOL,
+        INT,
+        FLOAT,
+        STRING,
+        ENUM,
+        VEC2,
+        VEC3,
+        VEC4,
+        QUAT,
+    };
+
+    Type           type;
+    ScriptProperty default_value;
+
+    std::string name;
+    int         index;
+    int         type_id;
+    int         offset;
+
+    // NOTE: would be nice to move this out to ScriptSystem instead
+    std::vector<std::string> enum_values;
+};
+
 struct Script {
     bool valid;
 
@@ -16,6 +42,8 @@ struct Script {
     class asIScriptFunction* on_start;
     class asIScriptFunction* on_update;
     class asIScriptFunction* on_fixed_update;
+
+    std::vector<ScriptPropertyDescription> editable_properties;
 };
 
 class ScriptSystem {
@@ -90,6 +118,9 @@ private:
 
     Entity clone_node(const std::string& name);
     Entity get_node(const std::string& name);
+    bool   is_node_valid(Entity node);
+
+    Entity get_child_node(Entity parent, const std::string& name);
 
     class CScriptArray* get_nodes_with_tag(const std::string& tag);
 

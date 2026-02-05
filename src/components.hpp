@@ -4,11 +4,66 @@
 #include "geometry.hpp"
 #include "physics.hpp"
 
+#include <variant>
 #include <vector>
 
 #include <cereal/cereal.hpp>
 #include <cereal/types/string.hpp>
+#include <cereal/types/unordered_map.hpp>
+#include <cereal/types/variant.hpp>
 #include <cereal/types/vector.hpp>
+
+namespace glm {
+    template <class Archive> void serialize(Archive& archive, glm::vec2& v) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("x", v.x), cereal::make_nvp("y", v.y));
+        } else {
+            archive(v.x, v.y);
+        }
+    }
+
+    template <class Archive> void serialize(Archive& archive, glm::vec3& v) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("x", v.x), cereal::make_nvp("y", v.y), cereal::make_nvp("z", v.z));
+        } else {
+            archive(v.x, v.y, v.z);
+        }
+    }
+
+    template <class Archive> void serialize(Archive& archive, glm::vec4& v) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("x", v.x),
+                cereal::make_nvp("y", v.y),
+                cereal::make_nvp("z", v.z),
+                cereal::make_nvp("w", v.w)
+            );
+        } else {
+            archive(v.x, v.y, v.z, v.w);
+        }
+    }
+
+    template <class Archive> void serialize(Archive& archive, glm::quat& v) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("x", v.x),
+                cereal::make_nvp("y", v.y),
+                cereal::make_nvp("z", v.z),
+                cereal::make_nvp("w", v.w)
+            );
+        } else {
+            archive(v.x, v.y, v.z, v.w);
+        }
+    }
+} // namespace glm
+
+struct ScriptProperty {
+    std::variant<bool, int, float, std::string, glm::vec2, glm::vec3, glm::vec4, glm::quat> value;
+};
+
+template <typename Archive> void serialize(Archive& archive, ScriptProperty& prop) {
+    archive(prop.value);
+}
 
 namespace components {
     struct Transform {
@@ -53,6 +108,8 @@ namespace components {
     struct Script {
         uint32_t script_id;
 
+        std::unordered_map<std::string, ScriptProperty> property_overrides;
+
         // NOTE: maybe script system could just keep the instances
         void* object = nullptr;
     };
@@ -95,7 +152,7 @@ namespace components {
     }
 
     template <typename Archive> void serialize(Archive& archive, Script& script) {
-        archive(script.script_id);
+        archive(script.script_id, script.property_overrides);
     }
 
     template <typename Archive> void serialize(Archive& archive, Tag& tag) {

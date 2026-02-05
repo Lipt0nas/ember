@@ -87,16 +87,120 @@ template <> void Editor::render_component_ui<components::Mesh>(Entity e) {
     }
 }
 
+namespace {
+    bool render_bool_property(const std::string& name, ScriptProperty& prop) {
+        bool value = std::get<bool>(prop.value);
+        if (ImGui::Checkbox(name.c_str(), &value)) {
+            prop.value = value;
+            return true;
+        }
+        return false;
+    }
+
+    bool render_int_property(const std::string& name, ScriptProperty& prop) {
+        int value = std::get<int>(prop.value);
+        if (ImGui::DragInt(name.c_str(), &value)) {
+            prop.value = value;
+            return true;
+        }
+        return false;
+    }
+
+    bool
+    render_enum_property(const std::string& name, ScriptProperty& prop, const std::vector<std::string>& enum_values) {
+        int current_value = std::get<int>(prop.value);
+
+        std::string current_name = "Unknown";
+        for (int i = 0; i < enum_values.size(); i++) {
+            if (current_value == i) {
+                current_name = enum_values[i];
+            }
+        }
+
+        bool changed = false;
+        if (ImGui::BeginCombo(name.c_str(), current_name.c_str())) {
+            for (int i = 0; i < enum_values.size(); i++) {
+                bool is_selected = (i == current_value);
+                if (ImGui::Selectable(enum_values[i].c_str(), is_selected)) {
+                    prop.value = i;
+                    changed    = true;
+                }
+                if (is_selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        return changed;
+    }
+
+    bool render_float_property(const std::string& name, ScriptProperty& prop) {
+        float value = std::get<float>(prop.value);
+        if (ImGui::DragFloat(name.c_str(), &value)) {
+            prop.value = value;
+            return true;
+        }
+        return false;
+    }
+
+    bool render_vec2_property(const std::string& name, ScriptProperty& prop) {
+        glm::vec2 value = std::get<glm::vec2>(prop.value);
+        if (ImGui::DragFloat2(name.c_str(), &value.x)) {
+            prop.value = value;
+            return true;
+        }
+        return false;
+    }
+
+    bool render_vec3_property(const std::string& name, ScriptProperty& prop) {
+        glm::vec3 value = std::get<glm::vec3>(prop.value);
+        if (ImGui::DragFloat3(name.c_str(), &value.x)) {
+            prop.value = value;
+            return true;
+        }
+        return false;
+    }
+
+    bool render_vec4_property(const std::string& name, ScriptProperty& prop) {
+        glm::vec4 value = std::get<glm::vec4>(prop.value);
+        if (ImGui::DragFloat4(name.c_str(), &value.x)) {
+            prop.value = value;
+            return true;
+        }
+        return false;
+    }
+
+    bool render_quat_property(const std::string& name, ScriptProperty& prop) {
+        glm::quat value = std::get<glm::quat>(prop.value);
+        if (ImGui::DragFloat4(name.c_str(), &value.x)) {
+            prop.value = value;
+            return true;
+        }
+        return false;
+    }
+
+    bool render_string_property(const std::string& name, ScriptProperty& prop) {
+        std::string& value = std::get<std::string>(prop.value);
+
+        if (ImGui::InputText(name.c_str(), &value)) {
+            prop.value = value;
+            return true;
+        }
+        return false;
+    }
+} // namespace
+
 template <> void Editor::render_component_ui<components::Script>(Entity e) {
     auto* s       = world->scene.get_component<components::Script>(e);
     auto  scripts = world->script.get_scripts();
 
-    std::string current_name = "None";
+    Script* script = nullptr;
     if (scripts.contains(s->script_id)) {
-        current_name = scripts.at(s->script_id).name;
+        script = &scripts.at(s->script_id);
     }
 
-    if (ImGui::BeginCombo("Script Source", current_name.c_str())) {
+    if (ImGui::BeginCombo("Script Source", (script ? script->name.c_str() : "None"))) {
         for (auto& [id, script] : scripts) {
             // Currently scripts that don't have node behavior are distinguished by having no constructor
             if (!script.constructor || !script.valid) {
@@ -108,6 +212,68 @@ template <> void Editor::render_component_ui<components::Script>(Entity e) {
             }
         }
         ImGui::EndCombo();
+    }
+
+    if (script) {
+        ImGui::SeparatorText("");
+
+        for (auto& prop : script->editable_properties) {
+            ScriptProperty current_prop;
+            bool           overriden = false;
+
+            if (auto it = s->property_overrides.find(prop.name); it != s->property_overrides.end()) {
+                current_prop = it->second;
+                overriden    = true;
+            } else {
+                current_prop = prop.default_value;
+            }
+
+            bool changed = false;
+            switch (prop.type) {
+            case ScriptPropertyDescription::Type::BOOL:
+                changed = render_bool_property(prop.name, current_prop);
+                break;
+            case ScriptPropertyDescription::Type::INT:
+                changed = render_int_property(prop.name, current_prop);
+                break;
+            case ScriptPropertyDescription::Type::FLOAT:
+                changed = render_float_property(prop.name, current_prop);
+                break;
+            case ScriptPropertyDescription::Type::STRING:
+                changed = render_string_property(prop.name, current_prop);
+                break;
+            case ScriptPropertyDescription::Type::ENUM:
+                changed = render_enum_property(prop.name, current_prop, prop.enum_values);
+                break;
+            case ScriptPropertyDescription::Type::VEC2:
+                changed = render_vec2_property(prop.name, current_prop);
+                break;
+            case ScriptPropertyDescription::Type::VEC3:
+                changed = render_vec3_property(prop.name, current_prop);
+                break;
+            case ScriptPropertyDescription::Type::VEC4:
+                changed = render_vec4_property(prop.name, current_prop);
+                break;
+            case ScriptPropertyDescription::Type::QUAT:
+                changed = render_quat_property(prop.name, current_prop);
+                break;
+            case ScriptPropertyDescription::Type::UNKNOWN:
+                break;
+            }
+
+            if (changed) {
+                s->property_overrides[prop.name] = current_prop;
+            }
+
+            if (overriden) {
+                ImGui::SameLine();
+                ImGui::PushID(prop.name.c_str());
+                if (ImGui::Button(ICON_FA_REDO)) {
+                    s->property_overrides.erase(prop.name);
+                }
+                ImGui::PopID();
+            }
+        }
     }
 }
 
