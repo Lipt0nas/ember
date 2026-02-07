@@ -65,6 +65,22 @@ template <typename Archive> void serialize(Archive& archive, ScriptProperty& pro
     archive(prop.value);
 }
 
+struct ScriptInstance {
+    uint32_t                                        script_id;
+    std::unordered_map<std::string, ScriptProperty> property_overrides;
+    void*                                           object = nullptr;
+};
+
+template <typename Archive> void serialize(Archive& archive, ScriptInstance& script) {
+    if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+        archive(
+            cereal::make_nvp("id", script.script_id), cereal::make_nvp("property_overrides", script.property_overrides)
+        );
+    } else {
+        archive(script.script_id, script.property_overrides);
+    }
+}
+
 namespace components {
     struct Transform {
         glm::vec3 position = {};
@@ -106,12 +122,7 @@ namespace components {
     };
 
     struct Script {
-        uint32_t script_id;
-
-        std::unordered_map<std::string, ScriptProperty> property_overrides;
-
-        // NOTE: maybe script system could just keep the instances
-        void* object = nullptr;
+        std::vector<ScriptInstance> scripts;
     };
 
     struct Tag {
@@ -176,12 +187,9 @@ namespace components {
 
     template <typename Archive> void serialize(Archive& archive, Script& script) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("id", script.script_id),
-                cereal::make_nvp("property_overrides", script.property_overrides)
-            );
+            archive(cereal::make_nvp("scripts", script.scripts));
         } else {
-            archive(script.script_id, script.property_overrides);
+            archive(script.scripts);
         }
     }
 
