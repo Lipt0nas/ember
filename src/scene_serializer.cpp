@@ -1,5 +1,6 @@
 #include "scene_serializer.hpp"
 
+#include "component_registry.hpp"
 #include "world.hpp"
 
 #include <cereal/archives/binary.hpp>
@@ -87,7 +88,7 @@ template <class Archive> void serialize(Archive& archive, Mesh& mesh) {
 
 void SceneSerializer::load(
     const std::filesystem::path& path,
-    World*                       world,
+    World&                       world,
     RendererBuffers&             buffers,
     BufferOffsets&               buffer_offsets,
     std::vector<unsigned char>&  compressed_texture_data,
@@ -114,12 +115,39 @@ void SceneSerializer::load(
         }
         cereal::JSONInputArchive archive(is);
 
+        uint32_t version;
+        archive(cereal::make_nvp("version", version));
+        spdlog::info("Scene description version: {}", version);
+
+        spdlog::info("Loading nodes");
+        size_t node_count;
+        archive(cereal::make_nvp("node_count", node_count));
+
+        archive.setNextName("nodes");
+        archive.startNode();
+        for (size_t i = 0; i < node_count; i++) {
+            archive.startNode();
+
+            Entity id;
+            archive(cereal::make_nvp("id", id));
+
+            auto node = world.scene.entity_registry.create(id);
+
+            archive.setNextName("components");
+            archive.startNode();
+            ComponentRegistry::load_node(world, node, archive);
+            archive.finishNode();
+
+            archive.finishNode();
+        }
+        archive.finishNode();
+
         spdlog::info("Loading samplers");
         std::vector<SamplerInfo> samplers;
         archive(cereal::make_nvp("samplers", samplers));
 
         for (auto& info : samplers) {
-            world->scene.samplers.push_back(create_sampler(
+            world.scene.samplers.push_back(create_sampler(
                 static_cast<VkFilter>(info.mag_filter),
                 static_cast<VkFilter>(info.min_filter),
                 static_cast<VkSamplerMipmapMode>(info.mipmap_mode),
@@ -132,25 +160,11 @@ void SceneSerializer::load(
         }
 
         spdlog::info("Loading materials");
-        archive(cereal::make_nvp("materials", world->scene.materials));
-        world->scene.original_material_size = world->scene.materials.size();
+        archive(cereal::make_nvp("materials", world.scene.materials));
+        world.scene.original_material_size = world.scene.materials.size();
 
         spdlog::info("Loading meshes");
-        archive(cereal::make_nvp("meshes", world->scene.meshes));
-
-        spdlog::info("Loading entities");
-        entt::snapshot_loader(world->scene.entity_registry)
-            .get<entt::entity>(archive)
-            .get<components::Transform>(archive)
-            .get<components::Name>(archive)
-            .get<components::Mesh>(archive)
-            .get<components::Parent>(archive)
-            .get<components::Children>(archive)
-            .get<components::Script>(archive)
-            .get<components::Tag>(archive);
-
-        // NOTE: Physics can only be serialized during runtime only right now
-        // .get<components::Physics>(archive);
+        archive(cereal::make_nvp("meshes", world.scene.meshes));
     }
 
     {
@@ -218,8 +232,8 @@ void SceneSerializer::load(
         spdlog::info("Baking static physics shapes");
         std::vector<JPH::ShapeRefC> mesh_collision_shapes;
         const uint32_t*             indices = reinterpret_cast<const uint32_t*>(index_cpu_data.data());
-        for (int m = 0; m < world->scene.meshes.size(); m++) {
-            auto& mesh = world->scene.meshes[m];
+        for (int m = 0; m < world.scene.meshes.size(); m++) {
+            auto& mesh = world.scene.meshes[m];
 
             std::vector<glm::vec3> unquantized_positions(mesh.vertex_count);
             for (int i = 0; i < unquantized_positions.size(); i++) {
@@ -251,7 +265,7 @@ void SceneSerializer::load(
             mesh_collision_shapes.push_back(collision_shape);
         }
 
-        auto view = world->scene.entity_registry.view<components::Mesh, components::Transform>();
+        auto view = world.scene.entity_registry.view<components::Mesh, components::Transform>();
         for (auto [e, m, t] : view.each()) {
             JPH::ShapeRefC final_shape;
             if (t.scale != 1.0f) {
@@ -261,7 +275,7 @@ void SceneSerializer::load(
                 final_shape = mesh_collision_shapes[m.mesh.mesh_id];
             }
 
-            JPH::BodyInterface& body_interface = world->physics.system.GetBodyInterface();
+            JPH::BodyInterface& body_interface = world.physics.system.GetBodyInterface();
 
             JPH::BodyCreationSettings body_settings(
                 final_shape,
@@ -275,7 +289,7 @@ void SceneSerializer::load(
             if (body) {
                 body_interface.AddBody(body->GetID(), JPH::EActivation::DontActivate);
 
-                auto& physics      = world->scene.add_component<components::Physics>(e);
+                auto& physics      = world.scene.add_component<components::Physics>(e);
                 physics.body_id    = body->GetID();
                 physics.is_static  = true;
                 physics.last_scale = t.scale;
@@ -421,7 +435,7 @@ void SceneSerializer::load(
             vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
             vkDeviceWaitIdle(device);
 
-            world->scene.images.push_back(
+            world.scene.images.push_back(
                 ImageResource{
                     .image         = image,
                     .sampler_index = texture_header.sampler_index,
@@ -433,7 +447,7 @@ void SceneSerializer::load(
 
 void SceneSerializer::save(
     const std::filesystem::path&      path,
-    World*                            world,
+    World&                            world,
     const RendererBuffers&            buffers,
     const BufferOffsets&              buffer_offsets,
     const std::vector<unsigned char>& compressed_texture_data,
@@ -464,10 +478,36 @@ void SceneSerializer::save(
         }
         cereal::JSONOutputArchive archive(os);
 
+        archive(cereal::make_nvp("version", (uint32_t)0));
+
+        spdlog::info("Saving nodes");
+        std::vector<Entity> node_ids;
+        auto                view = world.scene.entity_registry.view<entt::entity>();
+        for (auto e : view) {
+            node_ids.push_back(e);
+        }
+        archive(cereal::make_nvp("node_count", node_ids.size()));
+
+        archive.setNextName("nodes");
+        archive.startNode();
+        archive.makeArray();
+        for (auto e : node_ids) {
+            archive.startNode();
+            archive(cereal::make_nvp("id", e));
+
+            archive.setNextName("components");
+            archive.startNode();
+            ComponentRegistry::save_node(world, e, archive);
+            archive.finishNode();
+
+            archive.finishNode();
+        }
+        archive.finishNode();
+
         spdlog::info("Saving samplers");
         std::vector<SamplerInfo> samplers;
-        for (int i = 0; i < world->scene.samplers.size(); i++) {
-            auto& src = world->scene.samplers[i];
+        for (int i = 0; i < world.scene.samplers.size(); i++) {
+            auto& src = world.scene.samplers[i];
 
             samplers.push_back(
                 SamplerInfo{
@@ -484,24 +524,10 @@ void SceneSerializer::save(
         archive(cereal::make_nvp("samplers", samplers));
 
         spdlog::info("Saving materials");
-        archive(cereal::make_nvp("materials", world->scene.materials));
+        archive(cereal::make_nvp("materials", world.scene.materials));
 
         spdlog::info("Saving meshes");
-        archive(cereal::make_nvp("meshes", world->scene.meshes));
-
-        spdlog::info("Saving entities");
-        entt::snapshot(world->scene.entity_registry)
-            .get<entt::entity>(archive)
-            .get<components::Transform>(archive)
-            .get<components::Name>(archive)
-            .get<components::Mesh>(archive)
-            .get<components::Parent>(archive)
-            .get<components::Children>(archive)
-            .get<components::Script>(archive)
-            .get<components::Tag>(archive);
-
-        // NOTE: Physics can only be serialized during runtime only right now
-        // .get<components::Physics>(archive);
+        archive(cereal::make_nvp("meshes", world.scene.meshes));
     }
 
     {
@@ -561,7 +587,7 @@ void SceneSerializer::save(
         cereal::BinaryOutputArchive archive(os);
 
         TextureDataHeader header = {
-            .texture_count        = static_cast<uint32_t>(world->scene.images.size()),
+            .texture_count        = static_cast<uint32_t>(world.scene.images.size()),
             .is_compressed        = !compressed_texture_data.empty(),
             .compressed_data_size = compressed_texture_data.size(),
         };
@@ -571,8 +597,8 @@ void SceneSerializer::save(
             archive.saveBinary(compressed_texture_data.data(), header.compressed_data_size);
         }
 
-        for (uint32_t i = 0; i < world->scene.images.size(); i++) {
-            auto& resource = world->scene.images[i];
+        for (uint32_t i = 0; i < world.scene.images.size(); i++) {
+            auto& resource = world.scene.images[i];
 
             TextureHeader texture_header = {
                 .width         = resource.image.width,

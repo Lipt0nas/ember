@@ -1161,8 +1161,9 @@ Entity Scene::clone_node_internal(Entity base, Entity cloned_parent) {
 
     auto src_script = get_component<components::Script>(base);
     if (src_script) {
-        auto& script     = add_component<components::Script>(new_entity);
-        script.script_id = src_script->script_id;
+        auto& script              = add_component<components::Script>(new_entity);
+        script.script_id          = src_script->script_id;
+        script.property_overrides = src_script->property_overrides;
     }
 
     auto src_tag = get_component<components::Tag>(base);

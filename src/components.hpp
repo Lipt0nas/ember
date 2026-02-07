@@ -119,44 +119,78 @@ namespace components {
     };
 
     template <typename Archive> void serialize(Archive& archive, Transform& transform) {
-        archive(
-            transform.position.x,
-            transform.position.y,
-            transform.position.z,
-            transform.scale,
-            transform.rotation.x,
-            transform.rotation.y,
-            transform.rotation.z,
-            transform.rotation.w
-        );
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("position", transform.position),
+                cereal::make_nvp("scale", transform.scale),
+                cereal::make_nvp("rotation", transform.rotation)
+            );
+        } else {
+            archive(transform.position, transform.scale, transform.rotation);
+        }
     }
 
     template <typename Archive> void serialize(Archive& archive, Name& name) {
-        archive(name.name);
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("name", name.name));
+        } else {
+            archive(name.name);
+        }
     }
 
     template <typename Archive> void serialize(Archive& archive, Mesh& mesh) {
-        archive(mesh.mesh.mesh_id, mesh.mesh.material_id);
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("mesh_id", mesh.mesh.mesh_id), cereal::make_nvp("material_id", mesh.mesh.material_id)
+            );
+        } else {
+            archive(mesh.mesh.mesh_id, mesh.mesh.material_id);
+        }
     }
 
     template <typename Archive> void serialize(Archive& archive, Parent& parent) {
-        archive(parent.parent);
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("parent", parent.parent));
+        } else {
+            archive(parent.parent);
+        }
     }
 
     template <typename Archive> void serialize(Archive& archive, Children& children) {
-        archive(children.children);
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("children", children.children));
+        } else {
+            archive(children.children);
+        }
     }
 
     template <typename Archive> void serialize(Archive& archive, Physics& physics) {
-        archive(physics.is_static, physics.last_scale);
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("is_static", physics.is_static), cereal::make_nvp("last_scale", physics.last_scale)
+            );
+        } else {
+            archive(physics.is_static, physics.last_scale);
+        }
     }
 
     template <typename Archive> void serialize(Archive& archive, Script& script) {
-        archive(script.script_id, script.property_overrides);
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("id", script.script_id),
+                cereal::make_nvp("property_overrides", script.property_overrides)
+            );
+        } else {
+            archive(script.script_id, script.property_overrides);
+        }
     }
 
     template <typename Archive> void serialize(Archive& archive, Tag& tag) {
-        archive(tag.tags);
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("tags", tag.tags));
+        } else {
+            archive(tag.tags);
+        }
     }
 
 } // namespace components

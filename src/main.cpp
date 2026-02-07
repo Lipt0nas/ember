@@ -2,6 +2,7 @@
 
 #include "args.hpp"
 #include "camera.hpp"
+#include "component_registry.hpp"
 #include "device.hpp"
 #include "editor.hpp"
 #include "embedded.hpp"
@@ -1782,8 +1783,14 @@ int main(int argc, char* argv[]) {
     std::string scene_load_path  = args.get_arg<std::string>("s", "data/models/room2.glb");
     std::string script_load_path = args.get_arg<std::string>("scripts", "");
 
+    std::unordered_map<uint32_t, VkDescriptorSet> imgui_material_image_handles;
+    Editor                                        editor(imgui_material_image_handles);
+
+    ComponentRegistry::register_components(&editor);
+
     World world;
     world.initialize();
+    editor.initialize(&world);
 
     RendererBuffers buffers = {
         .staging_buffer           = staging_buffer,
@@ -1810,7 +1817,7 @@ int main(int argc, char* argv[]) {
         VK_CHECK(vkAllocateCommandBuffers(device, &alloc_info, &command_buffer));
         SceneSerializer::load(
             scene_load_path,
-            &world,
+            world,
             buffers,
             buffer_offsets,
             compressed_texture_data,
@@ -1908,7 +1915,6 @@ int main(int argc, char* argv[]) {
         FRAMES_IN_FLIGHT
     );
 
-    std::unordered_map<uint32_t, VkDescriptorSet> imgui_material_image_handles;
     {
         uint32_t slot = 1;
         for (auto& image : world.scene.images) {
@@ -5584,8 +5590,7 @@ int main(int argc, char* argv[]) {
 
     int pick_frame = UINT32_MAX;
 
-    Editor editor(&world, imgui_material_image_handles);
-    float  physics_time_accumulator = 0.0f;
+    float physics_time_accumulator = 0.0f;
 
     while (running) {
         FrameMark;
@@ -5751,17 +5756,9 @@ int main(int argc, char* argv[]) {
                 world.scene.materials.resize(world.scene.original_material_size);
 
                 cereal::BinaryInputArchive input(scene_state_snapshot);
-
-                entt::snapshot_loader(world.scene.entity_registry)
-                    .get<entt::entity>(input)
-                    .get<components::Transform>(input)
-                    .get<components::Name>(input)
-                    .get<components::Mesh>(input)
-                    .get<components::Parent>(input)
-                    .get<components::Children>(input)
-                    .get<components::Script>(input)
-                    .get<components::Physics>(input)
-                    .get<components::Tag>(input);
+                entt::snapshot_loader      loader(world.scene.entity_registry);
+                loader.get<entt::entity>(input);
+                ComponentRegistry::load_snapshot(loader, input);
 
                 auto view =
                     world.scene.entity_registry.view<components::Physics, components::Mesh, components::Transform>();
@@ -5787,17 +5784,9 @@ int main(int argc, char* argv[]) {
                 static_body_load_map.clear();
 
                 cereal::BinaryOutputArchive output(scene_state_snapshot);
-
-                entt::snapshot(world.scene.entity_registry)
-                    .get<entt::entity>(output)
-                    .get<components::Transform>(output)
-                    .get<components::Name>(output)
-                    .get<components::Mesh>(output)
-                    .get<components::Parent>(output)
-                    .get<components::Children>(output)
-                    .get<components::Script>(output)
-                    .get<components::Physics>(output)
-                    .get<components::Tag>(output);
+                entt::snapshot              snapshot(world.scene.entity_registry);
+                snapshot.get<entt::entity>(output);
+                ComponentRegistry::save_snapshot(snapshot, output);
 
                 auto physics_view = world.scene.entity_registry.view<components::Physics>();
                 for (auto [e, p] : physics_view.each()) {
@@ -6112,7 +6101,7 @@ int main(int argc, char* argv[]) {
                 VK_CHECK(vkAllocateCommandBuffers(device, &alloc_info, &command_buffer));
                 SceneSerializer::save(
                     path,
-                    &world,
+                    world,
                     buffers,
                     buffer_offsets,
                     compressed_texture_data,
