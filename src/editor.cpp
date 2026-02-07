@@ -366,6 +366,19 @@ template <> void Editor::render_component_ui<components::Camera>(Entity e) {
     ImGui::Checkbox("Active", &c->is_active);
 }
 
+template <> void Editor::render_component_ui<components::CharacterController>(Entity e) {
+    auto* c = world->scene.get_component<components::CharacterController>(e);
+
+    ImGui::DragFloat("Height", &c->height, 0.1f, 0.1f);
+    ImGui::DragFloat("Radius", &c->radius, 0.1f, 0.1f);
+
+    ImGui::DragFloat("Step Down Distance", &c->step_down_distance, 0.1f, 0.01f);
+    ImGui::DragFloat("Step Up Height", &c->step_up_height, 0.1f, 0.01f);
+    ImGui::DragFloat("Max Slow Angle", &c->max_slope_angle, 0.1f, 0.01f);
+
+    ImGui::Checkbox("Enhanced Edge Removal", &c->enhanced_edge_removal);
+}
+
 Editor::Editor(std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles)
     : imgui_material_image_handles(imgui_material_image_handles) {
 }

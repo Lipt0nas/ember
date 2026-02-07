@@ -5,6 +5,7 @@
 #include "geometry.hpp"
 #include "physics.hpp"
 
+#include <memory>
 #include <variant>
 #include <vector>
 
@@ -146,6 +147,23 @@ namespace components {
         bool is_active = false;
     };
 
+    struct CharacterController {
+        float height = 1.8f;
+        float radius = 0.5f;
+
+        float step_down_distance    = 0.5f;
+        float step_up_height        = 0.4f;
+        float max_slope_angle       = 45.0f;
+        bool  enhanced_edge_removal = true;
+
+        uint32_t collision_layer = 0;
+
+        JPH::CharacterVirtual* controller    = nullptr;
+        glm::vec3              velocity      = glm::vec3(0.0f);
+        glm::vec3              ground_normal = glm::vec3(0.0f, 1.0f, 0.0f);
+        bool                   is_grounded   = false;
+    };
+
     template <typename Archive> void serialize(Archive& archive, Transform& transform) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
             archive(
@@ -244,6 +262,28 @@ namespace components {
                 camera.ortho_size,
                 camera.type,
                 camera.is_active
+            );
+        }
+    }
+
+    template <typename Archive> void serialize(Archive& archive, CharacterController& controller) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("height", controller.height),
+                cereal::make_nvp("radius", controller.radius),
+                cereal::make_nvp("step_down_distance", controller.step_down_distance),
+                cereal::make_nvp("step_up_height", controller.step_up_height),
+                cereal::make_nvp("max_slope_angle", controller.max_slope_angle),
+                cereal::make_nvp("collision_layer", controller.collision_layer)
+            );
+        } else {
+            archive(
+                controller.height,
+                controller.radius,
+                controller.step_down_distance,
+                controller.step_up_height,
+                controller.max_slope_angle,
+                controller.collision_layer
             );
         }
     }

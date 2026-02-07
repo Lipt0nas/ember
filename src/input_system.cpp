@@ -246,6 +246,10 @@ glm::vec2 InputSystem::get_mouse_position() {
     return mouse_pos;
 }
 
+glm::vec2 InputSystem::get_mouse_delta() {
+    return mouse_delta;
+}
+
 bool InputSystem::is_key_pressed(Key key) {
     return pressed_keys[static_cast<int>(key)];
 }

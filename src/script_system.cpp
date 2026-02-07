@@ -441,11 +441,11 @@ namespace {
     }
 
     void quat_construct_default(void* memory) {
-        new (memory) glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        new (memory) glm::quat(0.0f, 0.0f, 0.0f, 1.0f);
     }
 
     void quat_construct_values(float w, float x, float y, float z, void* memory) {
-        new (memory) glm::quat(w, x, y, z);
+        new (memory) glm::quat(x, y, z, w);
     }
 
     void quat_construct_copy(const glm::quat& other, void* memory) {
@@ -502,6 +502,10 @@ namespace {
 
     glm::vec3 quat_euler_angles(const glm::quat* self) {
         return glm::eulerAngles(*self);
+    }
+
+    glm::quat quat_from_euler(float pitch, float yaw, float roll) {
+        return glm::quat(glm::vec3(glm::radians(pitch), glm::radians(yaw), glm::radians(roll)));
     }
 
     std::string quat_to_string(const glm::quat* self) {
@@ -1021,6 +1025,10 @@ namespace {
             "quat", "string to_string() const", asFUNCTION(quat_to_string), asCALL_CDECL_OBJLAST
         );
         assert(r >= 0);
+        r = engine->RegisterGlobalFunction(
+            "quat quat_from_euler(float pitch, float yaw, float roll)", asFUNCTION(quat_from_euler), asCALL_CDECL
+        );
+        assert(r >= 0);
     }
 
     void register_glm_types(asIScriptEngine* engine) {
@@ -1458,6 +1466,13 @@ void ScriptSystem::initialize(class World* world) {
     );
 
     engine->RegisterGlobalFunction(
+        "vec2 get_mouse_delta()",
+        asMETHOD(InputSystem, InputSystem::get_mouse_delta),
+        asCALL_THISCALL_ASGLOBAL,
+        &world->input
+    );
+
+    engine->RegisterGlobalFunction(
         "bool is_key_pressed(Key)",
         asMETHOD(InputSystem, InputSystem::is_key_pressed),
         asCALL_THISCALL_ASGLOBAL,
@@ -1679,6 +1694,7 @@ void ScriptSystem::initialize(class World* world) {
     }
 
     register_camera_component(engine);
+    register_character_controller_component(engine);
 
     engine->SetDefaultNamespace("World");
     engine->RegisterGlobalFunction(
@@ -1698,27 +1714,6 @@ void ScriptSystem::initialize(class World* world) {
     engine->RegisterGlobalFunction(
         "bool cast_ray(vec3, vec3, float, float &out, Node &out)",
         asMETHOD(ScriptSystem, ScriptSystem::cast_ray),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "vec3 get_player_position()",
-        asMETHOD(ScriptSystem, ScriptSystem::get_player_position),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "vec3 get_player_look_direction()",
-        asMETHOD(ScriptSystem, ScriptSystem::get_player_look_direction),
-        asCALL_THISCALL_ASGLOBAL,
-        this
-    );
-
-    engine->RegisterGlobalFunction(
-        "vec3 get_player_velocity()",
-        asMETHOD(ScriptSystem, ScriptSystem::get_player_velocity),
         asCALL_THISCALL_ASGLOBAL,
         this
     );
@@ -1769,6 +1764,26 @@ void ScriptSystem::initialize(class World* world) {
     );
 
     engine->RegisterGlobalFunction("float abs(float)", asFUNCTIONPR(glm::abs, (float), float), asCALL_CDECL);
+    engine->RegisterGlobalFunction(
+        "float clamp(float, float, float)", asFUNCTIONPR(glm::clamp, (float, float, float), float), asCALL_CDECL
+    );
+    engine->RegisterGlobalFunction(
+        "float mix(float, float, float)", asFUNCTIONPR(glm::mix, (float, float, float), float), asCALL_CDECL
+    );
+    engine->RegisterGlobalFunction(
+        "vec3 mix(vec3, vec3, float)",
+        asFUNCTION(+[](glm::vec3 a, glm::vec3 b, float t) {
+            return a + t * (b - a);
+        }),
+        asCALL_CDECL
+    );
+    engine->RegisterGlobalFunction(
+        "float dot(vec3, vec3)",
+        asFUNCTION(+[](glm::vec3 a, glm::vec3 b) -> float {
+            return glm::dot(a, b);
+        }),
+        asCALL_CDECL
+    );
 
     engine->RegisterGlobalFunction("float ceil(float)", asFUNCTIONPR(glm::ceil, (float), float), asCALL_CDECL);
     engine->RegisterGlobalFunction("float floor(float)", asFUNCTIONPR(glm::floor, (float), float), asCALL_CDECL);
@@ -2524,6 +2539,55 @@ void ScriptSystem::register_camera_component(class asIScriptEngine* engine) {
         type->GetTypeId(),
         [](Scene& scene, Entity e) {
             return scene.get_component<components::Camera>(e);
+        },
+    });
+}
+
+void ScriptSystem::register_character_controller_component(class asIScriptEngine* engine) {
+    engine->RegisterObjectType("CharacterController", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    engine->RegisterObjectProperty(
+        "CharacterController", "const float height", asOFFSET(components::CharacterController, height)
+    );
+    engine->RegisterObjectProperty(
+        "CharacterController", "const float radius", asOFFSET(components::CharacterController, radius)
+    );
+    engine->RegisterObjectProperty(
+        "CharacterController", "float step_down_distance", asOFFSET(components::CharacterController, step_down_distance)
+    );
+    engine->RegisterObjectProperty(
+        "CharacterController", "float step_up_height", asOFFSET(components::CharacterController, step_up_height)
+    );
+    engine->RegisterObjectProperty(
+        "CharacterController", "float max_slope_angle", asOFFSET(components::CharacterController, max_slope_angle)
+    );
+    engine->RegisterObjectProperty(
+        "CharacterController",
+        "const bool enhanced_edge_removal",
+        asOFFSET(components::CharacterController, enhanced_edge_removal)
+    );
+    engine->RegisterObjectProperty(
+        "CharacterController", "int collision_layer", asOFFSET(components::CharacterController, collision_layer)
+    );
+    engine->RegisterObjectProperty(
+        "CharacterController", "bool is_grounded", asOFFSET(components::CharacterController, is_grounded)
+    );
+    engine->RegisterObjectProperty(
+        "CharacterController", "vec3 velocity", asOFFSET(components::CharacterController, velocity)
+    );
+    engine->RegisterObjectProperty(
+        "CharacterController", "vec3 ground_normal", asOFFSET(components::CharacterController, ground_normal)
+    );
+
+    auto type = engine->GetTypeInfoByName("CharacterController");
+    if (!type) {
+        spdlog::error("Failed to get type info for CharacterController component");
+        return;
+    }
+
+    component_retrieve_map.insert({
+        type->GetTypeId(),
+        [](Scene& scene, Entity e) {
+            return scene.get_component<components::CharacterController>(e);
         },
     });
 }

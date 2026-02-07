@@ -58,3 +58,4 @@ template <> void Editor::render_component_ui<components::Name>(Entity e);
 template <> void Editor::render_component_ui<components::Physics>(Entity e);
 template <> void Editor::render_component_ui<components::Tag>(Entity e);
 template <> void Editor::render_component_ui<components::Camera>(Entity e);
+template <> void Editor::render_component_ui<components::CharacterController>(Entity e);
