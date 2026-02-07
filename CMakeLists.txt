@@ -307,6 +307,7 @@ set(SOURCES
     "src/input_system.cpp"
     "src/scene_serializer.cpp"
     "src/world.cpp"
+    "src/component_registry.cpp"
 )
 add_executable(Ember ${SOURCES})
 target_compile_definitions(Ember PRIVATE 

@@ -1,5 +1,6 @@
 #include "editor.hpp"
 
+#include "component_registry.hpp"
 #include "embedded.hpp"
 #include "imgui_internal.h"
 
@@ -320,17 +321,12 @@ template <> void Editor::render_component_ui<components::Name>(Entity e) {
     ImGui::InputText("##name", &n->name);
 }
 
-Editor::Editor(World* world, std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles)
+Editor::Editor(std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles)
     : imgui_material_image_handles(imgui_material_image_handles) {
+}
+
+void Editor::initialize(World* world) {
     this->world = world;
-
-    this->register_component<components::Transform>("Transform", false);
-    this->register_component<components::Name>("Name", false);
-
-    this->register_component<components::Mesh>("Mesh", true);
-    this->register_component<components::Physics>("Physics", true);
-    this->register_component<components::Script>("Script", true);
-    this->register_component<components::Tag>("Tag", true);
 }
 
 void Editor::render_main_menu(std::function<void(std::string)> scene_save_callback) {
@@ -460,10 +456,14 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
 
         ImGui::Separator();
         if (ImGui::BeginMenu("Add Component")) {
-            for (auto [component_id, info] : this->node_component_map) {
-                if (!this->entity_has_component(component_id, e)) {
-                    if (ImGui::MenuItem(info.name.c_str())) {
-                        info.add_component(e);
+            for (auto [name, info] : ComponentRegistry::get_all()) {
+                if (!info.description.show_in_editor) {
+                    continue;
+                }
+
+                if (!info.has_component(*world, e)) {
+                    if (ImGui::MenuItem(name.c_str())) {
+                        info.add_component(*world, e);
                     }
                 }
             }
@@ -471,10 +471,14 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
         }
         ImGui::Separator();
         if (ImGui::BeginMenu("Remove Component")) {
-            for (auto [component_id, info] : this->node_component_map) {
-                if (this->entity_has_component(component_id, e) && info.removable) {
-                    if (ImGui::MenuItem(info.name.c_str())) {
-                        info.remove_component(e);
+            for (auto [name, info] : ComponentRegistry::get_all()) {
+                if (!info.description.show_in_editor) {
+                    continue;
+                }
+
+                if (info.has_component(*world, e) && info.description.removable) {
+                    if (ImGui::MenuItem(name.c_str())) {
+                        info.remove_component(*world, e);
                     }
                 }
             }
@@ -518,27 +522,19 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
     }
 }
 
-bool Editor::entity_has_component(entt::id_type component_type, Entity entity) {
-    auto storage = world->scene.entity_registry.storage(component_type);
-
-    if (storage == nullptr) {
-        return false;
-    }
-
-    entt::runtime_view view{};
-
-    return view.iterate(*storage).contains(entity);
-}
-
 void Editor::render_scene_node_property_window() {
     ImGui::Begin(ICON_FA_WRENCH " Node Properties");
     if (selected_entity != entt::null) {
-        for (auto [component_id, info] : this->node_component_map) {
-            if (this->entity_has_component(component_id, selected_entity)) {
-                ImGui::PushID(component_id);
-                if (info.removable) {
+        for (auto [name, info] : ComponentRegistry::get_all()) {
+            if (!info.description.show_in_editor) {
+                continue;
+            }
+
+            if (info.has_component(*world, selected_entity)) {
+                ImGui::PushID(name.c_str());
+                if (info.description.removable) {
                     if (ImGui::Button(ICON_FA_TIMES_CIRCLE)) {
-                        info.remove_component(selected_entity);
+                        info.remove_component(*world, selected_entity);
                         ImGui::PopID();
                         continue;
                     } else {
@@ -548,7 +544,7 @@ void Editor::render_scene_node_property_window() {
 
                 if (ImGui::CollapsingHeader(info.name.c_str())) {
                     ImGui::PushID("Widget");
-                    info.render_ui(selected_entity);
+                    info.render_editor_ui(selected_entity);
                     ImGui::PopID();
                 }
                 ImGui::PopID();
