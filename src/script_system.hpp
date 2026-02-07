@@ -66,18 +66,6 @@ public:
     void call_on_update(const components::Script& script, float delta);
     void call_on_fixed_update(const components::Script& script, float delta);
 
-    void set_player_position(glm::vec3 position) {
-        this->player_pos = position;
-    }
-
-    void set_player_look_dir(glm::vec3 direction) {
-        this->player_look_dir = direction;
-    }
-
-    void set_player_velocity(glm::vec3 velocity) {
-        this->player_velocity = velocity;
-    }
-
     friend void node_get_component(class asIScriptGeneric* gen);
 
 private:
@@ -112,21 +100,6 @@ private:
 
     bool cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance, float& t, uint32_t& entity);
 
-    glm::vec3 player_pos;
-    glm::vec3 get_player_position() {
-        return player_pos;
-    }
-
-    glm::vec3 player_look_dir;
-    glm::vec3 get_player_look_direction() {
-        return player_look_dir;
-    }
-
-    glm::vec3 player_velocity;
-    glm::vec3 get_player_velocity() {
-        return player_velocity;
-    }
-
     int      node_id_property_index = -1;
     uint32_t get_node_id_from_object(class asIScriptObject* object);
 
@@ -136,4 +109,5 @@ private:
 
     void register_node_type(class asIScriptEngine* engine);
     void register_camera_component(class asIScriptEngine* engine);
+    void register_character_controller_component(class asIScriptEngine* engine);
 };

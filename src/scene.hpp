@@ -76,7 +76,7 @@ public:
     void remove_node_parent(Entity child);
 
     template <typename T, typename... Args> T& add_component(Entity entity, Args&&... args) {
-        return entity_registry.emplace<T>(entity, std::forward<Args>(args)...);
+        return add_component_intenal<T>(entity, args...);
     }
 
     template <typename T> void remove_component(Entity entity) {
@@ -101,6 +101,10 @@ private:
 
     template <typename T> void remove_component_internal(Entity node) {
         entity_registry.remove<T>(node);
+    }
+
+    template <typename T, typename... Args> T& add_component_intenal(Entity entity, Args&&... args) {
+        return entity_registry.emplace<T>(entity, std::forward<Args>(args)...);
     }
 };
 

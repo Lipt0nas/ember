@@ -1971,24 +1971,6 @@ int main(int argc, char* argv[]) {
     bool simulate_lower_fps = false;
     int  simulated_fps      = 60;
 
-    const float                             player_height          = 1.8f;
-    const float                             player_radius          = 0.5f;
-    const float                             player_speed           = 5.0f;
-    const float                             player_sprint_modifier = 1.5f;
-    const float                             player_jump_velocity   = 4.0f;
-    JPH::Ref<JPH::CharacterVirtualSettings> character_settings     = new JPH::CharacterVirtualSettings();
-    character_settings->mShape = new JPH::CapsuleShape(player_height / 2.0f - player_radius, player_radius);
-
-    JPH::CharacterVirtual* player_character = new JPH::CharacterVirtual(
-        character_settings, JPH::RVec3(0.0, 0.0, 0.0), JPH::Quat::sIdentity(), 0, &world.physics.system
-    );
-    bool player_physics = false;
-
-    float physics_spawn_mass        = 0.2f;
-    float physics_spawn_restitution = 0.2f;
-    float physics_spawn_friction    = 0.3f;
-    float physics_fling_modifier    = 100.0f;
-
     add_viewport_source("Anti-Aliased Composite", smaa_output);
     add_viewport_source("Composite", composite_output);
     add_viewport_source("GBuffer Albedo", gbuffer_albedo);
@@ -5613,6 +5595,9 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        world.input.mouse_delta             = world.input.mouse_delta_accumulator;
+        world.input.mouse_delta_accumulator = glm::vec2(0, 0);
+
         auto time       = std::chrono::high_resolution_clock::now();
         auto delta_time = std::chrono::duration<float>(time - frame_timestamp).count();
         frame_timestamp = time;
@@ -5698,8 +5683,9 @@ int main(int argc, char* argv[]) {
                 auto y = static_cast<float>(window_event.motion.y);
 
                 world.input.mouse_pos = {x, y};
+                world.input.mouse_delta_accumulator += glm::vec2(xrel, yrel);
 
-                if (capturing_mouse) {
+                if (capturing_mouse && (use_editor_camera && editor_mode)) {
                     camera->orientation =
                         glm::rotate(
                             glm::quat(0, 0, 0, 1), float(-xrel * camera_mouse_sensitivity), glm::vec3(0, 1, 0)
@@ -5711,23 +5697,18 @@ int main(int argc, char* argv[]) {
                                               camera->orientation * glm::vec3(1, 0, 0)
                                           ) *
                                           camera->orientation;
-
-                    glm::vec2 mouse_delta = {-xrel * camera_mouse_sensitivity, -yrel * camera_mouse_sensitivity};
                 }
                 break;
             }
         }
 
-        float current_player_speed = player_speed;
         if (world.input.is_key_pressed(Key::LEFT_SHIFT) || world.input.is_key_pressed(Key::LEFT_CTRL)) {
             if (world.input.is_key_pressed(Key::LEFT_CTRL)) {
                 camera_speed = base_camera_speed / camera_speed_mod;
-                current_player_speed /= player_sprint_modifier;
             }
 
             if (world.input.is_key_pressed(Key::LEFT_SHIFT)) {
                 camera_speed = base_camera_speed * camera_speed_mod;
-                current_player_speed *= player_sprint_modifier;
             }
         } else {
             camera_speed = base_camera_speed;
@@ -5750,14 +5731,6 @@ int main(int argc, char* argv[]) {
             velocity.y = 1;
         }
 
-        if (world.input.is_key_just_pressed(Key::G)) {
-            player_physics = !player_physics;
-
-            if (player_physics) {
-                player_character->SetPosition(JPH::RVec3(camera->position.x, camera->position.y, camera->position.z));
-            }
-        }
-
         if (world.input.is_key_just_pressed(Key::P)) {
             visualize_probes = !visualize_probes;
         }
@@ -5766,74 +5739,8 @@ int main(int argc, char* argv[]) {
             editor_overlay = !editor_overlay;
         }
 
-        if (!player_physics) {
+        if (capturing_mouse && (use_editor_camera && editor_mode)) {
             move_camera(*camera, velocity, camera_speed * delta_time);
-            world.script.set_player_velocity(velocity);
-        } else {
-            glm::vec3 oriented_velocity =
-                camera->orientation * glm::vec3(velocity.y, 0, -velocity.x) * current_player_speed;
-            JPH::Vec3 desired_velocity(oriented_velocity.x, 0, oriented_velocity.z);
-
-            static bool                         jumped       = false;
-            JPH::CharacterVirtual::EGroundState ground_state = player_character->GetGroundState();
-
-            if (world.input.is_key_pressed(Key::SPACE) &&
-                ground_state == JPH::CharacterVirtual::EGroundState::OnGround) {
-                if (!jumped) {
-                    desired_velocity.SetY(player_jump_velocity);
-                    jumped = true;
-                }
-            } else {
-                if (ground_state != JPH::CharacterVirtual::EGroundState::OnGround) {
-                    JPH::Vec3 current_vel = player_character->GetLinearVelocity();
-
-                    if (current_vel.GetY() > 1.0f && current_vel.GetY() < desired_velocity.GetY()) {
-                        current_vel.SetY(0.0f);
-                    }
-
-                    desired_velocity.SetY(current_vel.GetY() + world.physics.system.GetGravity().GetY() * delta_time);
-                }
-                jumped = false;
-            }
-
-            if (player_character->GetLinearVelocity().GetY() > 0 &&
-                player_character->GetGroundNormal().GetY() < -0.75) {
-                desired_velocity.SetY(0.0);
-            }
-
-            JPH::CharacterVirtual::ExtendedUpdateSettings update_settings;
-            update_settings.mStickToFloorStepDown = JPH::Vec3(0, -0.5f, 0);
-            update_settings.mWalkStairsStepUp     = JPH::Vec3(0, 0.4f, 0);
-
-            player_character->SetLinearVelocity(desired_velocity);
-            player_character->ExtendedUpdate(
-                delta_time,
-                world.physics.system.GetGravity(),
-                update_settings,
-                world.physics.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
-                world.physics.system.GetDefaultLayerFilter(Layers::MOVING),
-                {},
-                {},
-                *world.physics.temp_allocator
-            );
-
-            JPH::RVec3 char_vel = player_character->GetLinearVelocity();
-            world.script.set_player_velocity(glm::vec3(char_vel.GetX(), char_vel.GetY(), char_vel.GetZ()));
-            JPH::RVec3 char_pos = player_character->GetPosition();
-            camera->position =
-                glm::vec3(char_pos.GetX(), char_pos.GetY(), char_pos.GetZ()) + glm::vec3(0, player_height * 0.4f, 0);
-        }
-
-        // TODO: Remove this hack
-        if (!editor_mode || !use_editor_camera) {
-            auto view = world.scene.entity_registry.view<components::Camera, components::Transform>();
-            for (auto [e, c, t] : view.each()) {
-                if (c.is_active) {
-                    t.position = camera->position;
-                    t.rotation = camera->orientation;
-                    break;
-                }
-            }
         }
 
         if (world.input.is_key_just_pressed(Key::F5)) {
@@ -5852,6 +5759,11 @@ int main(int argc, char* argv[]) {
                             world.physics.system.GetBodyInterface().DestroyBody(p.body_id);
                         }
                     }
+                }
+
+                auto controller_view = world.scene.entity_registry.view<components::CharacterController>();
+                for (auto [e, c] : controller_view.each()) {
+                    delete c.controller;
                 }
 
                 world.script.clear();
@@ -5900,6 +5812,22 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
+                auto controller_view =
+                    world.scene.entity_registry.view<components::CharacterController, components::Transform>();
+                for (auto [e, c, t] : controller_view.each()) {
+                    JPH::Ref<JPH::CharacterVirtualSettings> character_settings = new JPH::CharacterVirtualSettings();
+                    character_settings->mShape = new JPH::CapsuleShape(c.height / 2.0f - c.radius, c.radius);
+
+                    c.controller = new JPH::CharacterVirtual(
+                        character_settings,
+                        JPH::RVec3(t.world_position.x, t.world_position.y, t.world_position.z),
+                        JPH::Quat(t.world_rotation.x, t.world_rotation.y, t.world_rotation.z, t.world_rotation.w),
+                        0,
+                        &world.physics.system
+                    );
+                    c.controller->SetEnhancedInternalEdgeRemoval(c.enhanced_edge_removal);
+                }
+
                 auto view = world.scene.entity_registry.view<components::Script>();
                 for (auto [e, s] : view.each()) {
                     world.script.construct_script_objects(e, s);
@@ -5929,6 +5857,52 @@ int main(int argc, char* argv[]) {
                 auto& c = view.get<components::Mesh>(e);
                 mesh_instances.push_back(c.mesh);
                 mesh_instance_entities.push_back(e);
+            }
+        }
+
+        {
+            auto view = world.scene.entity_registry.view<components::CharacterController, components::Transform>();
+
+            for (auto [e, c, t] : view.each()) {
+                if (!c.controller) {
+                    continue;
+                }
+
+                JPH::CharacterVirtual::EGroundState ground_state = c.controller->GetGroundState();
+                c.is_grounded = (ground_state == JPH::CharacterVirtual::EGroundState::OnGround);
+
+                JPH::Vec3 jolt_normal = c.controller->GetGroundNormal();
+                c.ground_normal       = glm::vec3(jolt_normal.GetX(), jolt_normal.GetY(), jolt_normal.GetZ());
+
+                if (!c.is_grounded) {
+                    JPH::Vec3 current_vel = c.controller->GetLinearVelocity();
+                    JPH::Vec3 gravity     = world.physics.system.GetGravity();
+
+                    c.velocity.y = current_vel.GetY() + gravity.GetY() * delta_time;
+                }
+
+                c.controller->SetLinearVelocity(JPH::Vec3(c.velocity.x, c.velocity.y, c.velocity.z));
+
+                JPH::CharacterVirtual::ExtendedUpdateSettings update_settings;
+                update_settings.mStickToFloorStepDown = JPH::Vec3(0, -c.step_down_distance, 0);
+                update_settings.mWalkStairsStepUp     = JPH::Vec3(0, c.step_up_height, 0);
+
+                c.controller->ExtendedUpdate(
+                    delta_time,
+                    world.physics.system.GetGravity(),
+                    update_settings,
+                    world.physics.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
+                    world.physics.system.GetDefaultLayerFilter(Layers::MOVING),
+                    {},
+                    {},
+                    *world.physics.temp_allocator
+                );
+
+                JPH::RVec3 new_pos = c.controller->GetPosition();
+                t.position         = glm::vec3(new_pos.GetX(), new_pos.GetY(), new_pos.GetZ());
+
+                JPH::Vec3 new_vel = c.controller->GetLinearVelocity();
+                c.velocity        = glm::vec3(new_vel.GetX(), new_vel.GetY(), new_vel.GetZ());
             }
         }
 
@@ -6114,9 +6088,6 @@ int main(int argc, char* argv[]) {
         }
 
         update_camera(*camera);
-
-        world.script.set_player_position(camera->position);
-        world.script.set_player_look_dir(camera->orientation * glm::vec3(0, 0, -1));
 
         luminance_constants.time_coef          = glm::clamp(1.0f - glm::exp(-delta_time * adaption_speed), 0.0f, 1.0f);
         luminance_constants.min_log2_luminance = min_log_lum;
@@ -6381,21 +6352,6 @@ int main(int argc, char* argv[]) {
                 transform_snap = glm::vec3(transform_snap.x);
             }
         }
-
-        if (ImGui::CollapsingHeader("Physics")) {
-            ImGui::InputFloat("Fling Modifier", &physics_fling_modifier);
-            ImGui::InputFloat("Spawn Mass", &physics_spawn_mass);
-            ImGui::SliderFloat("Spawn Restitution", &physics_spawn_restitution, 0.0f, 1.0f);
-            ImGui::SliderFloat("Spawn Friction", &physics_spawn_friction, 0.0f, 1.0f);
-
-            if (ImGui::Checkbox("Enable Player Physics", &player_physics)) {
-                if (player_physics) {
-                    player_character->SetPosition(
-                        JPH::RVec3(camera->position.x, camera->position.y, camera->position.z)
-                    );
-                }
-            }
-        }
         ImGui::End();
 
         editor.render_scene_hierarchy_window();
@@ -6479,10 +6435,6 @@ int main(int argc, char* argv[]) {
 
                     if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
                         world.physics.system.GetBodyInterface().SetPosition(p->body_id, new_position, activation);
-                        auto velocity = new_position - last_position;
-                        velocity *= physics_fling_modifier;
-
-                        world.physics.system.GetBodyInterface().SetLinearVelocity(p->body_id, velocity);
                     }
 
                     if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
@@ -6635,164 +6587,6 @@ int main(int argc, char* argv[]) {
         if (editor.get_selected_entity() != entt::null && world.input.is_key_pressed(Key::DELETE)) {
             world.scene.delete_node(editor.get_selected_entity());
             editor.set_selected_entity(entt::null);
-        }
-
-        if (world.input.is_key_pressed(Key::C) && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
-            if (world.input.is_button_just_pressed(Button::LEFT)) {
-                if (editor.get_selected_entity() != entt::null) {
-                    auto t = world.scene.get_component<components::Transform>(editor.get_selected_entity());
-                    auto m = world.scene.get_component<components::Mesh>(editor.get_selected_entity());
-                    auto n = world.scene.get_component<components::Name>(editor.get_selected_entity());
-
-                    if (t && m && n) {
-                        glm::vec2 pos  = screen_pos_to_scene_vewport(mouse_pos);
-                        glm::vec2 frac = pos / glm::vec2(viewport_pos_size.z, viewport_pos_size.w);
-
-                        glm::vec4 mouse_near = {frac * 2.0f - 1.0f, 1, 1.0};
-                        mouse_near.y *= -1;
-                        mouse_near =
-                            glm::inverse(camera->view_matrix) * glm::inverse(camera->projection_matrix) * mouse_near;
-                        glm::vec3 near = glm::vec3(mouse_near) / mouse_near.w;
-
-                        glm::vec4 mouse_far = {frac * 2.0f - 1.0f, 0.01, 1.0};
-                        mouse_far.y *= -1;
-                        mouse_far =
-                            glm::inverse(camera->view_matrix) * glm::inverse(camera->projection_matrix) * mouse_far;
-                        glm::vec3 far = glm::vec3(mouse_far) / mouse_far.w;
-
-                        glm::vec3 origin  = camera->position;
-                        glm::vec3 ray_dir = glm::normalize(far - near);
-
-                        Mesh& mesh = world.scene.meshes[m->mesh.mesh_id];
-
-                        glm::vec3 half_extent = (mesh.bounds_max - mesh.bounds_min) * 0.5f;
-                        half_extent *= t->scale;
-
-                        float radius = glm::max(half_extent.x, glm::max(half_extent.y, half_extent.z));
-
-                        float ratios[3];
-                        for (int i = 0; i < 3; i++) {
-                            ratios[i] = half_extent[i] / radius;
-                        }
-
-                        enum class Shape {
-                            SPHERE,
-                            BOX,
-                            CAPSULE,
-                        };
-
-                        Shape shape = Shape::SPHERE;
-
-                        const float capsule_ratio     = 0.6;
-                        const float similar_threshold = 1.3;
-                        int         capsule_axis      = -1;
-
-                        bool is_capsule = false;
-                        for (int dominant = 0; dominant < 3; dominant++) {
-                            int other1 = (dominant + 1) % 3;
-                            int other2 = (dominant + 2) % 3;
-
-                            if (ratios[dominant] > capsule_ratio && ratios[dominant] * capsule_ratio > ratios[other1] &&
-                                ratios[dominant] * capsule_ratio > ratios[other2] &&
-                                glm::max(ratios[other1], ratios[other2]) / glm::min(ratios[other1], ratios[other2]) <
-                                    similar_threshold) {
-                                is_capsule   = true;
-                                capsule_axis = dominant;
-                                break;
-                            }
-                        }
-
-                        if (is_capsule) {
-                            shape = Shape::CAPSULE;
-                        } else {
-                            for (int i = 0; i < 3; i++) {
-                                if (ratios[i] < 0.85) {
-                                    shape = Shape::BOX;
-                                    break;
-                                }
-                            }
-                        }
-
-                        glm::vec3 spawn_point = origin + ray_dir * radius * 2.0f;
-
-                        auto physics_spawn_point = JPH::RVec3(spawn_point.x, spawn_point.y, spawn_point.z);
-                        auto physics_rotation    = JPH::Quat::sIdentity();
-
-                        JPH::BodyCreationSettings body_settings;
-                        switch (shape) {
-                        case Shape::SPHERE:
-                            body_settings = JPH::BodyCreationSettings(
-                                new JPH::SphereShape(radius),
-                                physics_spawn_point,
-                                physics_rotation,
-                                JPH::EMotionType::Dynamic,
-                                Layers::MOVING
-                            );
-                            break;
-                        case Shape::BOX:
-                            body_settings = JPH::BodyCreationSettings(
-                                new JPH::BoxShape(JPH::RVec3(half_extent.x, half_extent.y, half_extent.z)),
-                                physics_spawn_point,
-                                physics_rotation,
-                                JPH::EMotionType::Dynamic,
-                                Layers::MOVING
-                            );
-                            break;
-                        case Shape::CAPSULE:
-                            float height = half_extent[capsule_axis];
-
-                            int   other1     = (capsule_axis + 1) % 3;
-                            int   other2     = (capsule_axis + 2) % 3;
-                            float cap_radius = glm::max(half_extent[other1], half_extent[other2]);
-
-                            JPH::Quat rotation = JPH::Quat::sIdentity();
-                            if (capsule_axis == 0) {
-                                rotation = JPH::Quat::sRotation(JPH::Vec3::sAxisZ(), JPH::DegreesToRadians(90));
-                            } else if (capsule_axis == 2) {
-                                rotation = JPH::Quat::sRotation(JPH::Vec3::sAxisX(), JPH::DegreesToRadians(90));
-                            }
-                            JPH::CapsuleShape*           capsule = new JPH::CapsuleShape(height, cap_radius);
-                            JPH::RotatedTranslatedShape* rotated_capsule =
-                                new JPH::RotatedTranslatedShape(JPH::Vec3::sZero(), rotation, capsule);
-
-                            body_settings = JPH::BodyCreationSettings(
-                                rotated_capsule,
-                                physics_spawn_point,
-                                physics_rotation,
-                                JPH::EMotionType::Dynamic,
-                                Layers::MOVING
-                            );
-                            break;
-                        }
-
-                        body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
-                        body_settings.mMassPropertiesOverride.mMass = physics_spawn_mass;
-
-                        JPH::BodyID body_id = world.physics.system.GetBodyInterface().CreateAndAddBody(
-                            body_settings, JPH::EActivation::Activate
-                        );
-                        world.physics.system.GetBodyInterface().SetLinearVelocity(
-                            body_id, JPH::Vec3(ray_dir.x, ray_dir.y, ray_dir.z) * 10
-                        );
-                        world.physics.system.GetBodyInterface().SetFriction(body_id, physics_spawn_mass);
-                        world.physics.system.GetBodyInterface().SetRestitution(body_id, physics_spawn_restitution);
-
-                        Entity new_entity       = world.scene.create_node(n->name + "_copy");
-                        auto   new_transform    = world.scene.get_component<components::Transform>(new_entity);
-                        new_transform->position = spawn_point;
-                        new_transform->scale    = t->scale;
-                        new_transform->rotation = t->rotation;
-
-                        auto& new_mesh = world.scene.add_component<components::Mesh>(new_entity);
-                        new_mesh.mesh  = m->mesh;
-
-                        auto& new_physics      = world.scene.add_component<components::Physics>(new_entity);
-                        new_physics.body_id    = body_id;
-                        new_physics.is_static  = false;
-                        new_physics.last_scale = new_transform->scale;
-                    }
-                }
-            }
         }
 
         {

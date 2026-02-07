@@ -121,6 +121,7 @@ public:
     void update_key_states();
 
     glm::vec2 get_mouse_position();
+    glm::vec2 get_mouse_delta();
 
     bool is_key_pressed(Key key);
     bool is_button_pressed(Button button);
@@ -144,6 +145,8 @@ public:
     int get_button_count();
 
     glm::vec2 mouse_pos;
+    glm::vec2 mouse_delta;
+    glm::vec2 mouse_delta_accumulator;
 
 private:
     std::array<bool, 512> pressed_keys    = {0};
