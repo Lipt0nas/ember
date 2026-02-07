@@ -196,11 +196,95 @@ template <> void Editor::render_component_ui<components::Script>(Entity e) {
     auto* s       = world->scene.get_component<components::Script>(e);
     auto  scripts = world->script.get_scripts();
 
-    Script* script = nullptr;
-    if (scripts.contains(s->script_id)) {
-        script = &scripts.at(s->script_id);
+    int script_to_remove = -1;
+    for (int i = 0; i < s->scripts.size(); i++) {
+        ScriptInstance& instance = s->scripts[i];
+
+        Script* script = nullptr;
+        if (scripts.contains(instance.script_id)) {
+            script = &scripts.at(instance.script_id);
+        }
+
+        if (script) {
+            ImGui::SeparatorText(script->name.c_str());
+
+            for (auto& prop : script->editable_properties) {
+                ScriptProperty current_prop;
+                bool           overriden = false;
+
+                if (auto it = instance.property_overrides.find(prop.name); it != instance.property_overrides.end()) {
+                    current_prop = it->second;
+                    overriden    = true;
+                } else {
+                    current_prop = prop.default_value;
+                }
+
+                bool changed = false;
+                switch (prop.type) {
+                case ScriptPropertyDescription::Type::BOOL:
+                    changed = render_bool_property(prop.name, current_prop);
+                    break;
+                case ScriptPropertyDescription::Type::INT:
+                    changed = render_int_property(prop.name, current_prop);
+                    break;
+                case ScriptPropertyDescription::Type::FLOAT:
+                    changed = render_float_property(prop.name, current_prop);
+                    break;
+                case ScriptPropertyDescription::Type::STRING:
+                    changed = render_string_property(prop.name, current_prop);
+                    break;
+                case ScriptPropertyDescription::Type::ENUM:
+                    changed = render_enum_property(prop.name, current_prop, prop.enum_values);
+                    break;
+                case ScriptPropertyDescription::Type::VEC2:
+                    changed = render_vec2_property(prop.name, current_prop);
+                    break;
+                case ScriptPropertyDescription::Type::VEC3:
+                    changed = render_vec3_property(prop.name, current_prop);
+                    break;
+                case ScriptPropertyDescription::Type::VEC4:
+                    changed = render_vec4_property(prop.name, current_prop);
+                    break;
+                case ScriptPropertyDescription::Type::QUAT:
+                    changed = render_quat_property(prop.name, current_prop);
+                    break;
+                case ScriptPropertyDescription::Type::UNKNOWN:
+                    break;
+                }
+
+                if (changed) {
+                    instance.property_overrides[prop.name] = current_prop;
+                }
+
+                if (overriden) {
+                    ImGui::SameLine();
+                    ImGui::PushID(prop.name.c_str());
+                    if (ImGui::Button(ICON_FA_REDO)) {
+                        instance.property_overrides.erase(prop.name);
+                    }
+                    ImGui::PopID();
+                }
+            }
+        }
+
+        ImGui::PushID(instance.script_id);
+        if (ImGui::Button("Remove Script")) {
+            script_to_remove = i;
+        }
+        ImGui::PopID();
     }
 
+    if (script_to_remove != -1) {
+        s->scripts.erase(s->scripts.begin() + script_to_remove);
+    }
+
+    ImGui::NewLine();
+    ImGui::Separator();
+    static uint32_t id_to_add = 0;
+    Script*         script    = nullptr;
+    if (scripts.contains(id_to_add)) {
+        script = &scripts.at(id_to_add);
+    }
     if (ImGui::BeginCombo("Script Source", (script ? script->name.c_str() : "None"))) {
         for (auto& [id, script] : scripts) {
             // Currently scripts that don't have node behavior are distinguished by having no constructor
@@ -208,73 +292,16 @@ template <> void Editor::render_component_ui<components::Script>(Entity e) {
                 continue;
             }
 
-            if (ImGui::Selectable(script.name.c_str(), id == s->script_id)) {
-                s->script_id = id;
+            if (ImGui::Selectable(script.name.c_str())) {
+                id_to_add = id;
             }
         }
         ImGui::EndCombo();
     }
 
-    if (script) {
-        ImGui::SeparatorText("");
-
-        for (auto& prop : script->editable_properties) {
-            ScriptProperty current_prop;
-            bool           overriden = false;
-
-            if (auto it = s->property_overrides.find(prop.name); it != s->property_overrides.end()) {
-                current_prop = it->second;
-                overriden    = true;
-            } else {
-                current_prop = prop.default_value;
-            }
-
-            bool changed = false;
-            switch (prop.type) {
-            case ScriptPropertyDescription::Type::BOOL:
-                changed = render_bool_property(prop.name, current_prop);
-                break;
-            case ScriptPropertyDescription::Type::INT:
-                changed = render_int_property(prop.name, current_prop);
-                break;
-            case ScriptPropertyDescription::Type::FLOAT:
-                changed = render_float_property(prop.name, current_prop);
-                break;
-            case ScriptPropertyDescription::Type::STRING:
-                changed = render_string_property(prop.name, current_prop);
-                break;
-            case ScriptPropertyDescription::Type::ENUM:
-                changed = render_enum_property(prop.name, current_prop, prop.enum_values);
-                break;
-            case ScriptPropertyDescription::Type::VEC2:
-                changed = render_vec2_property(prop.name, current_prop);
-                break;
-            case ScriptPropertyDescription::Type::VEC3:
-                changed = render_vec3_property(prop.name, current_prop);
-                break;
-            case ScriptPropertyDescription::Type::VEC4:
-                changed = render_vec4_property(prop.name, current_prop);
-                break;
-            case ScriptPropertyDescription::Type::QUAT:
-                changed = render_quat_property(prop.name, current_prop);
-                break;
-            case ScriptPropertyDescription::Type::UNKNOWN:
-                break;
-            }
-
-            if (changed) {
-                s->property_overrides[prop.name] = current_prop;
-            }
-
-            if (overriden) {
-                ImGui::SameLine();
-                ImGui::PushID(prop.name.c_str());
-                if (ImGui::Button(ICON_FA_REDO)) {
-                    s->property_overrides.erase(prop.name);
-                }
-                ImGui::PopID();
-            }
-        }
+    if (ImGui::Button("Add Script") && scripts.contains(id_to_add)) {
+        s->scripts.push_back({.script_id = static_cast<uint32_t>(id_to_add)});
+        id_to_add = 0;
     }
 }
 
