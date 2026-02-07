@@ -1406,6 +1406,10 @@ void ScriptSystem::initialize(class World* world) {
 
     register_glm_types(engine);
 
+    engine->RegisterEnum("CameraType");
+    engine->RegisterEnumValue("CameraType", "PERSPECTIVE", 0);
+    engine->RegisterEnumValue("CameraType", "ORTHOGRAPHIC", 1);
+
     engine->RegisterEnum("Key");
     for (int i = 0; i < world->input.get_key_count(); i++) {
         auto name = world->input.key_to_string(static_cast<Key>(i));
@@ -1673,6 +1677,8 @@ void ScriptSystem::initialize(class World* world) {
             },
         });
     }
+
+    register_camera_component(engine);
 
     engine->SetDefaultNamespace("World");
     engine->RegisterGlobalFunction(
@@ -2072,6 +2078,7 @@ void ScriptSystem::generate_predefined_file() {
     generate_global_function_list(engine, stream);
     generate_global_property_list(engine, stream);
     generate_global_typedefs(engine, stream);
+    stream << prelude_code;
 }
 
 void ScriptSystem::clear() {
@@ -2492,4 +2499,31 @@ void ScriptSystem::register_node_type(class asIScriptEngine* engine) {
     engine->RegisterObjectMethod("Node", "Node find_child(string &in)", asFUNCTION(find_child), asCALL_CDECL_OBJFIRST);
 
     engine->RegisterObjectMethod("Node", "bool has_tag(string &in)", asFUNCTION(node_has_tag), asCALL_CDECL_OBJFIRST);
+}
+
+void ScriptSystem::register_camera_component(class asIScriptEngine* engine) {
+    engine->RegisterObjectType("Camera", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    engine->RegisterObjectProperty("Camera", "float near_plane", asOFFSET(components::Camera, near_plane));
+    engine->RegisterObjectProperty("Camera", "float far_plane", asOFFSET(components::Camera, far_plane));
+    engine->RegisterObjectProperty("Camera", "float fov", asOFFSET(components::Camera, fov));
+    engine->RegisterObjectProperty("Camera", "float viewport_x", asOFFSET(components::Camera, viewport_x));
+    engine->RegisterObjectProperty("Camera", "float viewport_y", asOFFSET(components::Camera, viewport_y));
+    engine->RegisterObjectProperty("Camera", "float viewport_width", asOFFSET(components::Camera, viewport_width));
+    engine->RegisterObjectProperty("Camera", "float viewport_height", asOFFSET(components::Camera, viewport_height));
+    engine->RegisterObjectProperty("Camera", "float ortho_size", asOFFSET(components::Camera, ortho_size));
+    engine->RegisterObjectProperty("Camera", "CameraType type", asOFFSET(components::Camera, type));
+    engine->RegisterObjectProperty("Camera", "bool is_active", asOFFSET(components::Camera, is_active));
+
+    auto type = engine->GetTypeInfoByName("Camera");
+    if (!type) {
+        spdlog::error("Failed to get type info for Camera component");
+        return;
+    }
+
+    component_retrieve_map.insert({
+        type->GetTypeId(),
+        [](Scene& scene, Entity e) {
+            return scene.get_component<components::Camera>(e);
+        },
+    });
 }

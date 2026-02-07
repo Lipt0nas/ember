@@ -348,6 +348,24 @@ template <> void Editor::render_component_ui<components::Name>(Entity e) {
     ImGui::InputText("##name", &n->name);
 }
 
+template <> void Editor::render_component_ui<components::Camera>(Entity e) {
+    auto* c = world->scene.get_component<components::Camera>(e);
+
+    ImGui::InputFloat("Near Plane", &c->near_plane);
+    ImGui::InputFloat("Far Plane", &c->far_plane);
+
+    ImGui::SliderFloat("Viewport X", &c->viewport_x, 0.0f, 1.0f);
+    ImGui::SliderFloat("Viewport Y", &c->viewport_y, 0.0f, 1.0f);
+    ImGui::SliderFloat("Viewport Width", &c->viewport_width, 0.0f, 1.0f);
+    ImGui::SliderFloat("Viewport Height", &c->viewport_height, 0.0f, 1.0f);
+
+    ImGui::SliderFloat("FOV", &c->fov, 1.0f, 180.0f);
+
+    ImGui::InputFloat("Ortho Size", &c->ortho_size);
+
+    ImGui::Checkbox("Active", &c->is_active);
+}
+
 Editor::Editor(std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles)
     : imgui_material_image_handles(imgui_material_image_handles) {
 }

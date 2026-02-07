@@ -1171,6 +1171,21 @@ Entity Scene::clone_node_internal(Entity base, Entity cloned_parent) {
         tag.tags  = src_tag->tags;
     }
 
+    auto src_camera = get_component<components::Camera>(base);
+    if (src_camera) {
+        auto& camera           = add_component<components::Camera>(new_entity);
+        camera.near_plane      = src_camera->near_plane;
+        camera.far_plane       = src_camera->far_plane;
+        camera.fov             = src_camera->fov;
+        camera.viewport_x      = src_camera->viewport_x;
+        camera.viewport_y      = src_camera->viewport_y;
+        camera.viewport_width  = src_camera->viewport_width;
+        camera.viewport_height = src_camera->viewport_height;
+        camera.ortho_size      = src_camera->ortho_size;
+        camera.type            = src_camera->type;
+        camera.is_active       = src_camera->is_active;
+    }
+
     return new_entity;
 }
 

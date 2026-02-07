@@ -1,5 +1,6 @@
 #pragma once
 
+#include "camera.hpp"
 #include "ember.hpp"
 #include "geometry.hpp"
 #include "physics.hpp"
@@ -129,6 +130,22 @@ namespace components {
         std::vector<std::string> tags;
     };
 
+    struct Camera {
+        float near_plane = 0.1f;
+        float far_plane  = 1000.0f;
+        float fov        = 60.0f;
+
+        float viewport_x      = 0.0f;
+        float viewport_y      = 0.0f;
+        float viewport_width  = 1.0f;
+        float viewport_height = 1.0f;
+        float ortho_size      = 10.0f;
+
+        CameraType type = CameraType::PERSPECTIVE;
+
+        bool is_active = false;
+    };
+
     template <typename Archive> void serialize(Archive& archive, Transform& transform) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
             archive(
@@ -198,6 +215,36 @@ namespace components {
             archive(cereal::make_nvp("tags", tag.tags));
         } else {
             archive(tag.tags);
+        }
+    }
+
+    template <typename Archive> void serialize(Archive& archive, Camera& camera) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("near_plane", camera.near_plane),
+                cereal::make_nvp("far_plane", camera.far_plane),
+                cereal::make_nvp("fov", camera.fov),
+                cereal::make_nvp("viewport_x", camera.viewport_x),
+                cereal::make_nvp("viewport_y", camera.viewport_y),
+                cereal::make_nvp("viewport_width", camera.viewport_width),
+                cereal::make_nvp("viewport_height", camera.viewport_height),
+                cereal::make_nvp("ortho_size", camera.ortho_size),
+                cereal::make_nvp("type", camera.type),
+                cereal::make_nvp("is_active", camera.is_active)
+            );
+        } else {
+            archive(
+                camera.near_plane,
+                camera.far_plane,
+                camera.fov,
+                camera.viewport_x,
+                camera.viewport_y,
+                camera.viewport_width,
+                camera.viewport_height,
+                camera.ortho_size,
+                camera.type,
+                camera.is_active
+            );
         }
     }
 
