@@ -135,4 +135,5 @@ private:
     std::unordered_map<int, std::function<void*(Scene& scene, Entity e)>> component_retrieve_map;
 
     void register_node_type(class asIScriptEngine* engine);
+    void register_camera_component(class asIScriptEngine* engine);
 };

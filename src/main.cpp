@@ -1922,17 +1922,22 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    Camera camera = {
-        .near_plane      = 0.01f,
-        .viewport_width  = static_cast<float>(swapchain.width),
-        .viewport_height = static_cast<float>(swapchain.height),
-        .fov             = 90.0f,
-        .orientation     = {0.0f, 0.0f, 0.0f, 1.0f}
+    bool    use_editor_camera = true;
+    Camera* camera;
+    Camera  editor_camera = {
+         .near_plane      = 0.01f,
+         .far_plane       = 1000.0f,
+         .viewport_width  = static_cast<float>(swapchain.width),
+         .viewport_height = static_cast<float>(swapchain.height),
+         .fov             = 90.0f,
+         .orientation     = {0.0f, 0.0f, 0.0f, 1.0f},
     };
-    camera.position = glm::vec3(0, 0, 0);
+    editor_camera.position = glm::vec3(0, 0, 0);
+    editor_camera.orientation *= glm::angleAxis(glm::radians(-90.0f), glm::vec3(0, 1, 0));
 
-    camera.position = {16.1, 6.3, -0.57};
-    camera.orientation *= glm::angleAxis(glm::radians(-90.0f), glm::vec3(0, 1, 0));
+    Camera gameplay_camera;
+
+    camera = &editor_camera;
 
     glm::mat4 last_frame_view_proj = glm::mat4(1.0);
 
@@ -4478,7 +4483,7 @@ int main(int argc, char* argv[]) {
                         ShadowBlurConstants constants = {
                             .image_size = glm::vec2(directional_shadow_buffer.width, directional_shadow_buffer.height),
                             .direction  = static_cast<float>(i % 2 == 0 ? 0 : 1),
-                            .znear      = camera.near_plane
+                            .znear      = camera->near_plane
                         };
 
                         vkCmdPushConstants(
@@ -5357,7 +5362,7 @@ int main(int argc, char* argv[]) {
                     offsets.data()
                 );
 
-                debug_renderer_constants.camera_pos = camera.position;
+                debug_renderer_constants.camera_pos = camera->position;
                 vkCmdPushConstants(
                     command_buffer,
                     debug_renderer.pipeline.pipeline_layout,
@@ -5623,6 +5628,34 @@ int main(int argc, char* argv[]) {
             time_passed -= 1.0f;
         }
 
+        {
+            if (!editor_mode || !use_editor_camera) {
+                auto view = world.scene.entity_registry.view<components::Camera, components::Transform>();
+                for (auto [e, c, t] : view.each()) {
+                    if (c.is_active) {
+                        gameplay_camera.near_plane = c.near_plane;
+                        gameplay_camera.far_plane  = c.far_plane;
+
+                        gameplay_camera.viewport_width  = c.viewport_width * swapchain.width;
+                        gameplay_camera.viewport_height = c.viewport_height * swapchain.height;
+
+                        gameplay_camera.fov        = c.fov;
+                        gameplay_camera.ortho_size = c.ortho_size;
+
+                        gameplay_camera.type        = c.type;
+                        gameplay_camera.position    = t.world_position;
+                        gameplay_camera.orientation = t.world_rotation;
+                        update_camera(gameplay_camera);
+
+                        camera = &gameplay_camera;
+                        break;
+                    }
+                }
+            } else {
+                camera = &editor_camera;
+            }
+        }
+
         SDL_Event window_event;
         while (SDL_PollEvent(&window_event)) {
             ImGui_ImplSDL3_ProcessEvent(&window_event);
@@ -5667,17 +5700,17 @@ int main(int argc, char* argv[]) {
                 world.input.mouse_pos = {x, y};
 
                 if (capturing_mouse) {
-                    camera.orientation =
+                    camera->orientation =
                         glm::rotate(
                             glm::quat(0, 0, 0, 1), float(-xrel * camera_mouse_sensitivity), glm::vec3(0, 1, 0)
                         ) *
-                        camera.orientation;
-                    camera.orientation = glm::rotate(
-                                             glm::quat(0, 0, 0, 1),
-                                             float(-yrel * camera_mouse_sensitivity),
-                                             camera.orientation * glm::vec3(1, 0, 0)
-                                         ) *
-                                         camera.orientation;
+                        camera->orientation;
+                    camera->orientation = glm::rotate(
+                                              glm::quat(0, 0, 0, 1),
+                                              float(-yrel * camera_mouse_sensitivity),
+                                              camera->orientation * glm::vec3(1, 0, 0)
+                                          ) *
+                                          camera->orientation;
 
                     glm::vec2 mouse_delta = {-xrel * camera_mouse_sensitivity, -yrel * camera_mouse_sensitivity};
                 }
@@ -5721,7 +5754,7 @@ int main(int argc, char* argv[]) {
             player_physics = !player_physics;
 
             if (player_physics) {
-                player_character->SetPosition(JPH::RVec3(camera.position.x, camera.position.y, camera.position.z));
+                player_character->SetPosition(JPH::RVec3(camera->position.x, camera->position.y, camera->position.z));
             }
         }
 
@@ -5731,6 +5764,76 @@ int main(int argc, char* argv[]) {
 
         if (world.input.is_key_just_pressed(Key::GRAVE)) {
             editor_overlay = !editor_overlay;
+        }
+
+        if (!player_physics) {
+            move_camera(*camera, velocity, camera_speed * delta_time);
+            world.script.set_player_velocity(velocity);
+        } else {
+            glm::vec3 oriented_velocity =
+                camera->orientation * glm::vec3(velocity.y, 0, -velocity.x) * current_player_speed;
+            JPH::Vec3 desired_velocity(oriented_velocity.x, 0, oriented_velocity.z);
+
+            static bool                         jumped       = false;
+            JPH::CharacterVirtual::EGroundState ground_state = player_character->GetGroundState();
+
+            if (world.input.is_key_pressed(Key::SPACE) &&
+                ground_state == JPH::CharacterVirtual::EGroundState::OnGround) {
+                if (!jumped) {
+                    desired_velocity.SetY(player_jump_velocity);
+                    jumped = true;
+                }
+            } else {
+                if (ground_state != JPH::CharacterVirtual::EGroundState::OnGround) {
+                    JPH::Vec3 current_vel = player_character->GetLinearVelocity();
+
+                    if (current_vel.GetY() > 1.0f && current_vel.GetY() < desired_velocity.GetY()) {
+                        current_vel.SetY(0.0f);
+                    }
+
+                    desired_velocity.SetY(current_vel.GetY() + world.physics.system.GetGravity().GetY() * delta_time);
+                }
+                jumped = false;
+            }
+
+            if (player_character->GetLinearVelocity().GetY() > 0 &&
+                player_character->GetGroundNormal().GetY() < -0.75) {
+                desired_velocity.SetY(0.0);
+            }
+
+            JPH::CharacterVirtual::ExtendedUpdateSettings update_settings;
+            update_settings.mStickToFloorStepDown = JPH::Vec3(0, -0.5f, 0);
+            update_settings.mWalkStairsStepUp     = JPH::Vec3(0, 0.4f, 0);
+
+            player_character->SetLinearVelocity(desired_velocity);
+            player_character->ExtendedUpdate(
+                delta_time,
+                world.physics.system.GetGravity(),
+                update_settings,
+                world.physics.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
+                world.physics.system.GetDefaultLayerFilter(Layers::MOVING),
+                {},
+                {},
+                *world.physics.temp_allocator
+            );
+
+            JPH::RVec3 char_vel = player_character->GetLinearVelocity();
+            world.script.set_player_velocity(glm::vec3(char_vel.GetX(), char_vel.GetY(), char_vel.GetZ()));
+            JPH::RVec3 char_pos = player_character->GetPosition();
+            camera->position =
+                glm::vec3(char_pos.GetX(), char_pos.GetY(), char_pos.GetZ()) + glm::vec3(0, player_height * 0.4f, 0);
+        }
+
+        // TODO: Remove this hack
+        if (!editor_mode || !use_editor_camera) {
+            auto view = world.scene.entity_registry.view<components::Camera, components::Transform>();
+            for (auto [e, c, t] : view.each()) {
+                if (c.is_active) {
+                    t.position = camera->position;
+                    t.rotation = camera->orientation;
+                    break;
+                }
+            }
         }
 
         if (world.input.is_key_just_pressed(Key::F5)) {
@@ -5996,64 +6099,6 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (!player_physics) {
-            move_camera(camera, velocity, camera_speed * delta_time);
-            world.script.set_player_velocity(velocity);
-        } else {
-            glm::vec3 oriented_velocity =
-                camera.orientation * glm::vec3(velocity.y, 0, -velocity.x) * current_player_speed;
-            JPH::Vec3 desired_velocity(oriented_velocity.x, 0, oriented_velocity.z);
-
-            static bool                         jumped       = false;
-            JPH::CharacterVirtual::EGroundState ground_state = player_character->GetGroundState();
-
-            if (world.input.is_key_pressed(Key::SPACE) &&
-                ground_state == JPH::CharacterVirtual::EGroundState::OnGround) {
-                if (!jumped) {
-                    desired_velocity.SetY(player_jump_velocity);
-                    jumped = true;
-                }
-            } else {
-                if (ground_state != JPH::CharacterVirtual::EGroundState::OnGround) {
-                    JPH::Vec3 current_vel = player_character->GetLinearVelocity();
-
-                    if (current_vel.GetY() > 1.0f && current_vel.GetY() < desired_velocity.GetY()) {
-                        current_vel.SetY(0.0f);
-                    }
-
-                    desired_velocity.SetY(current_vel.GetY() + world.physics.system.GetGravity().GetY() * delta_time);
-                }
-                jumped = false;
-            }
-
-            if (player_character->GetLinearVelocity().GetY() > 0 &&
-                player_character->GetGroundNormal().GetY() < -0.75) {
-                desired_velocity.SetY(0.0);
-            }
-
-            JPH::CharacterVirtual::ExtendedUpdateSettings update_settings;
-            update_settings.mStickToFloorStepDown = JPH::Vec3(0, -0.5f, 0);
-            update_settings.mWalkStairsStepUp     = JPH::Vec3(0, 0.4f, 0);
-
-            player_character->SetLinearVelocity(desired_velocity);
-            player_character->ExtendedUpdate(
-                delta_time,
-                world.physics.system.GetGravity(),
-                update_settings,
-                world.physics.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
-                world.physics.system.GetDefaultLayerFilter(Layers::MOVING),
-                {},
-                {},
-                *world.physics.temp_allocator
-            );
-
-            JPH::RVec3 char_vel = player_character->GetLinearVelocity();
-            world.script.set_player_velocity(glm::vec3(char_vel.GetX(), char_vel.GetY(), char_vel.GetZ()));
-            JPH::RVec3 char_pos = player_character->GetPosition();
-            camera.position =
-                glm::vec3(char_pos.GetX(), char_pos.GetY(), char_pos.GetZ()) + glm::vec3(0, player_height * 0.4f, 0);
-        }
-
         if (frame_count == pick_frame) {
             void* ptr;
             VK_CHECK(vmaMapMemory(vma_allocator, pick_buffer.allocation, &ptr));
@@ -6068,16 +6113,16 @@ int main(int argc, char* argv[]) {
             pick_frame = UINT32_MAX;
         }
 
-        update_camera(camera);
+        update_camera(*camera);
 
-        world.script.set_player_position(camera.position);
-        world.script.set_player_look_dir(camera.orientation * glm::vec3(0, 0, -1));
+        world.script.set_player_position(camera->position);
+        world.script.set_player_look_dir(camera->orientation * glm::vec3(0, 0, -1));
 
         luminance_constants.time_coef          = glm::clamp(1.0f - glm::exp(-delta_time * adaption_speed), 0.0f, 1.0f);
         luminance_constants.min_log2_luminance = min_log_lum;
         luminance_constants.inverse_log2_luminance = 1.0f / (max_log_lum - min_log_lum);
 
-        auto transposed_projection = glm::transpose(camera.projection_matrix);
+        auto transposed_projection = glm::transpose(camera->projection_matrix);
 
         glm::vec4 frustum_x = normalize_plane(transposed_projection[3] + transposed_projection[0]);
         glm::vec4 frustum_y = normalize_plane(transposed_projection[3] + transposed_projection[1]);
@@ -6126,6 +6171,8 @@ int main(int argc, char* argv[]) {
 
                 ImGui::Text(": %s", editor_viewport_source.c_str());
                 ImGui::Text("        State: %s", editor_mode ? "Editor" : "Gameplay");
+                ImGui::Text("        Use Editor Camera: ");
+                ImGui::Checkbox("##use_editor_camera", &use_editor_camera);
                 ImGui::EndMenuBar();
             }
 
@@ -6191,13 +6238,15 @@ int main(int argc, char* argv[]) {
             ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
             ImGui::Text("Objects: %lu", mesh_instances.size());
             ImGui::Text("FPS: %u", fps);
-            ImGui::Text("Camera Position: %.3f, %.3f, %.3f", camera.position.x, camera.position.y, camera.position.z);
+            ImGui::Text(
+                "Camera Position: %.3f, %.3f, %.3f", camera->position.x, camera->position.y, camera->position.z
+            );
             ImGui::Text(
                 "Camera Orientation: %.3f, %.3f, %.3f, %.3f",
-                camera.orientation.x,
-                camera.orientation.y,
-                camera.orientation.z,
-                camera.orientation.w
+                camera->orientation.x,
+                camera->orientation.y,
+                camera->orientation.z,
+                camera->orientation.w
             );
             ImGui::Text("Triangles Rendered: %.3fM", (double(pipeline_stats[0]) / 1'000'000.0));
             ImGui::Text("Fragment shader invocations: %.3fM", (double(pipeline_stats[1]) / 1'000'000.0));
@@ -6205,7 +6254,7 @@ int main(int argc, char* argv[]) {
 
         if (ImGui::CollapsingHeader("Culling & LOD's")) {
             if (ImGui::Checkbox("Freeze frustum", &debug_frustum)) {
-                frozen_view       = camera.view_matrix;
+                frozen_view       = camera->view_matrix;
                 frozen_frustum[0] = frustum_x.x;
                 frozen_frustum[1] = frustum_x.z;
                 frozen_frustum[2] = frustum_y.y;
@@ -6341,7 +6390,9 @@ int main(int argc, char* argv[]) {
 
             if (ImGui::Checkbox("Enable Player Physics", &player_physics)) {
                 if (player_physics) {
-                    player_character->SetPosition(JPH::RVec3(camera.position.x, camera.position.y, camera.position.z));
+                    player_character->SetPosition(
+                        JPH::RVec3(camera->position.x, camera->position.y, camera->position.z)
+                    );
                 }
             }
         }
@@ -6370,13 +6421,13 @@ int main(int argc, char* argv[]) {
             transform           = transform * glm::mat4_cast(t->world_rotation);
             transform           = glm::scale(transform, glm::vec3(t->world_scale));
 
-            auto      angle      = glm::normalize(glm::eulerAngles(camera.orientation));
-            glm::mat4 view       = glm::mat4_cast(camera.orientation);
+            auto      angle      = glm::normalize(glm::eulerAngles(camera->orientation));
+            glm::mat4 view       = glm::mat4_cast(camera->orientation);
             glm::mat4 projection = glm::perspective(
-                glm::radians(camera.fov), camera.viewport_width / camera.viewport_height, 0.01f, 1000.0f
+                glm::radians(camera->fov), camera->viewport_width / camera->viewport_height, 0.01f, 1000.0f
             );
 
-            view = camera.view_matrix;
+            view = camera->view_matrix;
 
             view = glm::scale(glm::identity<glm::mat4>(), glm::vec3(1, 1, -1)) * view;
 
@@ -6471,8 +6522,8 @@ int main(int argc, char* argv[]) {
         VK_CHECK(vkResetFences(device, 1, &frame_fences[frame_index]));
         vmaSetCurrentFrameIndex(vma_allocator, frame_index);
 
-        float aspect         = camera.viewport_width / camera.viewport_height;
-        float tan_half_fov_y = tanf(glm::radians(camera.fov) / 2.0f);
+        float aspect         = camera->viewport_width / camera->viewport_height;
+        float tan_half_fov_y = tanf(glm::radians(camera->fov) / 2.0f);
         float tan_half_fov_x = tan_half_fov_y * aspect;
 
         xegtao_constants.camera_tan_half_fov          = {tan_half_fov_x, tan_half_fov_y};
@@ -6482,20 +6533,20 @@ int main(int argc, char* argv[]) {
             xegtao_constants.ndc_to_view_mul.x / (float)swapchain.width,
             xegtao_constants.ndc_to_view_mul.y / (float)swapchain.height
         };
-        xegtao_constants.camera_near_far = {camera.near_plane, 10000.0f};
+        xegtao_constants.camera_near_far = {camera->near_plane, 10000.0f};
 
         lighting_data.frame_index += 1;
-        lighting_data.camera_pos              = camera.position;
+        lighting_data.camera_pos              = camera->position;
         lighting_data.ddgi_probe_ray_rotation = ddgi_random_rotation();
 
         SceneUBO scene_ubo        = {};
-        scene_ubo.proj            = camera.projection_matrix;
-        scene_ubo.camera_position = glm::vec4(camera.position, 1.0);
+        scene_ubo.proj            = camera->projection_matrix;
+        scene_ubo.camera_position = glm::vec4(camera->position, 1.0);
 
-        scene_ubo.view_proj         = camera.combined_matrix;
-        scene_ubo.inverse_view_proj = glm::inverse(camera.combined_matrix);
+        scene_ubo.view_proj         = camera->combined_matrix;
+        scene_ubo.inverse_view_proj = glm::inverse(camera->combined_matrix);
 
-        scene_ubo.view       = camera.view_matrix;
+        scene_ubo.view       = camera->view_matrix;
         scene_ubo.frustum[0] = frustum_x.x;
         scene_ubo.frustum[1] = frustum_x.z;
         scene_ubo.frustum[2] = frustum_y.y;
@@ -6510,11 +6561,11 @@ int main(int argc, char* argv[]) {
         scene_ubo.debug_frustum   = debug_frustum;
         scene_ubo.disable_culling = disable_culling;
 
-        scene_ubo.P00 = camera.projection_matrix[0][0];
-        scene_ubo.P11 = camera.projection_matrix[1][1];
+        scene_ubo.P00 = camera->projection_matrix[0][0];
+        scene_ubo.P11 = camera->projection_matrix[1][1];
 
-        scene_ubo.near_plane = camera.near_plane;
-        scene_ubo.far_plane  = 1000.0f;
+        scene_ubo.near_plane = camera->near_plane;
+        scene_ubo.far_plane  = camera->far_plane;
         scene_ubo.lod_target = (2 / scene_ubo.P11) * (1.0f / float(swapchain.height)) * (1 << min_lod);
 
         scene_ubo.last_frame_view_proj = last_frame_view_proj;
@@ -6543,7 +6594,7 @@ int main(int argc, char* argv[]) {
             ));
         }
 
-        debug_renderer_constants.combined_matrix = camera.combined_matrix;
+        debug_renderer_constants.combined_matrix = camera->combined_matrix;
         debug_renderer_start_frame(debug_renderer, frame_index);
 
         if (visualize_probes) {
@@ -6600,16 +6651,16 @@ int main(int argc, char* argv[]) {
                         glm::vec4 mouse_near = {frac * 2.0f - 1.0f, 1, 1.0};
                         mouse_near.y *= -1;
                         mouse_near =
-                            glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_near;
+                            glm::inverse(camera->view_matrix) * glm::inverse(camera->projection_matrix) * mouse_near;
                         glm::vec3 near = glm::vec3(mouse_near) / mouse_near.w;
 
                         glm::vec4 mouse_far = {frac * 2.0f - 1.0f, 0.01, 1.0};
                         mouse_far.y *= -1;
                         mouse_far =
-                            glm::inverse(camera.view_matrix) * glm::inverse(camera.projection_matrix) * mouse_far;
+                            glm::inverse(camera->view_matrix) * glm::inverse(camera->projection_matrix) * mouse_far;
                         glm::vec3 far = glm::vec3(mouse_far) / mouse_far.w;
 
-                        glm::vec3 origin  = camera.position;
+                        glm::vec3 origin  = camera->position;
                         glm::vec3 ray_dir = glm::normalize(far - near);
 
                         Mesh& mesh = world.scene.meshes[m->mesh.mesh_id];
@@ -6952,7 +7003,7 @@ int main(int argc, char* argv[]) {
             );
         }
 
-        last_frame_view_proj = camera.combined_matrix;
+        last_frame_view_proj = camera->combined_matrix;
 
         {
             auto view = world.scene.entity_registry.view<components::Transform, components::Mesh>();
