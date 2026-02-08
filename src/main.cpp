@@ -1952,6 +1952,7 @@ int main(int argc, char* argv[]) {
 
     bool                capturing_mouse   = false;
     ImGuizmo::OPERATION tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
+    bool                using_gizmo       = false;
 
     bool      enable_transform_snap = false;
     glm::vec3 transform_snap        = glm::vec3(1.0f);
@@ -5582,6 +5583,8 @@ int main(int argc, char* argv[]) {
     while (running) {
         FrameMark;
 
+        bool ui_wants_input = ImGui::GetIO().WantTextInput;
+
         if (simulate_lower_fps) {
             auto time       = std::chrono::high_resolution_clock::now();
             auto delta_time = std::chrono::duration<float>(time - frame_timestamp).count();
@@ -5702,45 +5705,79 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if (world.input.is_key_pressed(Key::LEFT_SHIFT) || world.input.is_key_pressed(Key::LEFT_CTRL)) {
-            if (world.input.is_key_pressed(Key::LEFT_CTRL)) {
-                camera_speed = base_camera_speed / camera_speed_mod;
+        glm::vec2 mouse_pos = world.input.get_mouse_position();
+        if (editor_mode && !ui_wants_input) {
+            if (world.input.is_key_pressed(Key::LEFT_SHIFT) || world.input.is_key_pressed(Key::LEFT_CTRL)) {
+                if (world.input.is_key_pressed(Key::LEFT_CTRL)) {
+                    camera_speed = base_camera_speed / camera_speed_mod;
+                }
+
+                if (world.input.is_key_pressed(Key::LEFT_SHIFT)) {
+                    camera_speed = base_camera_speed * camera_speed_mod;
+                }
+            } else {
+                camera_speed = base_camera_speed;
+            }
+
+            glm::vec3 velocity = glm::vec3(0.0);
+            if (world.input.is_key_pressed(Key::W)) {
+                velocity.x = 1;
+            }
+
+            if (world.input.is_key_pressed(Key::S)) {
+                velocity.x = -1;
+            }
+
+            if (world.input.is_key_pressed(Key::A)) {
+                velocity.y = -1;
+            }
+
+            if (world.input.is_key_pressed(Key::D)) {
+                velocity.y = 1;
+            }
+
+            if (world.input.is_key_just_pressed(Key::P)) {
+                visualize_probes = !visualize_probes;
+            }
+
+            if (world.input.is_key_just_pressed(Key::GRAVE)) {
+                editor_overlay = !editor_overlay;
+            }
+
+            if (world.input.is_key_just_pressed(Key::ESCAPE) && world.input.is_key_pressed(Key::LEFT_SHIFT)) {
+                running = false;
+            }
+
+            if (capturing_mouse && (use_editor_camera && editor_mode)) {
+                move_camera(*camera, velocity, camera_speed * delta_time);
             }
 
             if (world.input.is_key_pressed(Key::LEFT_SHIFT)) {
-                camera_speed = base_camera_speed * camera_speed_mod;
+                if (world.input.is_key_just_pressed(Key::C)) {
+                    tranform_gizmo_op = ImGuizmo::OPERATION::SCALEU;
+                }
+
+                if (world.input.is_key_just_pressed(Key::R)) {
+                    tranform_gizmo_op = ImGuizmo::OPERATION::ROTATE;
+                }
+
+                if (world.input.is_key_just_pressed(Key::T)) {
+                    tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
+                }
             }
-        } else {
-            camera_speed = base_camera_speed;
-        }
 
-        glm::vec3 velocity = glm::vec3(0.0);
-        if (world.input.is_key_pressed(Key::W)) {
-            velocity.x = 1;
-        }
+            if (editor.get_selected_entity() != entt::null && world.input.is_key_pressed(Key::LEFT_SHIFT) &&
+                world.input.is_key_just_pressed(Key::D) && !capturing_mouse) {
+                Entity clone = world.scene.clone_node(editor.get_selected_entity());
+                if (clone != entt::null) {
+                    editor.set_selected_entity(clone);
+                }
+            }
 
-        if (world.input.is_key_pressed(Key::S)) {
-            velocity.x = -1;
-        }
-
-        if (world.input.is_key_pressed(Key::A)) {
-            velocity.y = -1;
-        }
-
-        if (world.input.is_key_pressed(Key::D)) {
-            velocity.y = 1;
-        }
-
-        if (world.input.is_key_just_pressed(Key::P)) {
-            visualize_probes = !visualize_probes;
-        }
-
-        if (world.input.is_key_just_pressed(Key::GRAVE)) {
-            editor_overlay = !editor_overlay;
-        }
-
-        if (capturing_mouse && (use_editor_camera && editor_mode)) {
-            move_camera(*camera, velocity, camera_speed * delta_time);
+            if (editor.get_selected_entity() != entt::null && world.input.is_key_pressed(Key::DELETE)) {
+                world.scene.delete_node(editor.get_selected_entity());
+                editor.set_selected_entity(entt::null);
+            }
         }
 
         if (world.input.is_key_just_pressed(Key::F5)) {
@@ -5843,10 +5880,6 @@ int main(int argc, char* argv[]) {
             SDL_SetWindowMouseGrab(window, true);
             SDL_SetWindowRelativeMouseMode(window, true);
             capturing_mouse = true;
-        }
-
-        if (world.input.is_key_just_pressed(Key::ESCAPE)) {
-            running = false;
         }
 
         {
@@ -6357,20 +6390,6 @@ int main(int argc, char* argv[]) {
         editor.render_scene_hierarchy_window();
 
         if (editor.get_selected_entity() != entt::null) {
-            if (world.input.is_key_pressed(Key::LEFT_SHIFT)) {
-                if (world.input.is_key_just_pressed(Key::C)) {
-                    tranform_gizmo_op = ImGuizmo::OPERATION::SCALEU;
-                }
-
-                if (world.input.is_key_just_pressed(Key::R)) {
-                    tranform_gizmo_op = ImGuizmo::OPERATION::ROTATE;
-                }
-
-                if (world.input.is_key_just_pressed(Key::T)) {
-                    tranform_gizmo_op = ImGuizmo::OPERATION::TRANSLATE;
-                }
-            }
-
             auto t = world.scene.get_component<components::Transform>(editor.get_selected_entity());
 
             glm::mat4 transform = glm::translate(glm::mat4(1.0f), t->world_position);
@@ -6400,6 +6419,8 @@ int main(int argc, char* argv[]) {
                     &delta_mat[0].x,
                     enable_transform_snap ? &transform_snap.x : nullptr
                 )) {
+                using_gizmo = true;
+
                 glm::vec3 position;
                 glm::vec3 rotation;
                 glm::vec3 scale;
@@ -6454,6 +6475,10 @@ int main(int argc, char* argv[]) {
                             );
                         }
                     }
+                }
+            } else {
+                if (!world.input.is_button_pressed(Button::LEFT) && using_gizmo) {
+                    using_gizmo = false;
                 }
             }
         }
@@ -6575,20 +6600,6 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        glm::vec2 mouse_pos = world.input.get_mouse_position();
-        if (editor.get_selected_entity() != entt::null && world.input.is_key_pressed(Key::LEFT_CTRL) &&
-            world.input.is_key_just_pressed(Key::C)) {
-            Entity clone = world.scene.clone_node(editor.get_selected_entity());
-            if (clone != entt::null) {
-                editor.set_selected_entity(clone);
-            }
-        }
-
-        if (editor.get_selected_entity() != entt::null && world.input.is_key_pressed(Key::DELETE)) {
-            world.scene.delete_node(editor.get_selected_entity());
-            editor.set_selected_entity(entt::null);
-        }
-
         {
             void*  ptr          = nullptr;
             size_t frame_offset = (drawcall_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
@@ -6683,8 +6694,9 @@ int main(int argc, char* argv[]) {
 
         framegraph.execute(command_buffer, frame_index);
 
-        if (world.input.is_key_pressed(Key::LEFT_CTRL) && !capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
-            if (world.input.is_button_just_pressed(Button::LEFT)) {
+        if (!capturing_mouse && coords_in_scene_viewport(mouse_pos)) {
+            if (world.input.is_button_just_pressed(Button::LEFT) && !using_gizmo &&
+                world.input.is_key_pressed(Key::LEFT_SHIFT)) {
                 glm::vec2 pos  = screen_pos_to_scene_vewport(mouse_pos);
                 glm::vec2 frac = pos / glm::vec2(viewport_pos_size.z, viewport_pos_size.w);
 
