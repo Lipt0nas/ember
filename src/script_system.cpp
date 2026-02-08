@@ -2113,6 +2113,7 @@ void ScriptSystem::clear() {
             if (obj) {
                 obj->Release();
             }
+            instance.object = nullptr;
         }
     }
 }

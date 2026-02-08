@@ -22,20 +22,21 @@ public:
 
     void initialize(World* world);
 
-    void render_main_menu(std::function<void(std::string)> scene_save_callback);
-    void render_scene_hierarchy_window();
-    void render_scene_node_property_window();
-    void render_performance_window(const std::vector<std::pair<std::string, PassTiming>>& passes);
+    bool render_main_menu(std::function<void(std::string)> scene_save_callback);
+    bool render_scene_hierarchy_window();
+    bool render_scene_node_property_window();
+    bool render_performance_window(const std::vector<std::pair<std::string, PassTiming>>& passes);
 
     void   set_selected_entity(Entity e);
     Entity get_selected_entity();
 
-    template <typename T> void render_component_ui(Entity e) {
+    template <typename T> bool render_component_ui(Entity e) {
         ImGui::Text("Unimplemented");
+        return false;
     }
 
 private:
-    void draw_node_in_hierarchy(Entity e, Entity& selected_entity);
+    void draw_node_in_hierarchy(Entity e, Entity& selected_entity, bool& change);
 
     bool draw_vec3_controls(
         const std::string& label,
@@ -51,11 +52,11 @@ private:
     std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles;
 };
 
-template <> void Editor::render_component_ui<components::Transform>(Entity e);
-template <> void Editor::render_component_ui<components::Mesh>(Entity e);
-template <> void Editor::render_component_ui<components::Script>(Entity e);
-template <> void Editor::render_component_ui<components::Name>(Entity e);
-template <> void Editor::render_component_ui<components::Physics>(Entity e);
-template <> void Editor::render_component_ui<components::Tag>(Entity e);
-template <> void Editor::render_component_ui<components::Camera>(Entity e);
-template <> void Editor::render_component_ui<components::CharacterController>(Entity e);
+template <> bool Editor::render_component_ui<components::Transform>(Entity e);
+template <> bool Editor::render_component_ui<components::Mesh>(Entity e);
+template <> bool Editor::render_component_ui<components::Script>(Entity e);
+template <> bool Editor::render_component_ui<components::Name>(Entity e);
+template <> bool Editor::render_component_ui<components::Physics>(Entity e);
+template <> bool Editor::render_component_ui<components::Tag>(Entity e);
+template <> bool Editor::render_component_ui<components::Camera>(Entity e);
+template <> bool Editor::render_component_ui<components::CharacterController>(Entity e);

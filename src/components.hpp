@@ -15,6 +15,22 @@
 #include <cereal/types/variant.hpp>
 #include <cereal/types/vector.hpp>
 
+namespace JPH {
+    template <typename Archive> void serialize(Archive& archive, BodyID& body) {
+        uint32_t id = body.GetIndexAndSequenceNumber();
+
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("id", body.GetIndexAndSequenceNumber()));
+        } else {
+            archive(id);
+        }
+
+        if constexpr (Archive::is_loading::value) {
+            body = JPH::BodyID(id);
+        }
+    }
+} // namespace JPH
+
 namespace glm {
     template <class Archive> void serialize(Archive& archive, glm::vec2& v) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
@@ -216,7 +232,7 @@ namespace components {
                 cereal::make_nvp("is_static", physics.is_static), cereal::make_nvp("last_scale", physics.last_scale)
             );
         } else {
-            archive(physics.is_static, physics.last_scale);
+            archive(physics.body_id, physics.is_static, physics.last_scale);
         }
     }
 
