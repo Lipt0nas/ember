@@ -7,10 +7,12 @@
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
-template <> void Editor::render_component_ui<components::Transform>(Entity e) {
+template <> bool Editor::render_component_ui<components::Transform>(Entity e) {
+    bool edited = false;
+
     auto* t = world->scene.get_component<components::Transform>(e);
     ImGui::SeparatorText("Local Transform");
-    draw_vec3_controls("Position", t->position);
+    edited |= draw_vec3_controls("Position", t->position);
 
     glm::vec3 temp_scale = glm::vec3(t->scale);
     if (draw_vec3_controls("Scale", temp_scale, 1.0f, true)) {
@@ -19,6 +21,7 @@ template <> void Editor::render_component_ui<components::Transform>(Entity e) {
         }
 
         t->scale = temp_scale.x;
+        edited |= true;
     }
 
     // NOTE: this doesn't work, might need to store rotation as euler angles
@@ -30,6 +33,7 @@ template <> void Editor::render_component_ui<components::Transform>(Entity e) {
             glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(temp_rotation.y), glm::vec3(0, 1, 0)) * t->rotation;
         t->rotation =
             glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(temp_rotation.z), glm::vec3(0, 0, 1)) * t->rotation;
+        edited = true;
     }
 
     ImGui::SeparatorText("World Transform");
@@ -41,9 +45,13 @@ template <> void Editor::render_component_ui<components::Transform>(Entity e) {
 
     temp_rotation = glm::vec3(t->world_rotation.x, t->world_rotation.y, t->world_rotation.z);
     draw_vec3_controls("World Rotation", temp_rotation);
+
+    return edited;
 }
 
-template <> void Editor::render_component_ui<components::Mesh>(Entity e) {
+template <> bool Editor::render_component_ui<components::Mesh>(Entity e) {
+    bool edited = false;
+
     auto* m = world->scene.get_component<components::Mesh>(e);
     if (ImGui::TreeNode("Material")) {
         auto& material = world->scene.materials[m->mesh.material_id];
@@ -61,7 +69,11 @@ template <> void Editor::render_component_ui<components::Mesh>(Entity e) {
             if (ImGui::BeginDragDropTarget()) {
                 const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("texture_id");
                 if (payload) {
-                    *id = *(uint32_t*)payload->Data;
+                    uint32_t new_id = *(uint32_t*)payload->Data;
+                    if (new_id != *id) {
+                        *id    = new_id;
+                        edited = true;
+                    }
                 }
                 ImGui::EndDragDropTarget();
             }
@@ -71,13 +83,21 @@ template <> void Editor::render_component_ui<components::Mesh>(Entity e) {
         ImGui::NewLine();
 
         ImGui::SliderFloat("Roughness Factor", &material.roughness_factor, 0.0, 1.0f);
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+
         ImGui::SliderFloat("Metallic Factor", &material.metallic_factor, 0.0, 1.0f);
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+
         ImGui::SliderFloat("Normal Scale", &material.normal_scale, 0.0, 1.0f);
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
 
         ImGui::ColorEdit4("Albedo Factor", &material.albedo_factor.x);
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+
         ImGui::ColorEdit3(
             "Emissive Factor", &material.emissive_factor.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR
         );
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
 
         ImGui::TreePop();
     }
@@ -86,6 +106,8 @@ template <> void Editor::render_component_ui<components::Mesh>(Entity e) {
         ImGui::Text("Unimplemented");
         ImGui::TreePop();
     }
+
+    return edited;
 }
 
 namespace {
@@ -184,15 +206,24 @@ namespace {
     bool render_string_property(const std::string& name, ScriptProperty& prop) {
         std::string& value = std::get<std::string>(prop.value);
 
-        if (ImGui::InputText(name.c_str(), &value)) {
-            prop.value = value;
-            return true;
+        static std::string temp_string;
+        if (temp_string.compare(value) != 0) {
+            temp_string = value;
+        }
+
+        if (ImGui::InputText(name.c_str(), &temp_string, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            if (value.compare(temp_string) != 0) {
+                value = temp_string;
+                return true;
+            }
         }
         return false;
     }
 } // namespace
 
-template <> void Editor::render_component_ui<components::Script>(Entity e) {
+template <> bool Editor::render_component_ui<components::Script>(Entity e) {
+    bool edited = false;
+
     auto* s       = world->scene.get_component<components::Script>(e);
     auto  scripts = world->script.get_scripts();
 
@@ -254,6 +285,7 @@ template <> void Editor::render_component_ui<components::Script>(Entity e) {
 
                 if (changed) {
                     instance.property_overrides[prop.name] = current_prop;
+                    edited                                 = true;
                 }
 
                 if (overriden) {
@@ -261,6 +293,7 @@ template <> void Editor::render_component_ui<components::Script>(Entity e) {
                     ImGui::PushID(prop.name.c_str());
                     if (ImGui::Button(ICON_FA_REDO)) {
                         instance.property_overrides.erase(prop.name);
+                        edited = true;
                     }
                     ImGui::PopID();
                 }
@@ -276,6 +309,7 @@ template <> void Editor::render_component_ui<components::Script>(Entity e) {
 
     if (script_to_remove != -1) {
         s->scripts.erase(s->scripts.begin() + script_to_remove);
+        edited = true;
     }
 
     ImGui::NewLine();
@@ -302,10 +336,13 @@ template <> void Editor::render_component_ui<components::Script>(Entity e) {
     if (ImGui::Button("Add Script") && scripts.contains(id_to_add)) {
         s->scripts.push_back({.script_id = static_cast<uint32_t>(id_to_add)});
         id_to_add = 0;
+        edited    = true;
     }
+
+    return edited;
 }
 
-template <> void Editor::render_component_ui<components::Physics>(Entity e) {
+template <> bool Editor::render_component_ui<components::Physics>(Entity e) {
     auto* p = world->scene.get_component<components::Physics>(e);
 
     if (p->body_id.IsInvalid()) {
@@ -314,9 +351,13 @@ template <> void Editor::render_component_ui<components::Physics>(Entity e) {
         ImGui::Text("BodyID: %u", p->body_id.GetIndex());
         ImGui::Text("Static : %u", p->is_static);
     }
+
+    return false;
 }
 
-template <> void Editor::render_component_ui<components::Tag>(Entity e) {
+template <> bool Editor::render_component_ui<components::Tag>(Entity e) {
+    bool edited = false;
+
     auto* t = world->scene.get_component<components::Tag>(e);
     auto* n = world->scene.get_component<components::Name>(e);
 
@@ -326,7 +367,17 @@ template <> void Editor::render_component_ui<components::Tag>(Entity e) {
         auto&       tag = t->tags[i];
 
         ImGui::PushID(id.c_str());
-        ImGui::InputText("", &tag);
+        static std::string temp_string;
+        if (temp_string.compare(tag) != 0) {
+            temp_string = tag;
+        }
+
+        if (ImGui::InputText("", &temp_string, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            if (tag.compare(temp_string) != 0) {
+                tag    = temp_string;
+                edited = true;
+            }
+        }
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_TIMES_CIRCLE)) {
             tag_to_remove = tag;
@@ -336,47 +387,98 @@ template <> void Editor::render_component_ui<components::Tag>(Entity e) {
 
     if (!tag_to_remove.empty()) {
         std::erase(t->tags, tag_to_remove);
+        edited = true;
     }
 
     if (ImGui::Button(ICON_FA_PLUS_CIRCLE)) {
         t->tags.push_back("NewTag");
+        edited = true;
     }
+
+    return edited;
 }
 
-template <> void Editor::render_component_ui<components::Name>(Entity e) {
+template <> bool Editor::render_component_ui<components::Name>(Entity e) {
+    bool edited = false;
+
     auto* n = world->scene.get_component<components::Name>(e);
-    ImGui::InputText("##name", &n->name);
+
+    static std::string temp_string;
+    if (temp_string.compare(n->name) != 0) {
+        temp_string = n->name;
+    }
+
+    if (ImGui::InputText("##name", &temp_string, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (n->name.compare(temp_string) != 0) {
+            n->name = temp_string;
+            edited  = true;
+        }
+    }
+
+    return edited;
 }
 
-template <> void Editor::render_component_ui<components::Camera>(Entity e) {
+template <> bool Editor::render_component_ui<components::Camera>(Entity e) {
+    bool edited = false;
+
     auto* c = world->scene.get_component<components::Camera>(e);
 
     ImGui::InputFloat("Near Plane", &c->near_plane);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
     ImGui::InputFloat("Far Plane", &c->far_plane);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     ImGui::SliderFloat("Viewport X", &c->viewport_x, 0.0f, 1.0f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
     ImGui::SliderFloat("Viewport Y", &c->viewport_y, 0.0f, 1.0f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
     ImGui::SliderFloat("Viewport Width", &c->viewport_width, 0.0f, 1.0f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
     ImGui::SliderFloat("Viewport Height", &c->viewport_height, 0.0f, 1.0f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     ImGui::SliderFloat("FOV", &c->fov, 1.0f, 180.0f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     ImGui::InputFloat("Ortho Size", &c->ortho_size);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::Checkbox("Active", &c->is_active);
+    if (ImGui::Checkbox("Active", &c->is_active)) {
+        edited = true;
+    }
+
+    return edited;
 }
 
-template <> void Editor::render_component_ui<components::CharacterController>(Entity e) {
+template <> bool Editor::render_component_ui<components::CharacterController>(Entity e) {
+    bool edited = false;
+
     auto* c = world->scene.get_component<components::CharacterController>(e);
 
     ImGui::DragFloat("Height", &c->height, 0.1f, 0.1f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
     ImGui::DragFloat("Radius", &c->radius, 0.1f, 0.1f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     ImGui::DragFloat("Step Down Distance", &c->step_down_distance, 0.1f, 0.01f);
-    ImGui::DragFloat("Step Up Height", &c->step_up_height, 0.1f, 0.01f);
-    ImGui::DragFloat("Max Slow Angle", &c->max_slope_angle, 0.1f, 0.01f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::Checkbox("Enhanced Edge Removal", &c->enhanced_edge_removal);
+    ImGui::DragFloat("Step Up Height", &c->step_up_height, 0.1f, 0.01f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::DragFloat("Max Slow Angle", &c->max_slope_angle, 0.1f, 0.01f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    if (ImGui::Checkbox("Enhanced Edge Removal", &c->enhanced_edge_removal)) {
+        edited = true;
+    }
+
+    return edited;
 }
 
 Editor::Editor(std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles)
@@ -387,7 +489,7 @@ void Editor::initialize(World* world) {
     this->world = world;
 }
 
-void Editor::render_main_menu(std::function<void(std::string)> scene_save_callback) {
+bool Editor::render_main_menu(std::function<void(std::string)> scene_save_callback) {
     static char save_scene_path[256] = "\0";
     static bool show_save_popup      = false;
 
@@ -434,13 +536,18 @@ void Editor::render_main_menu(std::function<void(std::string)> scene_save_callba
 
         ImGui::EndPopup();
     }
+
+    return false;
 }
 
-void Editor::render_scene_hierarchy_window() {
+bool Editor::render_scene_hierarchy_window() {
+    bool change = false;
+
     ImGui::Begin(ICON_FA_SITEMAP " Scene Hierarchy");
     if (ImGui::BeginPopupContextItem()) {
         if (ImGui::MenuItem("Create Node")) {
             world->scene.create_node();
+            change = true;
         }
         ImGui::EndPopup();
     }
@@ -448,13 +555,15 @@ void Editor::render_scene_hierarchy_window() {
     auto view =
         world->scene.entity_registry.view<components::Transform, components::Name>(entt::exclude<components::Parent>);
     for (auto [e, t, n] : view.each()) {
-        draw_node_in_hierarchy(e, selected_entity);
+        draw_node_in_hierarchy(e, selected_entity, change);
     }
 
     if (ImGui::IsMouseDown(0) && ImGui::IsWindowHovered()) {
         selected_entity = entt::null;
     }
     ImGui::End();
+
+    return change;
 }
 
 void Editor::set_selected_entity(Entity e) {
@@ -465,7 +574,7 @@ Entity Editor::get_selected_entity() {
     return this->selected_entity;
 }
 
-void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
+void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity, bool& change) {
     int delete_mode = 0;
 
     bool has_children = false;
@@ -502,6 +611,7 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
         if (payload) {
             Entity new_child = *(Entity*)payload->Data;
             world->scene.set_node_parent(new_child, e);
+            change |= true;
         }
         ImGui::EndDragDropTarget();
     }
@@ -510,6 +620,7 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
         if (ImGui::MenuItem("Add New Node")) {
             auto node = world->scene.create_node();
             world->scene.set_node_parent(node, e);
+            change |= true;
         }
 
         ImGui::Separator();
@@ -522,6 +633,7 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
                 if (!info.has_component(*world, e)) {
                     if (ImGui::MenuItem(name.c_str())) {
                         info.add_component(*world, e);
+                        change |= true;
                     }
                 }
             }
@@ -537,6 +649,7 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
                 if (info.has_component(*world, e) && info.description.removable) {
                     if (ImGui::MenuItem(name.c_str())) {
                         info.remove_component(*world, e);
+                        change |= true;
                     }
                 }
             }
@@ -564,7 +677,7 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
     if (opened) {
         if (children) {
             for (auto& child : children->children) {
-                draw_node_in_hierarchy(child, selected_entity);
+                draw_node_in_hierarchy(child, selected_entity, change);
             }
         }
 
@@ -577,10 +690,12 @@ void Editor::draw_node_in_hierarchy(Entity e, Entity& selected_entity) {
         }
 
         world->scene.delete_node(e, delete_mode == 2);
+        change |= true;
     }
 }
 
-void Editor::render_scene_node_property_window() {
+bool Editor::render_scene_node_property_window() {
+    bool change = false;
     ImGui::Begin(ICON_FA_WRENCH " Node Properties");
     if (selected_entity != entt::null) {
         for (auto [name, info] : ComponentRegistry::get_all()) {
@@ -593,6 +708,7 @@ void Editor::render_scene_node_property_window() {
                 if (info.description.removable) {
                     if (ImGui::Button(ICON_FA_TIMES_CIRCLE)) {
                         info.remove_component(*world, selected_entity);
+                        change = true;
                         ImGui::PopID();
                         continue;
                     } else {
@@ -602,7 +718,7 @@ void Editor::render_scene_node_property_window() {
 
                 if (ImGui::CollapsingHeader(info.name.c_str())) {
                     ImGui::PushID("Widget");
-                    info.render_editor_ui(selected_entity);
+                    change |= info.render_editor_ui(selected_entity);
                     ImGui::PopID();
                 }
                 ImGui::PopID();
@@ -610,9 +726,11 @@ void Editor::render_scene_node_property_window() {
         }
     }
     ImGui::End();
+
+    return change;
 }
 
-void Editor::render_performance_window(const std::vector<std::pair<std::string, PassTiming>>& passes) {
+bool Editor::render_performance_window(const std::vector<std::pair<std::string, PassTiming>>& passes) {
     ImGui::Begin(ICON_FA_CLOCK " Performance");
     if (ImGui::BeginTable("PassStats", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Sortable)) {
         ImGui::TableSetupColumn("Pass");
@@ -674,6 +792,8 @@ void Editor::render_performance_window(const std::vector<std::pair<std::string, 
         }
     }
     ImGui::End();
+
+    return false;
 }
 
 bool Editor::draw_vec3_controls(
@@ -711,13 +831,13 @@ bool Editor::draw_vec3_controls(
 
     ImGui::SameLine();
     if (ImGui::DragFloat("##X", &value.x, 0.1f, 0.0f, 0.0f, "%.2f")) {
-        edited = true;
-
         if (uniform) {
             value.y = value.x;
             value.z = value.x;
         }
     }
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
     ImGui::PopItemWidth();
     ImGui::SameLine();
 
@@ -738,13 +858,13 @@ bool Editor::draw_vec3_controls(
 
     ImGui::SameLine();
     if (ImGui::DragFloat("##Y", &value.y, 0.1f, 0.0f, 0.0f, "%.2f")) {
-        edited = true;
-
         if (uniform) {
             value.x = value.y;
             value.z = value.y;
         }
     }
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
     ImGui::PopItemWidth();
     ImGui::SameLine();
 
@@ -752,8 +872,6 @@ bool Editor::draw_vec3_controls(
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{0.2f, 0.35f, 0.9f, 1.0f});
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{0.1f, 0.25f, 0.8f, 1.0f});
     if (ImGui::Button("Z", button_size)) {
-        edited = true;
-
         value.z = reset_to;
 
         if (uniform) {
@@ -765,13 +883,13 @@ bool Editor::draw_vec3_controls(
 
     ImGui::SameLine();
     if (ImGui::DragFloat("##Z", &value.z, 0.1f, 0.0f, 0.0f, "%.2f")) {
-        edited = true;
-
         if (uniform) {
             value.x = value.z;
             value.y = value.z;
         }
     }
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
     ImGui::PopItemWidth();
     ImGui::PopStyleVar();
     ImGui::Columns(1);

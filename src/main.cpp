@@ -21,6 +21,7 @@
 #include "ui.hpp"
 #include "world.hpp"
 
+#include <deque>
 #include <map>
 
 #include <glm/gtc/random.hpp>
@@ -578,6 +579,90 @@ void populate_materials(const Scene& scene, VkDescriptorSet descriptor_set, VkDe
         vkUpdateDescriptorSets(device, 1, &write_set, 0, nullptr);
     }
 }
+
+class SceneHistory {
+public:
+    void create_snapshot(World& world) {
+        std::stringstream snapshot_stream;
+
+        cereal::BinaryOutputArchive output(snapshot_stream);
+        entt::snapshot              snapshot(world.scene.entity_registry);
+        snapshot.get<entt::entity>(output);
+        ComponentRegistry::save_snapshot(snapshot, output);
+
+        while (newest_snapshot != 0) {
+            if (snapshots.empty()) {
+                break;
+            }
+            snapshots.pop_front();
+            newest_snapshot--;
+        }
+
+        if (snapshots.size() >= MAX_SNAPHSOTS) {
+            snapshots.pop_back();
+        }
+
+        snapshots.push_front(std::move(snapshot_stream));
+        newest_snapshot = 0;
+        spdlog::debug("Saved snapshot {} size: {}MB", newest_snapshot, snapshot_stream.view().size() / 1024 / 1024);
+    }
+
+    void load_snapshot(World& world) {
+        if (snapshots.empty()) {
+            return;
+        }
+
+        load_snapshot_at(world, newest_snapshot);
+    }
+
+    bool undo(World& world) {
+        if (snapshots.empty() || newest_snapshot == snapshots.size() - 1) {
+            return false;
+        }
+
+        newest_snapshot += 1;
+        load_snapshot_at(world, newest_snapshot);
+
+        return true;
+    }
+
+    bool redo(World& world) {
+        if (snapshots.empty() || newest_snapshot == 0) {
+            return false;
+        }
+
+        newest_snapshot -= 1;
+        load_snapshot_at(world, newest_snapshot);
+
+        return true;
+    }
+
+    int snapshot_count() {
+        return snapshots.size();
+    }
+
+private:
+    void load_snapshot_at(World& world, int snapshot) {
+        world.scene.entity_registry.clear();
+
+        auto& stream = snapshots.at(snapshot);
+
+        spdlog::debug("Loading snapshot {} size: {}MB", snapshot, snapshots.at(snapshot).view().size() / 1024 / 1024);
+
+        cereal::BinaryInputArchive input(stream);
+        entt::snapshot_loader      loader(world.scene.entity_registry);
+        loader.get<entt::entity>(input);
+        ComponentRegistry::load_snapshot(loader, input);
+
+        stream.seekg(0);
+    }
+
+    static constexpr int MAX_SNAPHSOTS = 20;
+
+    std::deque<std::stringstream> snapshots;
+
+    int newest_snapshot = 0;
+};
 
 int main(int argc, char* argv[]) {
     ArgParser args;
@@ -1876,16 +1961,8 @@ int main(int argc, char* argv[]) {
 
     populate_materials(world.scene, global_texture_descriptor_set, device);
 
-    std::stringstream scene_state_snapshot;
-    // We want to avoid clearing static bodies which are constructed from
-    // the source geometry, as this would force us to either:
-    // keep vertex positions and indices on the CPU at all times
-    // or readback from the GPU on demand
-    // either option feels unnecessary, at least for the time being, so instead
-    // we never unload these bodies during save/load and reassign then back
-    std::unordered_map<entt::entity, JPH::BodyID> static_body_load_map;
-
-    RTScene rt_scene = {};
+    SceneHistory scene_history;
+    RTScene      rt_scene = {};
 
     if (use_hardware_rt) {
         spdlog::info("Setting up hardware raytracing scene");
@@ -5580,6 +5657,7 @@ int main(int argc, char* argv[]) {
 
     float physics_time_accumulator = 0.0f;
 
+    scene_history.create_snapshot(world);
     while (running) {
         FrameMark;
 
@@ -5772,11 +5850,25 @@ int main(int argc, char* argv[]) {
                 if (clone != entt::null) {
                     editor.set_selected_entity(clone);
                 }
+                scene_history.create_snapshot(world);
             }
 
             if (editor.get_selected_entity() != entt::null && world.input.is_key_pressed(Key::DELETE)) {
                 world.scene.delete_node(editor.get_selected_entity());
                 editor.set_selected_entity(entt::null);
+                scene_history.create_snapshot(world);
+            }
+
+            if (world.input.is_key_pressed(Key::LEFT_CTRL) && world.input.is_key_just_pressed(Key::Z)) {
+                if (!scene_history.undo(world)) {
+                    spdlog::debug("Cannot undo, at oldest change");
+                }
+            }
+
+            if (world.input.is_key_pressed(Key::LEFT_CTRL) && world.input.is_key_just_pressed(Key::R)) {
+                if (!scene_history.redo(world)) {
+                    spdlog::debug("Cannot redo, at newest change");
+                }
             }
         }
 
@@ -5804,23 +5896,8 @@ int main(int argc, char* argv[]) {
                 }
 
                 world.script.clear();
-                world.scene.entity_registry.clear();
+                scene_history.load_snapshot(world);
                 world.scene.materials.resize(world.scene.original_material_size);
-
-                cereal::BinaryInputArchive input(scene_state_snapshot);
-                entt::snapshot_loader      loader(world.scene.entity_registry);
-                loader.get<entt::entity>(input);
-                ComponentRegistry::load_snapshot(loader, input);
-
-                auto view =
-                    world.scene.entity_registry.view<components::Physics, components::Mesh, components::Transform>();
-                for (auto [e, p, m, t] : view.each()) {
-                    if (p.is_static) {
-                        if (static_body_load_map.contains(e)) {
-                            p.body_id = static_body_load_map.at(e);
-                        }
-                    }
-                }
 
                 SDL_SetWindowMouseGrab(window, false);
                 SDL_SetWindowRelativeMouseMode(window, false);
@@ -5830,23 +5907,8 @@ int main(int argc, char* argv[]) {
                 editor_overlay   = false;
                 world.is_running = true;
 
-                scene_state_snapshot.str("");
-                scene_state_snapshot.clear();
-
-                static_body_load_map.clear();
-
-                cereal::BinaryOutputArchive output(scene_state_snapshot);
-                entt::snapshot              snapshot(world.scene.entity_registry);
-                snapshot.get<entt::entity>(output);
-                ComponentRegistry::save_snapshot(snapshot, output);
-
-                auto physics_view = world.scene.entity_registry.view<components::Physics>();
-                for (auto [e, p] : physics_view.each()) {
-                    if (!p.body_id.IsInvalid()) {
-                        if (p.is_static) {
-                            static_body_load_map.insert({e, p.body_id});
-                        }
-                    }
+                if (scene_history.snapshot_count() == 0) {
+                    scene_history.create_snapshot(world);
                 }
 
                 auto controller_view =
@@ -6138,29 +6200,31 @@ int main(int argc, char* argv[]) {
 
         ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
         if (editor_overlay) {
-            editor.render_main_menu([&](std::string path) {
-                VkCommandBufferAllocateInfo alloc_info = {
-                    .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                    .pNext              = nullptr,
-                    .commandPool        = command_pool,
-                    .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                    .commandBufferCount = 1
-                };
-                VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-                VK_CHECK(vkAllocateCommandBuffers(device, &alloc_info, &command_buffer));
-                SceneSerializer::save(
-                    path,
-                    world,
-                    buffers,
-                    buffer_offsets,
-                    compressed_texture_data,
-                    device,
-                    graphics_queue,
-                    vma_allocator,
-                    command_buffer
-                );
-                vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
-            });
+            if (editor.render_main_menu([&](std::string path) {
+                    VkCommandBufferAllocateInfo alloc_info = {
+                        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                        .pNext              = nullptr,
+                        .commandPool        = command_pool,
+                        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                        .commandBufferCount = 1
+                    };
+                    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+                    VK_CHECK(vkAllocateCommandBuffers(device, &alloc_info, &command_buffer));
+                    SceneSerializer::save(
+                        path,
+                        world,
+                        buffers,
+                        buffer_offsets,
+                        compressed_texture_data,
+                        device,
+                        graphics_queue,
+                        vma_allocator,
+                        command_buffer
+                    );
+                    vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+                })) {
+                scene_history.create_snapshot(world);
+            };
 
             ImGui::Begin(ICON_FA_VIDEO " Scene Viewport", nullptr, ImGuiWindowFlags_MenuBar);
             if (ImGui::BeginMenuBar()) {
@@ -6203,7 +6267,9 @@ int main(int argc, char* argv[]) {
             viewport_pos_size = glm::vec4(0, 0, swapchain.width, swapchain.height);
         }
 
-        editor.render_scene_node_property_window();
+        if (editor.render_scene_node_property_window()) {
+            scene_history.create_snapshot(world);
+        }
 
         ImGui::Begin(ICON_FA_FILE " Assets");
         if (ImGui::TreeNode("Textures")) {
@@ -6232,7 +6298,9 @@ int main(int argc, char* argv[]) {
         for (const auto& pass : framegraph.passes) {
             pass_timings.push_back(std::make_pair(pass.name, framegraph.get_pass_timing(pass.name)));
         }
-        editor.render_performance_window(pass_timings);
+        if (editor.render_performance_window(pass_timings)) {
+            scene_history.create_snapshot(world);
+        }
 
         ImGui::Begin(ICON_FA_COGS " Configuration");
         ImGui::Checkbox("Enable Particles", &enable_particles);
@@ -6387,7 +6455,9 @@ int main(int argc, char* argv[]) {
         }
         ImGui::End();
 
-        editor.render_scene_hierarchy_window();
+        if (editor.render_scene_hierarchy_window()) {
+            scene_history.create_snapshot(world);
+        }
 
         if (editor.get_selected_entity() != entt::null) {
             auto t = world.scene.get_component<components::Transform>(editor.get_selected_entity());
@@ -6478,6 +6548,7 @@ int main(int argc, char* argv[]) {
                 }
             } else {
                 if (!world.input.is_button_pressed(Button::LEFT) && using_gizmo) {
+                    scene_history.create_snapshot(world);
                     using_gizmo = false;
                 }
             }

@@ -20,7 +20,7 @@ public:
     using SnapshotSaveFunc = std::function<void(entt::snapshot& snapshot, cereal::BinaryOutputArchive&)>;
     using SnapshotLoadFunc = std::function<void(entt::snapshot_loader& loader, cereal::BinaryInputArchive&)>;
 
-    using EditorRenderUIFunc = std::function<void(Entity)>;
+    using EditorRenderUIFunc = std::function<bool(Entity)>;
 
     using HasComponentFunc    = std::function<bool(World&, Entity)>;
     using AddComponentFunc    = std::function<void(World&, Entity)>;
@@ -100,7 +100,7 @@ public:
 
         if (editor && description.show_in_editor) {
             info.render_editor_ui = [editor](auto e) {
-                editor->render_component_ui<T>(e);
+                return editor->render_component_ui<T>(e);
             };
         }
 
