@@ -671,7 +671,7 @@ int main(int argc, char* argv[]) {
     std::random_device rd;
     rng.seed((int)rd());
 
-    spdlog::set_level(args.get_arg<bool>("debug", false) ? spdlog::level::trace : spdlog::level::info);
+    spdlog::set_level(args.get_arg<bool>("debug", false) ? spdlog::level::debug : spdlog::level::info);
     spdlog::info("Starting ember");
 
     VK_CHECK(volkInitialize());
@@ -1865,7 +1865,7 @@ int main(int argc, char* argv[]) {
         VK_CHECK(vkAllocateDescriptorSets(device, &global_texture_descriptor_set_info, &global_texture_descriptor_set));
     }
 
-    std::string scene_load_path  = args.get_arg<std::string>("s", "data/models/room2.glb");
+    std::string scene_load_path  = args.get_arg<std::string>("s", "");
     std::string script_load_path = args.get_arg<std::string>("scripts", "");
 
     std::unordered_map<uint32_t, VkDescriptorSet> imgui_material_image_handles;

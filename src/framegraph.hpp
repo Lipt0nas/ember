@@ -608,10 +608,10 @@ struct Framegraph {
         for (int i = 0; i < passes.size(); i++) {
             auto& pass = passes[i];
 
-            spdlog::debug("---- Pass {} transitions:", pass.name);
+            spdlog::trace("---- Pass {} transitions:", pass.name);
             for (int b = 0; b < image_barriers[i].size(); b++) {
                 auto& barrier = image_barriers[i][b];
-                spdlog::debug(
+                spdlog::trace(
                     "\tTransition image 0x{:x}: {} -> {}",
                     (uintptr_t)barrier.image,
                     string_VkImageLayout(barrier.old_layout),
@@ -620,7 +620,7 @@ struct Framegraph {
             }
             for (int b = 0; b < buffer_barriers[i].size(); b++) {
                 auto& barrier = buffer_barriers[i][b];
-                spdlog::debug(
+                spdlog::trace(
                     "\tBuffer barrier 0x{:x}: ({} | {}) -> ({} | {})",
                     (uintptr_t)barrier.buffer,
                     string_VkAccessFlags2(barrier.src_access_mask),
@@ -630,20 +630,20 @@ struct Framegraph {
                 );
             }
 
-            spdlog::debug("---- ");
+            spdlog::trace("---- ");
         }
 
-        spdlog::debug("---- Post frame transitions:");
+        spdlog::trace("---- Post frame transitions:");
         for (int b = 0; b < post_frame_image_barriers.size(); b++) {
             auto& barrier = post_frame_image_barriers[b];
-            spdlog::debug(
+            spdlog::trace(
                 "\tTransition image 0x{:x}: {} -> {}",
                 (uintptr_t)barrier.image,
                 string_VkImageLayout(barrier.old_layout),
                 string_VkImageLayout(barrier.new_layout)
             );
         }
-        spdlog::debug("---- ");
+        spdlog::trace("---- ");
     }
 
     void execute(VkCommandBuffer command_buffer, uint32_t frame_index) {

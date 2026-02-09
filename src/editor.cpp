@@ -731,6 +731,7 @@ bool Editor::render_scene_node_property_window() {
 }
 
 bool Editor::render_performance_window(const std::vector<std::pair<std::string, PassTiming>>& passes) {
+    ImGui::SetNextWindowSize(ImVec2(200, 100), ImGuiCond_FirstUseEver);
     ImGui::Begin(ICON_FA_CLOCK " Performance");
     if (ImGui::BeginTable("PassStats", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Sortable)) {
         ImGui::TableSetupColumn("Pass");
