@@ -874,7 +874,8 @@ int main(int argc, char* argv[]) {
     VmaAllocator vma_allocator;
     VK_CHECK(vmaCreateAllocator(&allocator_info, &vma_allocator));
 
-    Swapchain swapchain = create_swapchain(window, instance, device, physical_device, false);
+    Swapchain swapchain =
+        create_swapchain(window, instance, device, physical_device, args.get_arg<bool>("vsync", false));
 
     VkQueue graphics_queue = VK_NULL_HANDLE;
     vkGetDeviceQueue(device, graphics_family_index, 0, &graphics_queue);
