@@ -53,58 +53,26 @@ template <> bool Editor::render_component_ui<components::Mesh>(Entity e) {
     bool edited = false;
 
     auto* m = world->scene.get_component<components::Mesh>(e);
-    if (ImGui::TreeNode("Material")) {
-        auto& material = world->scene.materials[m->mesh.material_id];
 
-        std::vector<uint32_t*> material_indices = {
-            &material.albedo_index, &material.normals_index, &material.material_index, &material.emissive_index
-        };
-
-        for (auto id : material_indices) {
-            if (*id != 0) {
-                ImGui::Image(imgui_material_image_handles.at(*id), ImVec2(50, 50));
-            } else {
-                ImGui::Text("Empty");
-            }
-            if (ImGui::BeginDragDropTarget()) {
-                const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("texture_id");
-                if (payload) {
-                    uint32_t new_id = *(uint32_t*)payload->Data;
-                    if (new_id != *id) {
-                        *id    = new_id;
-                        edited = true;
-                    }
-                }
-                ImGui::EndDragDropTarget();
-            }
-            ImGui::SameLine();
-        }
-
-        ImGui::NewLine();
-
-        ImGui::SliderFloat("Roughness Factor", &material.roughness_factor, 0.0, 1.0f);
-        edited |= ImGui::IsItemDeactivatedAfterEdit();
-
-        ImGui::SliderFloat("Metallic Factor", &material.metallic_factor, 0.0, 1.0f);
-        edited |= ImGui::IsItemDeactivatedAfterEdit();
-
-        ImGui::SliderFloat("Normal Scale", &material.normal_scale, 0.0, 1.0f);
-        edited |= ImGui::IsItemDeactivatedAfterEdit();
-
-        ImGui::ColorEdit4("Albedo Factor", &material.albedo_factor.x);
-        edited |= ImGui::IsItemDeactivatedAfterEdit();
-
-        ImGui::ColorEdit3(
-            "Emissive Factor", &material.emissive_factor.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR
-        );
-        edited |= ImGui::IsItemDeactivatedAfterEdit();
-
-        ImGui::TreePop();
+    ImGui::Text("Mesh: ");
+    ImGui::SameLine();
+    auto metadata = world->asset_registry.get_metadata<MeshMetadata>(m->id);
+    if (metadata) {
+        ImGui::Text("%s", metadata->source_path.c_str());
+    } else {
+        ImGui::Text("Invalid");
     }
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("mesh_id");
+        if (payload) {
+            AssetID new_id = *(AssetID*)payload->Data;
 
-    if (ImGui::TreeNode("Mesh##prop")) {
-        ImGui::Text("Unimplemented");
-        ImGui::TreePop();
+            if (m->id != new_id) {
+                m->id  = new_id;
+                edited = true;
+            }
+        }
+        ImGui::EndDragDropTarget();
     }
 
     return edited;
@@ -481,15 +449,125 @@ template <> bool Editor::render_component_ui<components::CharacterController>(En
     return edited;
 }
 
+template <typename T>
+bool edit_optional_property(
+    const char* label, std::optional<T>& value, const T& base_value, std::function<bool(const char*, T&)> edit_func
+) {
+    bool edited = false;
+
+    ImGui::PushID(label);
+
+    bool has_override = value.has_value();
+    if (ImGui::Checkbox("##override", &has_override)) {
+        if (has_override) {
+            value = base_value;
+        } else {
+            value.reset();
+        }
+        edited = true;
+    }
+
+    ImGui::SameLine();
+
+    if (has_override) {
+        T temp = *value;
+        if (edit_func(label, temp)) {
+            value = temp;
+        }
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+    } else {
+        ImGui::BeginDisabled();
+        T temp = base_value;
+        edit_func(label, temp);
+        ImGui::EndDisabled();
+    }
+
+    ImGui::PopID();
+    return edited;
+}
+
+template <> bool Editor::render_component_ui<components::Material>(Entity e) {
+    bool edited = false;
+
+    auto* m = world->scene.get_component<components::Material>(e);
+
+    auto metadata = world->asset_registry.get_metadata<MaterialMetadata>(m->id);
+    if (metadata) {
+        ImGui::Text("%s", metadata->source_path.c_str());
+    } else {
+        ImGui::Text("Invalid");
+    }
+
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("material_id");
+        if (payload) {
+            AssetID new_id = *(AssetID*)payload->Data;
+            if (m->id != new_id) {
+                m->id  = new_id;
+                edited = true;
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    auto& base_material = world->resources.materials[world->load_material(metadata->id)];
+
+    edited |= edit_optional_property<float>(
+        "Roughness Factor",
+        m->overrides.roughness_factor,
+        base_material.roughness_factor,
+        [](const char* label, float& value) {
+            return ImGui::SliderFloat(label, &value, 0.0f, 1.0f);
+        }
+    );
+
+    edited |= edit_optional_property<float>(
+        "Metallic Factor",
+        m->overrides.metallic_factor,
+        base_material.metallic_factor,
+        [](const char* label, float& value) {
+            return ImGui::SliderFloat(label, &value, 0.0f, 1.0f);
+        }
+    );
+
+    edited |= edit_optional_property<float>(
+        "Normal Scale", m->overrides.normal_scale, base_material.normal_scale, [](const char* label, float& value) {
+            return ImGui::SliderFloat(label, &value, 0.0f, 1.0f);
+        }
+    );
+
+    edited |= edit_optional_property<glm::vec4>(
+        "Albedo Factor",
+        m->overrides.albedo_factor,
+        base_material.albedo_factor,
+        [](const char* label, glm::vec4& value) {
+            return ImGui::ColorEdit4(label, &value.x);
+        }
+    );
+
+    edited |= edit_optional_property<glm::vec3>(
+        "Emissive Factor",
+        m->overrides.emissive_factor,
+        base_material.emissive_factor,
+        [](const char* label, glm::vec3& value) {
+            return ImGui::ColorEdit3(label, &value.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+        }
+    );
+
+    return edited;
+}
+
 Editor::Editor(std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles)
     : imgui_material_image_handles(imgui_material_image_handles) {
 }
 
 void Editor::initialize(World* world) {
     this->world = world;
+
+    asset_importer.initialize(world);
 }
 
-bool Editor::render_main_menu(std::function<void(std::string)> scene_save_callback) {
+bool Editor::render_main_menu(std::function<void()> scene_save_callback) {
     static char save_scene_path[256] = "\0";
     static bool show_save_popup      = false;
 
@@ -508,6 +586,51 @@ bool Editor::render_main_menu(std::function<void(std::string)> scene_save_callba
             if (ImGui::MenuItem("Generate predefined script file")) {
                 world->script.generate_predefined_file();
             }
+
+            if (ImGui::MenuItem("Bake Static Collision Shapes")) {
+                auto view = world->scene.entity_registry.view<components::Transform, components::Mesh>(
+                    entt::exclude_t<components::Physics>()
+                );
+
+                for (auto [e, t, m] : view.each()) {
+                    JPH::TriangleList triangles;
+                    if (!world->load_collision_mesh(m.id, triangles)) {
+                        continue;
+                    }
+
+                    JPH::MeshShapeSettings mesh_settings(triangles);
+                    JPH::ShapeRefC         collision_shape = mesh_settings.Create().Get();
+
+                    JPH::ShapeRefC final_shape;
+                    float          scale = t.world_scale;
+                    if (scale != 1.0f) {
+                        JPH::ScaledShapeSettings scaled(collision_shape, JPH::Vec3::sReplicate(scale));
+                        final_shape = scaled.Create().Get();
+                    } else {
+                        final_shape = collision_shape;
+                    }
+
+                    JPH::BodyInterface& body_interface = world->physics.system.GetBodyInterface();
+
+                    auto                      pos = t.world_position;
+                    auto                      rot = t.world_rotation;
+                    JPH::BodyCreationSettings body_settings(
+                        final_shape,
+                        JPH::RVec3(pos.x, pos.y, pos.z),
+                        JPH::Quat(rot.x, rot.y, rot.z, rot.w),
+                        JPH::EMotionType::Static,
+                        Layers::NON_MOVING
+                    );
+
+                    JPH::BodyID body_id =
+                        body_interface.CreateAndAddBody(body_settings, JPH::EActivation::DontActivate);
+
+                    auto& p      = world->scene.add_component<components::Physics>(e);
+                    p.body_id    = body_id;
+                    p.is_static  = true;
+                    p.last_scale = scale;
+                }
+            }
             ImGui::EndMenu();
         }
 
@@ -520,13 +643,11 @@ bool Editor::render_main_menu(std::function<void(std::string)> scene_save_callba
     }
 
     if (ImGui::BeginPopupModal("SaveScenePopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Save Scene");
+        ImGui::Text("Save Scene?");
         ImGui::Separator();
 
-        ImGui::InputText("Path", save_scene_path, 256);
-
         if (ImGui::Button("Save")) {
-            scene_save_callback(save_scene_path);
+            scene_save_callback();
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -897,4 +1018,193 @@ bool Editor::draw_vec3_controls(
     ImGui::PopID();
 
     return edited;
+}
+
+void Editor::on_files_dropped(const std::queue<std::string>& paths) {
+    import_queue = paths;
+}
+
+void Editor::render_asset_importer() {
+    if (!import_queue.empty() && !import_dialog_open) {
+        auto path = import_queue.front();
+        import_queue.pop();
+
+        import_asset_type = world->asset_registry.extension_to_asset_type(path);
+        import_asset_path = path;
+
+        ImGui::OpenPopup("AssetImportPopup");
+        import_dialog_open = true;
+    }
+
+    if (ImGui::BeginPopupModal("AssetImportPopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Importing Asset: %s", import_asset_path.filename().string().c_str());
+        ImGui::NewLine();
+
+        switch (import_asset_type) {
+        case AssetType::UNSUPPORTED:
+            spdlog::warn("Unsupported file: {}", import_asset_path.string());
+            ImGui::CloseCurrentPopup();
+            import_dialog_open = false;
+            break;
+        case AssetType::TEXTURE:
+            render_texture_import_dialog(texture_import_options);
+            break;
+        case AssetType::MESH:
+            render_mesh_import_dialog(mesh_import_options);
+            break;
+        case AssetType::MODEL:
+            render_model_import_dialog(model_import_options);
+            break;
+        case AssetType::MATERIAL:
+        case AssetType::SHADER:
+        case AssetType::SCRIPT:
+        case AssetType::SOUND:
+            spdlog::warn("Importer for {} is not implemented", import_asset_path.string());
+            ImGui::CloseCurrentPopup();
+            import_dialog_open = false;
+            break;
+        }
+
+        ImGui::NewLine();
+        if (ImGui::Button("Import Asset")) {
+            switch (import_asset_type) {
+            case AssetType::UNSUPPORTED:
+                break;
+            case AssetType::TEXTURE:
+                asset_importer.import_texture(import_asset_path, texture_import_options);
+                break;
+            case AssetType::MESH:
+            case AssetType::MODEL:
+                asset_importer.import_model(import_asset_path, model_import_options);
+                break;
+            case AssetType::MATERIAL:
+            case AssetType::SHADER:
+            case AssetType::SCRIPT:
+            case AssetType::SOUND:
+                break;
+            }
+
+            ImGui::CloseCurrentPopup();
+            import_dialog_open = false;
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Close")) {
+            ImGui::CloseCurrentPopup();
+            import_dialog_open = false;
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+void Editor::render_texture_import_dialog(TextureMetadata::TextureImportOptions& options) {
+    ImGui::SeparatorText("Texture Import Options");
+    ImGui::Checkbox("sRGB Tetxure", &options.is_srgb);
+    ImGui::Checkbox("Normal Map", &options.is_normal_map);
+    ImGui::Checkbox("Generate Mipmaps", &options.generate_mipmaps);
+
+    // NOTE: ugly way of doing this
+    std::vector<std::string> compression_options = {
+        "None",
+        "BC5",
+        "BC7",
+    };
+    int compression_index = (int)options.compression;
+
+    if (ImGui::BeginCombo("Compression", compression_options[compression_index].c_str())) {
+        for (int i = 0; i < compression_options.size(); i++) {
+            bool is_selected = (compression_options[i] == compression_options[compression_index]);
+            if (ImGui::Selectable(compression_options[i].c_str(), is_selected)) {
+                options.compression = static_cast<TextureMetadata::TextureImportOptions::Compression>(i);
+            }
+            if (is_selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    {
+        std::unordered_map<VkFilter, std::string> filter_options = {
+            {VK_FILTER_LINEAR, "LINEAR"},
+            {VK_FILTER_NEAREST, "NEAREST"},
+        };
+        auto filter = options.sampler_description.filter;
+
+        if (ImGui::BeginCombo("Filter", filter_options[filter].c_str())) {
+            for (auto& [mode, name] : filter_options) {
+                bool is_selected = (filter == mode);
+                if (ImGui::Selectable(name.c_str(), is_selected)) {
+                    options.sampler_description.filter = mode;
+                }
+                if (is_selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    {
+        std::unordered_map<VkSamplerAddressMode, std::string> address_options = {
+            {VK_SAMPLER_ADDRESS_MODE_REPEAT, "REPEAT"},
+            {VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT, "MIRRORED REPEAT"},
+            {VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, "CLAMP TO EDGE"},
+            {VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER, "CLAMP TO BORDER"},
+            {VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE, "MIRROR CLAMP TO EDGE"},
+        };
+        auto address = options.sampler_description.address_mode;
+
+        if (ImGui::BeginCombo("Address Mode", address_options[address].c_str())) {
+            for (auto& [mode, name] : address_options) {
+                bool is_selected = (address == mode);
+                if (ImGui::Selectable(name.c_str(), is_selected)) {
+                    options.sampler_description.address_mode = mode;
+                }
+                if (is_selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    {
+        std::unordered_map<VkSamplerMipmapMode, std::string> mipmap_options = {
+            {VK_SAMPLER_MIPMAP_MODE_LINEAR, "LINEAR"},
+            {VK_SAMPLER_MIPMAP_MODE_NEAREST, "NEAREST"},
+        };
+        auto mipmap_mode = options.sampler_description.mipmap_mode;
+
+        if (ImGui::BeginCombo("Mipmap mode", mipmap_options[mipmap_mode].c_str())) {
+            for (auto& [mode, name] : mipmap_options) {
+                bool is_selected = (mipmap_mode == mode);
+                if (ImGui::Selectable(name.c_str(), is_selected)) {
+                    options.sampler_description.mipmap_mode = mipmap_mode;
+                }
+                if (is_selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    if (ImGui::SliderFloat("Anisotropy", &options.sampler_description.anisotropy, 0.0f, 16.0f)) {
+        options.sampler_description.anisotropy = glm::ceil(options.sampler_description.anisotropy);
+    }
+}
+
+void Editor::render_mesh_import_dialog(MeshMetadata::MeshImportOptions& options) {
+    ImGui::SeparatorText("Mesh Import Options");
+
+    ImGui::Checkbox("Generate LOD's", &options.generate_lods);
+    ImGui::Checkbox("Generate Meshlets", &options.generate_meshlets);
+}
+
+void Editor::render_model_import_dialog(ModelMetadata::ModelImportOptions& options) {
+    render_mesh_import_dialog(options.mesh_import_options);
+    render_texture_import_dialog(options.texture_import_options);
 }

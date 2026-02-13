@@ -1,5 +1,6 @@
 #pragma once
 
+#include "asset.hpp"
 #include "camera.hpp"
 #include "ember.hpp"
 #include "geometry.hpp"
@@ -10,6 +11,7 @@
 #include <vector>
 
 #include <cereal/cereal.hpp>
+#include <cereal/types/optional.hpp>
 #include <cereal/types/string.hpp>
 #include <cereal/types/unordered_map.hpp>
 #include <cereal/types/variant.hpp>
@@ -31,50 +33,6 @@ namespace JPH {
     }
 } // namespace JPH
 
-namespace glm {
-    template <class Archive> void serialize(Archive& archive, glm::vec2& v) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("x", v.x), cereal::make_nvp("y", v.y));
-        } else {
-            archive(v.x, v.y);
-        }
-    }
-
-    template <class Archive> void serialize(Archive& archive, glm::vec3& v) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("x", v.x), cereal::make_nvp("y", v.y), cereal::make_nvp("z", v.z));
-        } else {
-            archive(v.x, v.y, v.z);
-        }
-    }
-
-    template <class Archive> void serialize(Archive& archive, glm::vec4& v) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("x", v.x),
-                cereal::make_nvp("y", v.y),
-                cereal::make_nvp("z", v.z),
-                cereal::make_nvp("w", v.w)
-            );
-        } else {
-            archive(v.x, v.y, v.z, v.w);
-        }
-    }
-
-    template <class Archive> void serialize(Archive& archive, glm::quat& v) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("x", v.x),
-                cereal::make_nvp("y", v.y),
-                cereal::make_nvp("z", v.z),
-                cereal::make_nvp("w", v.w)
-            );
-        } else {
-            archive(v.x, v.y, v.z, v.w);
-        }
-    }
-} // namespace glm
-
 struct ScriptProperty {
     std::variant<bool, int, float, std::string, glm::vec2, glm::vec3, glm::vec4, glm::quat> value;
 };
@@ -84,9 +42,32 @@ template <typename Archive> void serialize(Archive& archive, ScriptProperty& pro
 }
 
 struct ScriptInstance {
-    uint32_t                                        script_id;
+    AssetID                                         script_id;
     std::unordered_map<std::string, ScriptProperty> property_overrides;
     void*                                           object = nullptr;
+};
+
+struct MaterialOverrides {
+    std::optional<glm::vec4> albedo_factor;
+    std::optional<glm::vec3> emissive_factor;
+    std::optional<float>     roughness_factor;
+    std::optional<float>     metallic_factor;
+    std::optional<float>     normal_scale;
+
+    bool active() {
+        return albedo_factor.has_value() || emissive_factor.has_value() || roughness_factor.has_value() ||
+               metallic_factor.has_value() || normal_scale.has_value();
+    }
+
+    template <class Archive> void serialize(Archive& archive) {
+        archive(
+            CEREAL_NVP(albedo_factor),
+            CEREAL_NVP(emissive_factor),
+            CEREAL_NVP(roughness_factor),
+            CEREAL_NVP(metallic_factor),
+            CEREAL_NVP(normal_scale)
+        );
+    }
 };
 
 template <typename Archive> void serialize(Archive& archive, ScriptInstance& script) {
@@ -124,8 +105,17 @@ namespace components {
         std::string name;
     };
 
+    struct Material {
+        AssetID id = AssetMetadata::INVALID_METADATA;
+
+        MaterialOverrides overrides;
+        int               dedicated_material_index = -1;
+    };
+
     struct Mesh {
-        MeshInstance mesh;
+        AssetID id = AssetMetadata::INVALID_METADATA;
+
+        MeshInstance instance;
     };
 
     struct Physics {
@@ -200,13 +190,19 @@ namespace components {
         }
     }
 
+    template <typename Archive> void serialize(Archive& archive, Material& mat) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("id", mat.id), cereal::make_nvp("overrides", mat.overrides));
+        } else {
+            archive(mat.id, mat.overrides);
+        }
+    }
+
     template <typename Archive> void serialize(Archive& archive, Mesh& mesh) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("mesh_id", mesh.mesh.mesh_id), cereal::make_nvp("material_id", mesh.mesh.material_id)
-            );
+            archive(cereal::make_nvp("id", mesh.id));
         } else {
-            archive(mesh.mesh.mesh_id, mesh.mesh.material_id);
+            archive(mesh.id);
         }
     }
 

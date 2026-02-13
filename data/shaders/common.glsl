@@ -78,10 +78,10 @@ struct MeshDrawCommand {
 };
 
 struct Material {
-    uint albedo_index;
-    uint normals_index;
-    uint material_index;
-    uint emissive_index;
+    int albedo_index;
+    int normals_index;
+    int material_index;
+    int emissive_index;
 
     vec4 albedo_factor;
     vec3 emissive_factor;
@@ -221,7 +221,7 @@ struct SceneUBO {
 
 vec4 material_get_albedo(const Material material, sampler2D albedo_sampler, vec2 uv) {
     vec4 albedo = material.albedo_factor;
-    if (material.albedo_index > 0) {
+    if (material.albedo_index >= 0) {
         albedo *= texture(albedo_sampler, uv);
     }
 
@@ -231,7 +231,7 @@ vec4 material_get_albedo(const Material material, sampler2D albedo_sampler, vec2
 vec3 material_get_normal(const Material material, sampler2D normal_sampler, vec2 uv) {
     vec3 normal = vec3(0, 0, 1.0);
 
-    if (material.normals_index > 0) {
+    if (material.normals_index >= 0) {
         vec2 xy = texture(normal_sampler, uv).rg * 2.0 - 1.0;
         float z = sqrt(max(0.0, 1.0 - dot(xy, xy)));
 
@@ -244,7 +244,7 @@ vec3 material_get_normal(const Material material, sampler2D normal_sampler, vec2
 vec3 material_get_emissive(const Material material, sampler2D emissive_sampler, vec2 uv) {
     vec3 emissive = material.emissive_factor;
 
-    if (material.emissive_index > 0) {
+    if (material.emissive_index >= 0) {
         emissive *= texture(emissive_sampler, uv).rgb;
     }
 
@@ -254,13 +254,11 @@ vec3 material_get_emissive(const Material material, sampler2D emissive_sampler, 
 vec2 material_get_roughness_metallic(const Material material, sampler2D material_sampler, vec2 uv) {
     vec2 roughness_metallic = vec2(material.roughness_factor, material.metallic_factor);
 
-    if (material.material_index > 0) {
+    if (material.material_index >= 0) {
         roughness_metallic *= texture(material_sampler, uv).yz;
     }
 
     roughness_metallic.x = clamp(roughness_metallic.x, 0.05, 1.0);
-
-    // roughness_metallic = vec2(1.0, 0.0);
 
     return roughness_metallic;
 }

@@ -52,7 +52,7 @@ public:
 
     void initialize(class World* world);
 
-    void load_scripts(const std::filesystem::path& path);
+    void load_scripts();
     void reload_scripts();
 
     void generate_predefined_file();
@@ -82,8 +82,6 @@ private:
     void     publish_event_to_tag(const std::string& tag, class asIScriptObject* msg);
     uint32_t get_event_type_from_message(class asIScriptObject* object);
     void     invoke_event_callback(const EventSubscription& sub, class asIScriptObject* msg);
-
-    std::filesystem::path script_source_dir;
 
     class asIScriptEngine* engine         = nullptr;
     class CScriptBuilder*  script_builder = nullptr;

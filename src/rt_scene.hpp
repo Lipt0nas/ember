@@ -50,7 +50,15 @@ RTScene create_rt_scene(
     VkDeviceAddress                  global_index_buffer_address
 );
 
-// NOTE: does not handle updates to BLAS, and is probably horribly inneficient
+void rebuild_blas(
+    RTScene&        scene,
+    class World*    world,
+    uint32_t        frame_index,
+    VkCommandBuffer command_buffer,
+    VkDeviceAddress global_vertex_buffer_address,
+    VkDeviceAddress global_index_buffer_address
+);
+
 void rebuild_tlas(
     RTScene&                         scene,
     VkDevice                         device,

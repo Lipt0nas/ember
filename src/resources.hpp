@@ -1,6 +1,95 @@
 #pragma once
 
+#include "asset.hpp"
 #include "ember.hpp"
+
+struct MaterialDescription {
+    AssetID albedo;
+    AssetID normals;
+    AssetID material;
+    AssetID emissive;
+
+    glm::vec4 albedo_factor;
+    glm::vec3 emissive_factor;
+
+    float roughness_factor;
+    float metallic_factor;
+    float normal_scale;
+
+    template <class Archive> void serialize(Archive& ar) {
+        ar(CEREAL_NVP(albedo),
+           CEREAL_NVP(normals),
+           CEREAL_NVP(material),
+           CEREAL_NVP(emissive),
+           CEREAL_NVP(albedo_factor),
+           CEREAL_NVP(emissive_factor),
+           CEREAL_NVP(roughness_factor),
+           CEREAL_NVP(metallic_factor),
+           CEREAL_NVP(normal_scale));
+    }
+};
+
+struct TextureAssetHeader {
+    uint32_t           format;
+    uint32_t           width;
+    uint32_t           height;
+    uint32_t           mip_levels;
+    uint64_t           size;
+    bool               compressed;
+    SamplerDescription sampler_description;
+
+    template <class Archive> void serialize(Archive& ar) {
+        ar(format, width, height, mip_levels, size, compressed, sampler_description);
+    }
+};
+
+struct MeshAssetHeader {
+    uint64_t vertex_buffer_size;
+    uint64_t index_buffer_size;
+    uint64_t meshlet_buffer_size;
+    uint64_t meshlet_vertex_indicies_buffer_size;
+    uint64_t meshlet_primitive_buffer_size;
+    uint64_t meshlet_bounds_buffer_size;
+
+    struct MeshDescription {
+        glm::vec3 center;
+        float     radius;
+
+        glm::vec4 bounds_min;
+        glm::vec4 bounds_max;
+
+        uint32_t vertex_count;
+
+        uint32_t lod_count;
+        struct LOD {
+            uint32_t index_count;
+            uint32_t index_offset;
+
+            uint32_t meshlet_count;
+            uint32_t meshlet_offset;
+
+            float error;
+
+            template <class Archive> void serialize(Archive& ar) {
+                ar(index_count, index_offset, meshlet_count, meshlet_offset, error);
+            }
+        } lods[8];
+
+        template <class Archive> void serialize(Archive& ar) {
+            ar(center, radius, bounds_min, bounds_max, vertex_count, lod_count, lods);
+        }
+    } mesh;
+
+    template <class Archive> void serialize(Archive& ar) {
+        ar(vertex_buffer_size,
+           index_buffer_size,
+           meshlet_buffer_size,
+           meshlet_vertex_indicies_buffer_size,
+           meshlet_primitive_buffer_size,
+           meshlet_bounds_buffer_size,
+           mesh);
+    }
+};
 
 struct Sampler {
     VkSampler handle;
@@ -187,3 +276,30 @@ void destroy_sampler(const Sampler& sampler, VkDevice device);
 uint32_t aligned_size(uint32_t size, uint32_t alignment);
 
 uint32_t previous_pow2(uint32_t v);
+
+struct RendererBuffers {
+    Buffer staging_buffer;
+    Buffer vertex_buffer;
+    Buffer index_buffer;
+    Buffer meshlet_buffer;
+    Buffer meshlet_vertex_indices;
+    Buffer meshlet_primitive_buffer;
+    Buffer meshlet_bounds_buffer;
+};
+
+// TODO: This should probably be merged into the buffer struct somehow, or wrapped in another struct
+struct BufferOffsets {
+    uint64_t vertex_buffer;
+    uint64_t index_buffer;
+    uint64_t meshlet_buffer;
+    uint64_t meshlet_vertex_indices;
+    uint64_t meshlet_primitive_buffer;
+    uint64_t meshlet_bounds_buffer;
+
+    uint64_t texture_data_size;
+};
+
+struct ImageResource {
+    Image image;
+    int   sampler_index;
+};
