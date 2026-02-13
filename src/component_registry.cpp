@@ -92,7 +92,7 @@ void ComponentRegistry::register_components(Editor* editor) {
             .removable             = true,
             .show_in_editor        = true,
             .accessible_in_scripts = true,
-            .save_to_disk          = false,
+            .save_to_disk          = true,
             .save_snapshot         = true,
         }
     );
@@ -112,6 +112,18 @@ void ComponentRegistry::register_components(Editor* editor) {
     ComponentRegistry::register_component<components::CharacterController>(
         editor,
         "CharacterController",
+        {
+            .removable             = true,
+            .show_in_editor        = true,
+            .accessible_in_scripts = true,
+            .save_to_disk          = true,
+            .save_snapshot         = true,
+        }
+    );
+
+    ComponentRegistry::register_component<components::Material>(
+        editor,
+        "Material",
         {
             .removable             = true,
             .show_in_editor        = true,

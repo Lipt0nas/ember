@@ -42,18 +42,19 @@ namespace {
     }
 
     int script_include_callback(const char* include, const char* from, CScriptBuilder* builder, void* user_param) {
+        auto world = (World*)user_param;
+
         if (strcmp(include, from) == 0) {
             return -1;
         }
 
-        auto scripts = (std::unordered_map<std::string, std::string>*)user_param;
-        auto entry   = scripts->find(include);
-
-        if (entry == scripts->end()) {
+        auto include_path = std::filesystem::path("assets") / "scripts" / include;
+        auto source       = world->load_script(include_path);
+        if (source.empty()) {
             return -1;
         }
 
-        builder->AddSectionFromMemory(include, entry->second.c_str(), entry->second.size());
+        builder->AddSectionFromMemory(include, source.c_str(), source.size());
 
         return 0;
     }
@@ -1356,19 +1357,72 @@ namespace {
         p->last_scale = t->scale;
     }
 
-    Material* node_mesh_get_material(components::Mesh* m) {
-        return &get_world_from_context()->scene.materials[m->mesh.material_id];
-    }
-
     Mesh* node_mesh_get_mesh(components::Mesh* m) {
-        return &get_world_from_context()->scene.meshes[m->mesh.mesh_id];
+        return &get_world_from_context()->resources.meshes[m->instance.mesh_id];
     }
 
-    void node_mesh_material_make_dedicated(components::Mesh* m) {
-        auto world = get_world_from_context();
+    void material_set_albedo(glm::vec4 value, components::Material* mat) {
+        mat->overrides.albedo_factor = value;
+    }
 
-        world->scene.materials.push_back(world->scene.materials[m->mesh.material_id]);
-        m->mesh.material_id = world->scene.materials.size() - 1;
+    glm::vec4 material_get_albedo(components::Material* mat) {
+        if (mat->overrides.albedo_factor) {
+            return *mat->overrides.albedo_factor;
+        }
+        Material* base = get_world_from_context()->get_material(mat->id);
+        return base->albedo_factor;
+    }
+
+    void material_set_emissive(glm::vec3 value, components::Material* mat) {
+        mat->overrides.emissive_factor = value;
+    }
+
+    glm::vec3 material_get_emissive(components::Material* mat) {
+        if (mat->overrides.emissive_factor) {
+            return *mat->overrides.emissive_factor;
+        }
+        Material* base = get_world_from_context()->get_material(mat->id);
+        return base->emissive_factor;
+    }
+
+    void material_set_roughness(float value, components::Material* mat) {
+        mat->overrides.roughness_factor = value;
+    }
+
+    float material_get_roughness(components::Material* mat) {
+        if (mat->overrides.roughness_factor) {
+            return *mat->overrides.roughness_factor;
+        }
+        Material* base = get_world_from_context()->get_material(mat->id);
+        return base->roughness_factor;
+    }
+
+    void material_set_metallic(float value, components::Material* mat) {
+        mat->overrides.metallic_factor = value;
+    }
+
+    float material_get_metallic(components::Material* mat) {
+        if (mat->overrides.metallic_factor) {
+            return *mat->overrides.metallic_factor;
+        }
+        Material* base = get_world_from_context()->get_material(mat->id);
+        return base->metallic_factor;
+    }
+
+    void material_set_normal_scale(float value, components::Material* mat) {
+        mat->overrides.normal_scale = value;
+    }
+
+    float material_get_normal_scale(components::Material* mat) {
+        if (mat->overrides.normal_scale) {
+            return *mat->overrides.normal_scale;
+        }
+        Material* base = get_world_from_context()->get_material(mat->id);
+        return base->normal_scale;
+    }
+
+    void material_reset_overrides(components::Material* mat) {
+        mat->overrides = MaterialOverrides{};
     }
 } // namespace
 
@@ -1429,17 +1483,6 @@ void ScriptSystem::initialize(class World* world) {
         auto name = world->input.button_to_string(static_cast<Button>(i));
         engine->RegisterEnumValue("Button", name.c_str(), i);
     }
-
-    engine->RegisterObjectType("Material", 0, asOBJ_REF | asOBJ_NOCOUNT);
-    engine->RegisterObjectProperty("Material", "uint albedo_index", asOFFSET(Material, albedo_index));
-    engine->RegisterObjectProperty("Material", "uint normals_index", asOFFSET(Material, normals_index));
-    engine->RegisterObjectProperty("Material", "uint material_index", asOFFSET(Material, material_index));
-    engine->RegisterObjectProperty("Material", "uint emissive_index", asOFFSET(Material, emissive_index));
-    engine->RegisterObjectProperty("Material", "vec3 emissive_factor", asOFFSET(Material, emissive_factor));
-    engine->RegisterObjectProperty("Material", "vec3 albedo_factor", asOFFSET(Material, albedo_factor));
-    engine->RegisterObjectProperty("Material", "float roughness_factor", asOFFSET(Material, roughness_factor));
-    engine->RegisterObjectProperty("Material", "float metallic_factor", asOFFSET(Material, metallic_factor));
-    engine->RegisterObjectProperty("Material", "float normal_scale", asOFFSET(Material, normal_scale));
 
     engine->RegisterObjectType("Mesh", 0, asOBJ_REF | asOBJ_NOCOUNT);
     engine->RegisterObjectProperty("Mesh", "vec3 center", asOFFSET(Mesh, center));
@@ -1670,13 +1713,7 @@ void ScriptSystem::initialize(class World* world) {
     {
         engine->RegisterObjectType("Mesh", 0, asOBJ_REF | asOBJ_NOCOUNT);
         engine->RegisterObjectMethod(
-            "Mesh", "Material@ get_material()", asFUNCTION(node_mesh_get_material), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
             "Mesh", "::Mesh@ get_mesh()", asFUNCTION(node_mesh_get_mesh), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Mesh", "void dedicate_material()", asFUNCTION(node_mesh_material_make_dedicated), asCALL_CDECL_OBJLAST
         );
 
         auto type = engine->GetTypeInfoByName("Mesh");
@@ -1689,6 +1726,59 @@ void ScriptSystem::initialize(class World* world) {
             type->GetTypeId(),
             [](Scene& scene, Entity e) {
                 return scene.get_component<components::Mesh>(e);
+            },
+        });
+    }
+
+    {
+        engine->RegisterObjectType("Material", 0, asOBJ_REF | asOBJ_NOCOUNT);
+        engine->RegisterObjectMethod(
+            "Material", "vec4 get_albedo() property", asFUNCTION(material_get_albedo), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Material", "void set_albedo(vec4) property", asFUNCTION(material_set_albedo), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Material", "vec3 get_emissive() property", asFUNCTION(material_get_emissive), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Material", "void set_emissive(vec3) property", asFUNCTION(material_set_emissive), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Material", "float get_roughness() property", asFUNCTION(material_get_roughness), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Material", "void set_roughness(float) property", asFUNCTION(material_set_roughness), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Material", "float get_metallic() property", asFUNCTION(material_get_metallic), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Material", "void set_metallic(float) property", asFUNCTION(material_set_metallic), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Material", "float get_normal_scale() property", asFUNCTION(material_get_normal_scale), asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Material",
+            "void set_normal_scale(float) property",
+            asFUNCTION(material_set_normal_scale),
+            asCALL_CDECL_OBJLAST
+        );
+        engine->RegisterObjectMethod(
+            "Material", "void reset_overrides()", asFUNCTION(material_reset_overrides), asCALL_CDECL_OBJLAST
+        );
+
+        auto type = engine->GetTypeInfoByName("Material");
+        if (!type) {
+            spdlog::error("Failed to get type info for Material component");
+            return;
+        }
+
+        component_retrieve_map.insert({
+            type->GetTypeId(),
+            [](Scene& scene, Entity e) {
+                return scene.get_component<components::Material>(e);
             },
         });
     }
@@ -1888,41 +1978,22 @@ void ScriptSystem::initialize(class World* world) {
     }
 }
 
-void ScriptSystem::load_scripts(const std::filesystem::path& path) {
-    script_source_dir = path;
-    spdlog::info("loading scripts from {}", script_source_dir.string());
-    if (!std::filesystem::exists(path)) {
-        return;
-    }
+void ScriptSystem::load_scripts() {
+    script_builder->SetIncludeCallback(script_include_callback, world);
 
-    std::unordered_map<std::string, std::string> script_sources;
-    script_builder->SetIncludeCallback(script_include_callback, &script_sources);
-
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(script_source_dir)) {
-        if (!entry.is_regular_file()) {
+    for (auto& [id, handle] : world->asset_registry.get_metadata_store()) {
+        auto metadata = dynamic_cast<ScriptMetadata*>(handle.get());
+        if (!metadata) {
             continue;
         }
 
-        if (entry.path().extension() != ".as") {
-            continue;
-        }
+        auto filename = metadata->asset_path.c_str();
+        auto source   = world->load_script(id);
 
-        std::ifstream file(entry.path());
-        if (!file.is_open()) {
-            continue;
-        }
-
-        std::string source(std::istreambuf_iterator<char>(file), {});
-
-        script_sources.insert({entry.path().filename().string(), source});
-    }
-
-    for (const auto& [filename, source] : script_sources) {
-        auto hash           = hash_script(filename);
-        scripts[hash].valid = false;
+        scripts[id].valid = false;
 
         int r;
-        r = script_builder->StartNewModule(engine, filename.c_str());
+        r = script_builder->StartNewModule(engine, filename);
         if (r < 0) {
             spdlog::error("Failed to start a new module {}", filename);
             continue;
@@ -1934,7 +2005,7 @@ void ScriptSystem::load_scripts(const std::filesystem::path& path) {
             continue;
         }
 
-        r = script_builder->AddSectionFromMemory(filename.c_str(), source.c_str(), source.length());
+        r = script_builder->AddSectionFromMemory(filename, source.c_str(), source.length());
         if (r < 0) {
             spdlog::error("Failed to load script {}", filename);
             continue;
@@ -2050,7 +2121,7 @@ void ScriptSystem::load_scripts(const std::filesystem::path& path) {
             }
         }
 
-        scripts[hash] = {
+        scripts[id] = {
             Script{
                 .valid               = true,
                 .name                = filename,
@@ -2079,15 +2150,15 @@ void ScriptSystem::reload_scripts() {
     spdlog::info("clearing map");
     scripts.clear();
 
-    load_scripts(script_source_dir);
+    load_scripts();
 }
 
 void ScriptSystem::generate_predefined_file() {
-    if (!std::filesystem::exists(script_source_dir)) {
+    if (!std::filesystem::exists(world->asset_registry.source_asset_path() / "scripts")) {
         return;
     }
 
-    std::ofstream stream(script_source_dir / "as.predefined");
+    std::ofstream stream(world->asset_registry.source_asset_path() / "as.predefined");
     generate_enum_list(engine, stream);
     generate_class_type_list(engine, stream);
     generate_global_function_list(engine, stream);

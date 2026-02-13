@@ -553,36 +553,13 @@ void destroy_debug_renderer(const DebugRenderer& renderer, VkDevice device, VmaA
     destroy_pipeline(device, renderer.pipeline);
 }
 
-void populate_materials(const Scene& scene, VkDescriptorSet descriptor_set, VkDevice device) {
-    spdlog::info("Texture cache contains: {} textures", scene.images.size());
-
-    uint32_t slot = 1;
-    for (auto& image : scene.images) {
-        VkDescriptorImageInfo image_write_info = {
-            .sampler     = scene.samplers.at(image.sampler_index).handle,
-            .imageView   = image.image.view,
-            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-        };
-
-        VkWriteDescriptorSet write_set = {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = descriptor_set,
-            .dstBinding       = 0,
-            .dstArrayElement  = slot++,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .pImageInfo       = &image_write_info,
-            .pBufferInfo      = nullptr,
-            .pTexelBufferView = nullptr
-        };
-        vkUpdateDescriptorSets(device, 1, &write_set, 0, nullptr);
-    }
-}
-
 class SceneHistory {
 public:
     void create_snapshot(World& world) {
+        if (world.is_running) {
+            return;
+        }
+
         std::stringstream snapshot_stream;
 
         cereal::BinaryOutputArchive output(snapshot_stream);
@@ -608,6 +585,10 @@ public:
     }
 
     void load_snapshot(World& world) {
+        if (world.is_running) {
+            return;
+        }
+
         if (snapshots.empty()) {
             return;
         }
@@ -616,6 +597,10 @@ public:
     }
 
     bool undo(World& world) {
+        if (world.is_running) {
+            return false;
+        }
+
         if (snapshots.empty() || newest_snapshot == snapshots.size() - 1) {
             return false;
         }
@@ -627,6 +612,10 @@ public:
     }
 
     bool redo(World& world) {
+        if (world.is_running) {
+            return false;
+        }
+
         if (snapshots.empty() || newest_snapshot == 0) {
             return false;
         }
@@ -664,6 +653,120 @@ private:
     int newest_snapshot = 0;
 };
 
+void append_node(World& world, ModelMetadata::NodeDescription& desc, Entity parent) {
+    auto node = world.scene.create_node(desc.name);
+
+    auto t      = world.scene.get_component<components::Transform>(node);
+    t->position = desc.position;
+    t->scale    = desc.scale;
+    t->rotation = desc.rotation;
+
+    if (desc.material_id != AssetMetadata::INVALID_METADATA) {
+        auto& mat = world.scene.add_component<components::Material>(node);
+        mat.id    = desc.material_id;
+    }
+
+    if (desc.mesh_id != AssetMetadata::INVALID_METADATA) {
+        auto& mesh = world.scene.add_component<components::Mesh>(node);
+        mesh.id    = desc.mesh_id;
+    }
+
+    if (parent != entt::null) {
+        world.scene.set_node_parent(node, parent);
+    }
+
+    for (auto& child : desc.children) {
+        append_node(world, child, node);
+    }
+}
+
+void update_transform_hierarchy(World& world) {
+    ZoneScopedN("Update Transforms");
+    auto root_view = world.scene.entity_registry.view<components::Transform>(entt::exclude<components::Parent>);
+    for (auto [e, t] : root_view.each()) {
+        t.world_position = t.position;
+        t.world_scale    = t.scale;
+        t.world_rotation = t.rotation;
+    }
+
+    bool                       has_updates = true;
+    std::unordered_set<Entity> processed;
+
+    for (auto e : root_view) {
+        processed.insert(e);
+    }
+
+    while (has_updates) {
+        has_updates = false;
+
+        auto child_view = world.scene.entity_registry.view<components::Transform, components::Parent>();
+        for (auto [e, ct, p] : child_view.each()) {
+            if (processed.contains(e)) {
+                continue;
+            }
+
+            if (!processed.contains(p.parent)) {
+                continue;
+            }
+
+            auto& parent_transform = world.scene.entity_registry.get<components::Transform>(p.parent);
+
+            ct.world_rotation = parent_transform.world_rotation * ct.rotation;
+            ct.world_scale    = parent_transform.world_scale * ct.scale;
+            ct.world_position = parent_transform.world_position +
+                                (parent_transform.world_rotation * (ct.position * parent_transform.scale));
+
+            processed.insert(e);
+            has_updates = true;
+        }
+    }
+
+    auto view = world.scene.entity_registry.view<components::Transform, components::Mesh>();
+    for (auto [e, t, m] : view.each()) {
+        m.instance.position = t.world_position;
+        m.instance.scale    = t.world_scale;
+        m.instance.rotation = t.world_rotation;
+    }
+}
+
+void fill_drawcalls(
+    World& world, std::vector<MeshInstance>& mesh_instances, std::vector<Entity>& mesh_instance_entities
+) {
+    ZoneScopedN("Fill Drawcalls");
+
+    mesh_instances.clear();
+    mesh_instance_entities.clear();
+
+    auto view = world.scene.entity_registry.view<components::Mesh, components::Material>();
+    for (auto [e, mesh, mat] : view.each()) {
+        if (mesh.id == AssetMetadata::INVALID_METADATA || mat.id == AssetMetadata::INVALID_METADATA) {
+            continue;
+        }
+
+        auto mat_index = world.load_material(mat.id);
+        if (mat_index != -1) {
+            mesh.instance.material_id = mat_index;
+
+            if (mat.overrides.active()) {
+                if (mat.dedicated_material_index == -1) {
+                    mat.dedicated_material_index = world.dedicate_material(mat, mat_index);
+                }
+                world.apply_material_override(mat);
+
+                mesh.instance.material_id = world.resources.materials.size() + mat.dedicated_material_index;
+            }
+        }
+
+        auto mesh_index = world.load_mesh(mesh.id);
+        if (mesh_index != -1) {
+            mesh.instance.mesh_id = mesh_index;
+        }
+
+        mesh_instances.push_back(mesh.instance);
+        mesh_instance_entities.push_back(e);
+    }
+}
+
 int main(int argc, char* argv[]) {
     ArgParser args;
     args.parse(argc, argv);
@@ -690,11 +793,8 @@ int main(int argc, char* argv[]) {
 
     const int FRAMES_IN_FLIGHT = 2;
 
-    bool use_meshlets      = true;
-    bool use_hardware_rt   = true;
-    bool build_lods        = true;
-    bool fast_scene_build  = true;
-    bool compress_textures = true;
+    bool use_meshlets    = true;
+    bool use_hardware_rt = true;
 
     bool enable_validation = false;
 
@@ -751,19 +851,7 @@ int main(int argc, char* argv[]) {
         use_hardware_rt = hardware_rt_requested;
     }
 
-    build_lods        = args.get_arg<bool>("lods", true);
-    fast_scene_build  = args.get_arg<bool>("fast-build", false);
-    compress_textures = args.get_arg<bool>("compress-textures", true);
-
-    spdlog::info(
-        "Extension support:\n\tMesh shading: {}\n\tRay tracing: {}\n\tFast Scene Build: {}\n\tLOD's: {}\n\tTexture "
-        "Compression: {}",
-        use_meshlets,
-        use_hardware_rt,
-        fast_scene_build,
-        build_lods,
-        compress_textures
-    );
+    spdlog::info("Extension support:\n\tMesh shading: {}\n\tRay tracing: {}", use_meshlets, use_hardware_rt);
 
     VmaAllocatorCreateInfo allocator_info = {
         .flags                          = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
@@ -833,6 +921,15 @@ int main(int argc, char* argv[]) {
 
     VkCommandPool command_pool = VK_NULL_HANDLE;
     VK_CHECK(vkCreateCommandPool(device, &command_pool_info, nullptr, &command_pool));
+
+    command_pool_info = {
+        .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .pNext            = nullptr,
+        .flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+        .queueFamilyIndex = graphics_family_index
+    };
+    VkCommandPool temp_buffer_pool = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateCommandPool(device, &command_pool_info, nullptr, &temp_buffer_pool));
 
     VkCommandBufferAllocateInfo command_buffer_info = {
         .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1865,17 +1962,12 @@ int main(int argc, char* argv[]) {
         VK_CHECK(vkAllocateDescriptorSets(device, &global_texture_descriptor_set_info, &global_texture_descriptor_set));
     }
 
-    std::string scene_load_path  = args.get_arg<std::string>("s", "");
-    std::string script_load_path = args.get_arg<std::string>("scripts", "");
+    std::string project_path = args.get_arg<std::string>("project", "");
 
     std::unordered_map<uint32_t, VkDescriptorSet> imgui_material_image_handles;
     Editor                                        editor(imgui_material_image_handles);
 
     ComponentRegistry::register_components(&editor);
-
-    World world;
-    world.initialize();
-    editor.initialize(&world);
 
     RendererBuffers buffers = {
         .staging_buffer           = staging_buffer,
@@ -1888,78 +1980,73 @@ int main(int argc, char* argv[]) {
     };
     BufferOffsets buffer_offsets;
 
-    std::vector<unsigned char> compressed_texture_data;
+    World world;
+    world.gpu = {
+        .bindless_texture_set = global_texture_descriptor_set,
+        .buffers              = &buffers,
+        .buffer_offsets       = &buffer_offsets,
+        .device               = device,
+        .queue                = graphics_queue,
+        .allocator            = vma_allocator,
+        .temp_pool            = temp_buffer_pool
+    };
+    world.initialize();
 
-    if (std::filesystem::is_directory(scene_load_path)) {
-        VkCommandBufferAllocateInfo alloc_info = {
-            .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .pNext              = nullptr,
-            .commandPool        = command_pool,
-            .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1
-        };
-        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-        VK_CHECK(vkAllocateCommandBuffers(device, &alloc_info, &command_buffer));
-        SceneSerializer::load(
-            scene_load_path,
-            world,
-            buffers,
-            buffer_offsets,
-            compressed_texture_data,
-            device,
-            graphics_queue,
-            vma_allocator,
-            command_buffer
-        );
-        vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+    world.asset_registry.load(project_path);
+    world.script.load_scripts();
 
-        world.script.load_scripts(std::filesystem::path(scene_load_path) / "scripts");
-    } else {
-        world.scene.load_scene(
-            scene_load_path,
-            buffers,
-            buffer_offsets,
-            build_lods,
-            fast_scene_build,
-            compress_textures,
-            compressed_texture_data,
-            device,
-            graphics_queue,
-            vma_allocator,
-            command_buffers[0]
-        );
+    editor.initialize(&world);
 
-        if (!script_load_path.empty()) {
-            world.script.load_scripts(script_load_path);
+    SceneSerializer::load(world.asset_registry.root_path(), world);
+    update_transform_hierarchy(world);
+    {
+        auto view = world.scene.entity_registry.view<components::Transform, components::Mesh, components::Physics>();
+        for (auto [e, t, m, p] : view.each()) {
+            if (p.is_static == false) {
+                continue;
+            }
+
+            JPH::TriangleList triangles;
+            if (!world.load_collision_mesh(m.id, triangles)) {
+                continue;
+            }
+
+            JPH::MeshShapeSettings mesh_settings(triangles);
+            JPH::ShapeRefC         collision_shape = mesh_settings.Create().Get();
+
+            JPH::ShapeRefC final_shape;
+            float          scale = t.world_scale;
+            if (scale != 1.0f) {
+                JPH::ScaledShapeSettings scaled(collision_shape, JPH::Vec3::sReplicate(scale));
+                final_shape = scaled.Create().Get();
+            } else {
+                final_shape = collision_shape;
+            }
+
+            JPH::BodyInterface& body_interface = world.physics.system.GetBodyInterface();
+
+            auto                      pos = t.world_position;
+            auto                      rot = t.world_rotation;
+            JPH::BodyCreationSettings body_settings(
+                final_shape,
+                JPH::RVec3(pos.x, pos.y, pos.z),
+                JPH::Quat(rot.x, rot.y, rot.z, rot.w),
+                JPH::EMotionType::Static,
+                Layers::NON_MOVING
+            );
+
+            JPH::BodyID body_id = body_interface.CreateAndAddBody(body_settings, JPH::EActivation::DontActivate);
+            p.body_id           = body_id;
+            p.last_scale        = scale;
         }
     }
-    VK_CHECK(vkDeviceWaitIdle(device));
 
-    spdlog::info(
-        "Geometry buffer sizes:\n\tVertex: {}MB\n\tIndex: {}MB\n\tMeshlet: {}MB\n\tMeshlet Vertex Indices: "
-        "{}MB\n\tMeshlet Primitive Indices: {}MB\n\tMeshlet Bounds: {}MB\n\tCompressed Texture Data: {}MB",
-        static_cast<float>(buffer_offsets.vertex_buffer) / 1024.0f / 1024.0f,
-        static_cast<float>(buffer_offsets.index_buffer) / 1024.0f / 1024.0f,
-        static_cast<float>(buffer_offsets.meshlet_buffer) / 1024.0f / 1024.0f,
-        static_cast<float>(buffer_offsets.meshlet_vertex_indices) / 1024.0f / 1024.0f,
-        static_cast<float>(buffer_offsets.meshlet_primitive_buffer) / 1024.0f / 1024.0f,
-        static_cast<float>(buffer_offsets.meshlet_bounds_buffer) / 1024.0f / 1024.0f,
-        static_cast<float>(compressed_texture_data.size()) / 1024.0f / 1024.0f
-    );
+    VK_CHECK(vkDeviceWaitIdle(device));
 
     // This is updated by a system at the beginning of a frame
     std::vector<MeshInstance> mesh_instances;
     std::vector<Entity>       mesh_instance_entities;
-    {
-        auto view = world.scene.entity_registry.view<components::Mesh>();
-        for (auto& e : view) {
-            auto& c = view.get<components::Mesh>(e);
-            mesh_instances.push_back(c.mesh);
-            mesh_instance_entities.push_back(e);
-        }
-    }
-
-    populate_materials(world.scene, global_texture_descriptor_set, device);
+    fill_drawcalls(world, mesh_instances, mesh_instance_entities);
 
     SceneHistory scene_history;
     RTScene      rt_scene = {};
@@ -1974,7 +2061,7 @@ int main(int argc, char* argv[]) {
             graphics_queue,
             10000,
             FRAMES_IN_FLIGHT,
-            world.scene.meshes,
+            world.resources.meshes,
             mesh_instances,
             get_buffer_device_address(global_vertex_buffer, device),
             get_buffer_device_address(global_index_buffer, device)
@@ -1991,13 +2078,6 @@ int main(int argc, char* argv[]) {
         graphics_queue,
         FRAMES_IN_FLIGHT
     );
-
-    {
-        uint32_t slot = 1;
-        for (auto& image : world.scene.images) {
-            imgui_material_image_handles.insert({slot++, imgui_image_handle(image.image, nearest_sampler)});
-        }
-    }
 
     bool    use_editor_camera = true;
     Camera* camera;
@@ -2606,13 +2686,31 @@ int main(int argc, char* argv[]) {
     framegraph.import_image(rt_reflection_buffer, VK_IMAGE_LAYOUT_GENERAL, false);
 
     if (use_hardware_rt) {
-        auto tlas_rebuild_pass =
-            framegraph.add_pass("RT structure rebuild")
-                .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                    rebuild_tlas(
-                        rt_scene, device, vma_allocator, command_buffer, frame_index, world.scene.meshes, mesh_instances
-                    );
-                });
+        auto tlas_rebuild_pass = framegraph.add_pass("RT structure rebuild")
+                                     .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                                         if (world.needs_blas_rebuild) {
+                                             rebuild_blas(
+                                                 rt_scene,
+                                                 &world,
+                                                 frame_index,
+                                                 command_buffer,
+                                                 get_buffer_device_address(global_vertex_buffer, device),
+                                                 get_buffer_device_address(global_index_buffer, device)
+                                             );
+
+                                             world.needs_blas_rebuild = false;
+                                         }
+
+                                         rebuild_tlas(
+                                             rt_scene,
+                                             device,
+                                             vma_allocator,
+                                             command_buffer,
+                                             frame_index,
+                                             world.resources.meshes,
+                                             mesh_instances
+                                         );
+                                     });
     }
 
     auto cull_early_pass =
@@ -5722,10 +5820,20 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        SDL_Event window_event;
+        static std::queue<std::string> dropped_filenames;
+        SDL_Event                      window_event;
         while (SDL_PollEvent(&window_event)) {
             ImGui_ImplSDL3_ProcessEvent(&window_event);
             switch (window_event.type) {
+            case SDL_EVENT_DROP_BEGIN:
+                break;
+            case SDL_EVENT_DROP_FILE:
+                if (window_event.drop.data != nullptr) {
+                    dropped_filenames.push(window_event.drop.data);
+                }
+                break;
+            case SDL_EVENT_DROP_COMPLETE:
+                break;
             case SDL_EVENT_QUIT:
                 running = false;
                 break;
@@ -5818,10 +5926,6 @@ int main(int argc, char* argv[]) {
                 visualize_probes = !visualize_probes;
             }
 
-            if (world.input.is_key_just_pressed(Key::GRAVE)) {
-                editor_overlay = !editor_overlay;
-            }
-
             if (world.input.is_key_just_pressed(Key::ESCAPE) && world.input.is_key_pressed(Key::LEFT_SHIFT)) {
                 running = false;
             }
@@ -5872,6 +5976,10 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        if (world.input.is_key_just_pressed(Key::GRAVE)) {
+            editor_overlay = !editor_overlay;
+        }
+
         if (world.input.is_key_just_pressed(Key::F5)) {
             editor_mode = !editor_mode;
 
@@ -5896,20 +6004,20 @@ int main(int argc, char* argv[]) {
                 }
 
                 world.script.clear();
+                world.resources.runtime_materials.clear();
                 scene_history.load_snapshot(world);
-                world.scene.materials.resize(world.scene.original_material_size);
 
                 SDL_SetWindowMouseGrab(window, false);
                 SDL_SetWindowRelativeMouseMode(window, false);
                 capturing_mouse = false;
             } else {
                 // Entering play state
-                editor_overlay   = false;
-                world.is_running = true;
+                editor_overlay = false;
 
                 if (scene_history.snapshot_count() == 0) {
                     scene_history.create_snapshot(world);
                 }
+                world.is_running = true;
 
                 auto controller_view =
                     world.scene.entity_registry.view<components::CharacterController, components::Transform>();
@@ -5943,19 +6051,10 @@ int main(int argc, char* argv[]) {
             SDL_SetWindowRelativeMouseMode(window, true);
             capturing_mouse = true;
         }
+        fill_drawcalls(world, mesh_instances, mesh_instance_entities);
 
         {
-            mesh_instances.clear();
-            mesh_instance_entities.clear();
-            auto view = world.scene.entity_registry.view<components::Mesh>();
-            for (auto& e : view) {
-                auto& c = view.get<components::Mesh>(e);
-                mesh_instances.push_back(c.mesh);
-                mesh_instance_entities.push_back(e);
-            }
-        }
-
-        {
+            ZoneScopedN("Update Character Controllers");
             auto view = world.scene.entity_registry.view<components::CharacterController, components::Transform>();
 
             for (auto [e, c, t] : view.each()) {
@@ -6002,6 +6101,7 @@ int main(int argc, char* argv[]) {
         }
 
         {
+            ZoneScopedN("Physics Sync Bodies");
             auto view = world.scene.entity_registry.view<components::Transform, components::Physics>();
             for (auto [entity, transform, physics] : view.each()) {
                 if (physics.body_id.IsInvalid()) {
@@ -6052,6 +6152,7 @@ int main(int argc, char* argv[]) {
         }
 
         {
+            ZoneScopedN("Physics Update");
             auto update_view = world.scene.entity_registry.view<components::Transform, components::Physics>();
 
             while (physics_time_accumulator >= world.physics.frame_time) {
@@ -6079,37 +6180,44 @@ int main(int argc, char* argv[]) {
                 physics_time_accumulator -= world.physics.frame_time;
             }
 
-            auto interpolate_view =
-                world.scene.entity_registry.view<components::Transform, components::Physics, components::Mesh>();
-            float physics_alpha = physics_time_accumulator / world.physics.frame_time;
-            for (auto [entity, transform, physics, m] : interpolate_view.each()) {
-                if (physics.is_static || physics.body_id.IsInvalid()) {
-                    continue;
+            {
+                ZoneScopedN("Interpolate Physics Objects");
+                auto interpolate_view =
+                    world.scene.entity_registry.view<components::Transform, components::Physics, components::Mesh>();
+                float physics_alpha = physics_time_accumulator / world.physics.frame_time;
+                for (auto [entity, transform, physics, m] : interpolate_view.each()) {
+                    if (physics.is_static || physics.body_id.IsInvalid()) {
+                        continue;
+                    }
+
+                    JPH::Vec3 p;
+                    JPH::Quat r;
+                    world.physics.system.GetBodyInterface().GetPositionAndRotation(physics.body_id, p, r);
+
+                    glm::vec3 new_pos = glm::vec3(p.GetX(), p.GetY(), p.GetZ());
+                    glm::quat new_rot = glm::quat(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
+
+                    glm::vec3 old_pos = glm::vec3(
+                        physics.last_position.GetX(), physics.last_position.GetY(), physics.last_position.GetZ()
+                    );
+                    glm::quat old_rot = glm::quat(
+                        physics.last_rotation.GetX(),
+                        physics.last_rotation.GetY(),
+                        physics.last_rotation.GetZ(),
+                        physics.last_rotation.GetW()
+                    );
+
+                    int mesh_index = m.instance.mesh_id;
+                    if (mesh_index != -1) {
+                        Mesh& geometry = world.resources.meshes[mesh_index];
+
+                        glm::vec3 center = (geometry.bounds_max + geometry.bounds_min) * 0.5f;
+                        glm::vec3 offset = new_rot * (center * m.instance.scale);
+
+                        transform.position = glm::mix(old_pos, new_pos, physics_alpha) - offset;
+                        transform.rotation = glm::slerp(old_rot, new_rot, physics_alpha);
+                    }
                 }
-
-                JPH::Vec3 p;
-                JPH::Quat r;
-                world.physics.system.GetBodyInterface().GetPositionAndRotation(physics.body_id, p, r);
-
-                glm::vec3 new_pos = glm::vec3(p.GetX(), p.GetY(), p.GetZ());
-                glm::quat new_rot = glm::quat(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
-
-                glm::vec3 old_pos =
-                    glm::vec3(physics.last_position.GetX(), physics.last_position.GetY(), physics.last_position.GetZ());
-                glm::quat old_rot = glm::quat(
-                    physics.last_rotation.GetX(),
-                    physics.last_rotation.GetY(),
-                    physics.last_rotation.GetZ(),
-                    physics.last_rotation.GetW()
-                );
-
-                Mesh& geometry = world.scene.meshes[m.mesh.mesh_id];
-
-                glm::vec3 center = (geometry.bounds_max + geometry.bounds_min) * 0.5f;
-                glm::vec3 offset = new_rot * (center * m.mesh.scale);
-
-                transform.position = glm::mix(old_pos, new_pos, physics_alpha) - offset;
-                transform.rotation = glm::slerp(old_rot, new_rot, physics_alpha);
             }
         }
 
@@ -6120,53 +6228,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        {
-            auto root_view = world.scene.entity_registry.view<components::Transform>(entt::exclude<components::Parent>);
-            for (auto [e, t] : root_view.each()) {
-                t.world_position = t.position;
-                t.world_scale    = t.scale;
-                t.world_rotation = t.rotation;
-            }
-
-            bool                       has_updates = true;
-            std::unordered_set<Entity> processed;
-
-            for (auto e : root_view) {
-                processed.insert(e);
-            }
-
-            while (has_updates) {
-                has_updates = false;
-
-                auto child_view = world.scene.entity_registry.view<components::Transform, components::Parent>();
-                for (auto [e, ct, p] : child_view.each()) {
-                    if (processed.contains(e)) {
-                        continue;
-                    }
-
-                    if (!processed.contains(p.parent)) {
-                        continue;
-                    }
-
-                    auto& parent_transform = world.scene.entity_registry.get<components::Transform>(p.parent);
-
-                    ct.world_rotation = parent_transform.world_rotation * ct.rotation;
-                    ct.world_scale    = parent_transform.world_scale * ct.scale;
-                    ct.world_position = parent_transform.world_position +
-                                        (parent_transform.world_rotation * (ct.position * parent_transform.scale));
-
-                    processed.insert(e);
-                    has_updates = true;
-                }
-            }
-
-            auto view = world.scene.entity_registry.view<components::Transform, components::Mesh>();
-            for (auto [e, t, m] : view.each()) {
-                m.mesh.position = t.world_position;
-                m.mesh.scale    = t.world_scale;
-                m.mesh.rotation = t.world_rotation;
-            }
-        }
+        update_transform_hierarchy(world);
 
         if (frame_count == pick_frame) {
             void* ptr;
@@ -6200,7 +6262,7 @@ int main(int argc, char* argv[]) {
 
         ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
         if (editor_overlay) {
-            if (editor.render_main_menu([&](std::string path) {
+            if (editor.render_main_menu([&]() {
                     VkCommandBufferAllocateInfo alloc_info = {
                         .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                         .pNext              = nullptr,
@@ -6210,17 +6272,7 @@ int main(int argc, char* argv[]) {
                     };
                     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
                     VK_CHECK(vkAllocateCommandBuffers(device, &alloc_info, &command_buffer));
-                    SceneSerializer::save(
-                        path,
-                        world,
-                        buffers,
-                        buffer_offsets,
-                        compressed_texture_data,
-                        device,
-                        graphics_queue,
-                        vma_allocator,
-                        command_buffer
-                    );
+                    SceneSerializer::save(world.asset_registry.root_path(), world);
                     vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
                 })) {
                 scene_history.create_snapshot(world);
@@ -6271,13 +6323,111 @@ int main(int argc, char* argv[]) {
             scene_history.create_snapshot(world);
         }
 
+        if (dropped_filenames.size() > 0) {
+            editor.on_files_dropped(dropped_filenames);
+
+            while (!dropped_filenames.empty()) {
+                dropped_filenames.pop();
+            }
+        }
+        editor.render_asset_importer();
+
         ImGui::Begin(ICON_FA_FILE " Assets");
+        if (ImGui::TreeNode("Materials")) {
+            if (ImGui::Button("Load All Materials")) {
+                for (auto& [id, handle] : world.asset_registry.get_metadata_store()) {
+                    if (dynamic_cast<MaterialMetadata*>(handle.get())) {
+                        auto index = world.load_material(handle->id);
+                        if (index == -1) {
+                            spdlog::error("Failed to load {}", handle->source_path);
+                        }
+                    }
+                }
+            }
+
+            for (auto& [id, handle] : world.asset_registry.get_metadata_store()) {
+                if (dynamic_cast<MaterialMetadata*>(handle.get())) {
+                    ImGui::Text("%s", handle->source_path.c_str());
+                    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                        ImGui::Text("%s", handle->source_path.c_str());
+                        ImGui::SetDragDropPayload("material_id", &id, sizeof(AssetID));
+                        ImGui::EndDragDropSource();
+                    }
+                }
+            }
+
+            ImGui::TreePop();
+        }
+
+        if (ImGui::TreeNode("Meshes")) {
+            if (ImGui::Button("Load All Meshes")) {
+                for (auto& [id, handle] : world.asset_registry.get_metadata_store()) {
+                    if (dynamic_cast<MeshMetadata*>(handle.get())) {
+                        auto index = world.load_mesh(handle->id);
+                        if (index == -1) {
+                            spdlog::error("Failed to load {}", handle->source_path);
+                        }
+                    }
+                }
+            }
+
+            for (auto& [id, handle] : world.asset_registry.get_metadata_store()) {
+                if (dynamic_cast<MeshMetadata*>(handle.get())) {
+                    ImGui::Text("%s", handle->source_path.c_str());
+                    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                        ImGui::Text("%s", handle->source_path.c_str());
+                        ImGui::SetDragDropPayload("mesh_id", &id, sizeof(AssetID));
+                        ImGui::EndDragDropSource();
+                    }
+                }
+            }
+
+            ImGui::TreePop();
+        }
+
+        if (ImGui::TreeNode("Models")) {
+            for (auto& [id, handle] : world.asset_registry.get_metadata_store()) {
+                auto metadata = dynamic_cast<ModelMetadata*>(handle.get());
+                if (metadata) {
+                    ImGui::Text("%s", handle->source_path.c_str());
+                    if (ImGui::BeginPopupContextItem()) {
+                        if (ImGui::MenuItem("Append scene to world")) {
+                            for (auto& desc : metadata->scene_description.nodes) {
+                                append_node(world, desc, entt::null);
+                            }
+
+                            scene_history.create_snapshot(world);
+                        }
+                        ImGui::EndPopup();
+                    }
+                }
+            }
+
+            ImGui::TreePop();
+        }
+
         if (ImGui::TreeNode("Textures")) {
+            if (ImGui::Button("Load Textures")) {
+                for (auto& [id, handle] : world.asset_registry.get_metadata_store()) {
+                    if (dynamic_cast<TextureMetadata*>(handle.get())) {
+                        auto index = world.load_texture(handle->id);
+                        if (index == -1) {
+                            spdlog::error("Failed to load {}", handle->source_path);
+                        } else {
+                            imgui_material_image_handles.insert(
+                                {index, imgui_image_handle(world.resources.images[index].image, nearest_sampler)}
+                            );
+                        }
+                    }
+                }
+            }
+
             int images_per_row = (ImGui::GetContentRegionAvail().x) / 50 - 1;
             int row_id         = 0;
             for (auto& [slot, handle] : imgui_material_image_handles) {
                 ImGui::Image(handle, ImVec2(50, 50));
                 if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                    ImGui::Image(handle, ImVec2(50, 50));
                     ImGui::SetDragDropPayload("texture_id", &slot, sizeof(uint32_t));
                     ImGui::EndDragDropSource();
                 }
@@ -6308,18 +6458,56 @@ int main(int argc, char* argv[]) {
         ImGui::Checkbox("Simulate FPS", &simulate_lower_fps);
         if (ImGui::CollapsingHeader("Renderer Info", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Text("Rendering path: %s", use_meshlets ? "Meshlets" : "Indirect");
-            ImGui::Text("Objects: %lu", mesh_instances.size());
             ImGui::Text("FPS: %u", fps);
+            ImGui::NewLine();
+
+            ImGui::Text("Objects In Scene: %lu", mesh_instances.size());
+            ImGui::Text("Unique Materials: %lu", world.resources.materials.size());
+            ImGui::Text("Material Overrides: %lu", world.resources.runtime_materials.size());
+            ImGui::Text("Textures: %lu", world.resources.images.size());
+            ImGui::Text("Samplers: %lu", world.resources.samplers.size());
+            ImGui::Text("Meshes: %lu", world.resources.meshes.size());
+            ImGui::NewLine();
+
+            auto to_mb = [](uint64_t bytes) {
+                return (double)bytes / 1024.0 / 1024.0;
+            };
+
             ImGui::Text(
-                "Camera Position: %.3f, %.3f, %.3f", camera->position.x, camera->position.y, camera->position.z
+                "Vertex Buffer Usage: %.3fMB / %3.fMB",
+                to_mb(buffer_offsets.vertex_buffer),
+                to_mb(buffers.vertex_buffer.size)
             );
             ImGui::Text(
-                "Camera Orientation: %.3f, %.3f, %.3f, %.3f",
-                camera->orientation.x,
-                camera->orientation.y,
-                camera->orientation.z,
-                camera->orientation.w
+                "Index Buffer Usage: %.3fMB / %3.fMB",
+                to_mb(buffer_offsets.index_buffer),
+                to_mb(buffers.index_buffer.size)
             );
+            ImGui::Text(
+                "Meshlet Buffer Usage: %.3fMB / %3.fMB",
+                to_mb(buffer_offsets.meshlet_buffer),
+                to_mb(buffers.meshlet_buffer.size)
+            );
+            ImGui::Text(
+                "Meshlet Indices Buffer Usage: %.3fMB / %3.fMB",
+                to_mb(buffer_offsets.meshlet_vertex_indices),
+                to_mb(buffers.meshlet_vertex_indices.size)
+            );
+            ImGui::Text(
+                "Meshlet Primitive Buffer Usage: %.3fMB / %3.fMB",
+                to_mb(buffer_offsets.meshlet_primitive_buffer),
+                to_mb(buffers.meshlet_primitive_buffer.size)
+            );
+            ImGui::Text(
+                "Meshlet Bounds Buffer Usage: %.3fMB / %3.fMB",
+                to_mb(buffer_offsets.meshlet_bounds_buffer),
+                to_mb(buffers.meshlet_bounds_buffer.size)
+            );
+            ImGui::NewLine();
+
+            ImGui::Text("Texture Usage: %.3fMB", to_mb(buffer_offsets.texture_data_size));
+            ImGui::NewLine();
+
             ImGui::Text("Triangles Rendered: %.3fM", (double(pipeline_stats[0]) / 1'000'000.0));
             ImGui::Text("Fragment shader invocations: %.3fM", (double(pipeline_stats[1]) / 1'000'000.0));
         }
@@ -6690,21 +6878,28 @@ int main(int argc, char* argv[]) {
             VK_CHECK(vmaMapMemory(vma_allocator, mesh_buffer.allocation, &ptr));
             memcpy(
                 reinterpret_cast<char*>(ptr) + frame_offset,
-                world.scene.meshes.data(),
-                sizeof(Mesh) * world.scene.meshes.size()
+                world.resources.meshes.data(),
+                sizeof(Mesh) * world.resources.meshes.size()
             );
             vmaUnmapMemory(vma_allocator, mesh_buffer.allocation);
             VK_CHECK(vmaFlushAllocation(vma_allocator, mesh_buffer.allocation, frame_offset, mesh_buffer.size));
         }
 
         {
-            void*  ptr          = nullptr;
-            size_t frame_offset = (material_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+            void*  ptr            = nullptr;
+            size_t frame_offset   = (material_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+            size_t runtime_offset = frame_offset + sizeof(Material) * world.resources.materials.size();
+
             VK_CHECK(vmaMapMemory(vma_allocator, material_buffer.allocation, &ptr));
             memcpy(
                 reinterpret_cast<char*>(ptr) + frame_offset,
-                world.scene.materials.data(),
-                sizeof(Material) * world.scene.materials.size()
+                world.resources.materials.data(),
+                sizeof(Material) * world.resources.materials.size()
+            );
+            memcpy(
+                reinterpret_cast<char*>(ptr) + runtime_offset,
+                world.resources.runtime_materials.data(),
+                sizeof(Material) * world.resources.runtime_materials.size()
             );
             vmaUnmapMemory(vma_allocator, material_buffer.allocation);
             VK_CHECK(vmaFlushAllocation(vma_allocator, material_buffer.allocation, frame_offset, material_buffer.size));
@@ -6885,9 +7080,9 @@ int main(int argc, char* argv[]) {
         {
             auto view = world.scene.entity_registry.view<components::Transform, components::Mesh>();
             for (auto [e, t, m] : view.each()) {
-                m.mesh.last_position = m.mesh.position;
-                m.mesh.last_scale    = m.mesh.scale;
-                m.mesh.last_rotation = m.mesh.rotation;
+                m.instance.last_position = m.instance.position;
+                m.instance.last_scale    = m.instance.scale;
+                m.instance.last_rotation = m.instance.rotation;
             }
         }
 

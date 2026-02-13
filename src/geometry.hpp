@@ -3,10 +3,10 @@
 #include "ember.hpp"
 
 struct Material {
-    uint32_t albedo_index;
-    uint32_t normals_index;
-    uint32_t material_index;
-    uint32_t emissive_index;
+    int albedo_index;
+    int normals_index;
+    int material_index;
+    int emissive_index;
 
     glm::vec4 albedo_factor;
     glm::vec3 emissive_factor;

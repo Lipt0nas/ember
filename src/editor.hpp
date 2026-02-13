@@ -1,10 +1,13 @@
 #pragma once
 
+#include "asset_importer.hpp"
 #include "ember.hpp"
 #include "framegraph.hpp"
 #include "scene.hpp"
 #include "script_system.hpp"
 #include "world.hpp"
+
+#include <queue>
 
 struct SceneNodeComponentInfo {
     std::string name;
@@ -22,7 +25,10 @@ public:
 
     void initialize(World* world);
 
-    bool render_main_menu(std::function<void(std::string)> scene_save_callback);
+    void on_files_dropped(const std::queue<std::string>& paths);
+
+    void render_asset_importer();
+    bool render_main_menu(std::function<void()> scene_save_callback);
     bool render_scene_hierarchy_window();
     bool render_scene_node_property_window();
     bool render_performance_window(const std::vector<std::pair<std::string, PassTiming>>& passes);
@@ -46,8 +52,23 @@ private:
         float              column_width = 70.0f
     );
 
-    Entity selected_entity = entt::null;
-    World* world           = nullptr;
+    std::queue<std::string> import_queue;
+    bool                    import_dialog_open = false;
+
+    AssetType             import_asset_type = AssetType::UNSUPPORTED;
+    std::filesystem::path import_asset_path;
+
+    TextureMetadata::TextureImportOptions texture_import_options;
+    MeshMetadata::MeshImportOptions       mesh_import_options;
+    ModelMetadata::ModelImportOptions     model_import_options;
+
+    void render_texture_import_dialog(TextureMetadata::TextureImportOptions& options);
+    void render_mesh_import_dialog(MeshMetadata::MeshImportOptions& options);
+    void render_model_import_dialog(ModelMetadata::ModelImportOptions& options);
+
+    Entity        selected_entity = entt::null;
+    World*        world           = nullptr;
+    AssetImporter asset_importer;
 
     std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles;
 };
@@ -60,3 +81,4 @@ template <> bool Editor::render_component_ui<components::Physics>(Entity e);
 template <> bool Editor::render_component_ui<components::Tag>(Entity e);
 template <> bool Editor::render_component_ui<components::Camera>(Entity e);
 template <> bool Editor::render_component_ui<components::CharacterController>(Entity e);
+template <> bool Editor::render_component_ui<components::Material>(Entity e);
