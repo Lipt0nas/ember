@@ -61,8 +61,8 @@ AssetID AssetImporter::import_texture(
 
     std::unique_ptr<TextureMetadata> metadata = std::make_unique<TextureMetadata>();
     metadata->id                              = hash;
-    metadata->source_path                     = source_destination;
-    metadata->asset_path                      = processed_destination;
+    metadata->source_path                     = source_destination.string();
+    metadata->asset_path                      = processed_destination.string();
     metadata->type                            = AssetType::TEXTURE;
     metadata->source_timestamp   = std::filesystem::last_write_time(source_destination).time_since_epoch().count();
     metadata->imported_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
@@ -127,8 +127,8 @@ AssetID AssetImporter::import_model(
 
     std::unique_ptr<ModelMetadata> metadata = std::make_unique<ModelMetadata>();
     metadata->id                            = hash;
-    metadata->source_path                   = source_destination;
-    metadata->asset_path                    = processed_destination;
+    metadata->source_path                   = source_destination.string();
+    metadata->asset_path                    = processed_destination.string();
     metadata->type                          = AssetType::MODEL;
     metadata->source_timestamp   = std::filesystem::last_write_time(source_destination).time_since_epoch().count();
     metadata->imported_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
@@ -281,8 +281,8 @@ AssetID AssetImporter::import_model(
 
                     std::unique_ptr<TextureMetadata> metadata = std::make_unique<TextureMetadata>();
                     metadata->id                              = hash;
-                    metadata->source_path                     = virtual_source;
-                    metadata->asset_path                      = tex_destination;
+                    metadata->source_path                     = virtual_source.string();
+                    metadata->asset_path                      = tex_destination.string();
                     metadata->type                            = AssetType::TEXTURE;
                     metadata->source_timestamp =
                         std::filesystem::last_write_time(source_destination).time_since_epoch().count();
@@ -362,8 +362,8 @@ AssetID AssetImporter::import_model(
 
                 std::unique_ptr<MaterialMetadata> metadata = std::make_unique<MaterialMetadata>();
                 metadata->id                               = hash;
-                metadata->source_path                      = virtual_source;
-                metadata->asset_path                       = mat_destination;
+                metadata->source_path                      = virtual_source.string();
+                metadata->asset_path                       = mat_destination.string();
                 metadata->type                             = AssetType::MATERIAL;
                 metadata->source_timestamp =
                     std::filesystem::last_write_time(source_destination).time_since_epoch().count();
@@ -771,8 +771,8 @@ AssetID AssetImporter::import_model(
 
                 std::unique_ptr<MeshMetadata> metadata = std::make_unique<MeshMetadata>();
                 metadata->id                           = hash;
-                metadata->source_path                  = virtual_source;
-                metadata->asset_path                   = mesh_destination;
+                metadata->source_path                  = virtual_source.string();
+                metadata->asset_path                   = mesh_destination.string();
                 metadata->type                         = AssetType::MESH;
                 metadata->source_timestamp =
                     std::filesystem::last_write_time(source_destination).time_since_epoch().count();

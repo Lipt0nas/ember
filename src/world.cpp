@@ -8,10 +8,11 @@
 World::World() {
 }
 
-void World::initialize() {
+void World::initialize(SDL_Window* window, bool meshlets_enabled, bool hardware_rt_enabled, bool vsync) {
     this->scene.initialize(this);
     this->script.initialize(this);
     this->asset_registry.initialize(this);
+    this->renderer.initialize(this, window, meshlets_enabled, hardware_rt_enabled, vsync);
 }
 
 int World::load_texture(AssetID id) {
@@ -20,7 +21,7 @@ int World::load_texture(AssetID id) {
         return it->second;
     }
 
-    VK_CHECK(vkDeviceWaitIdle(gpu.device));
+    VK_CHECK(vkDeviceWaitIdle(renderer.device));
 
     auto metadata = asset_registry.get_metadata<TextureMetadata>(id);
     if (!metadata) {
@@ -78,26 +79,30 @@ int World::load_texture(AssetID id) {
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT,
             true,
-            gpu.allocator,
-            gpu.device
+            renderer.vma_allocator,
+            renderer.device
         );
 
         for (uint32_t mip = 0; mip < ktx_texture->numLevels; mip++) {
             ktx_size_t mip_offset;
             ktxTexture_GetImageOffset(ktxTexture(ktx_texture), mip, 0, 0, &mip_offset);
             ktx_size_t mip_size = ktxTexture_GetImageSize(ktxTexture(ktx_texture), mip);
-            gpu.buffer_offsets->texture_data_size += mip_size;
+            renderer.buffer_offsets.texture_data_size += mip_size;
 
             ktx_uint8_t* src_data = ktxTexture_GetData(ktxTexture(ktx_texture)) + mip_offset;
 
             void* staging_buffer_ptr = nullptr;
-            VK_CHECK(vmaMapMemory(gpu.allocator, gpu.buffers->staging_buffer.allocation, &staging_buffer_ptr));
+            VK_CHECK(
+                vmaMapMemory(renderer.vma_allocator, renderer.buffers.staging_buffer.allocation, &staging_buffer_ptr)
+            );
             std::memcpy(staging_buffer_ptr, src_data, mip_size);
-            vmaUnmapMemory(gpu.allocator, gpu.buffers->staging_buffer.allocation);
+            vmaUnmapMemory(renderer.vma_allocator, renderer.buffers.staging_buffer.allocation);
 
-            auto command_buffer = gpu.allocate_temporary_command_buffer();
-            copy_image_mip(gpu.buffers->staging_buffer, image, mip, command_buffer, gpu.queue, gpu.device);
-            gpu.free_temporary_command_buffer(command_buffer);
+            auto command_buffer = renderer.allocate_temporary_command_buffer();
+            copy_image_mip(
+                renderer.buffers.staging_buffer, image, mip, command_buffer, renderer.graphics_queue, renderer.device
+            );
+            renderer.free_temporary_command_buffer(command_buffer);
         }
         ktxTexture2_Destroy(ktx_texture);
 
@@ -120,25 +125,6 @@ int World::load_texture(AssetID id) {
     return -1;
 }
 
-VkCommandBuffer World::GPU::allocate_temporary_command_buffer() {
-    VkCommandBufferAllocateInfo command_buffer_info = {
-        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .pNext              = nullptr,
-        .commandPool        = temp_pool,
-        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1
-    };
-
-    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-    VK_CHECK(vkAllocateCommandBuffers(device, &command_buffer_info, &command_buffer));
-
-    return command_buffer;
-}
-
-void World::GPU::free_temporary_command_buffer(VkCommandBuffer command_buffer) {
-    vkFreeCommandBuffers(device, temp_pool, 1, &command_buffer);
-}
-
 int World::load_texture(const std::string& path) {
     return load_texture(asset_registry.hash_path(asset_registry.root_path() / path));
 }
@@ -149,7 +135,7 @@ int World::load_mesh(AssetID id) {
         return it->second;
     }
 
-    VK_CHECK(vkDeviceWaitIdle(gpu.device));
+    VK_CHECK(vkDeviceWaitIdle(renderer.device));
 
     auto metadata = asset_registry.get_metadata<MeshMetadata>(id);
     if (!metadata) {
@@ -170,11 +156,11 @@ int World::load_mesh(AssetID id) {
     MeshAssetHeader header;
     archive(header);
 
-    size_t base_vertex_offset           = gpu.buffer_offsets->vertex_buffer / sizeof(Vertex);
-    size_t base_index_offset            = gpu.buffer_offsets->index_buffer / sizeof(uint32_t);
-    size_t base_meshlet_offset          = gpu.buffer_offsets->meshlet_buffer / sizeof(meshopt_Meshlet);
-    size_t base_meshlet_vertex_offset   = gpu.buffer_offsets->meshlet_vertex_indices / sizeof(uint32_t);
-    size_t base_meshlet_triangle_offset = gpu.buffer_offsets->meshlet_primitive_buffer / sizeof(uint8_t);
+    size_t base_vertex_offset           = renderer.buffer_offsets.vertex_buffer / sizeof(Vertex);
+    size_t base_index_offset            = renderer.buffer_offsets.index_buffer / sizeof(uint32_t);
+    size_t base_meshlet_offset          = renderer.buffer_offsets.meshlet_buffer / sizeof(meshopt_Meshlet);
+    size_t base_meshlet_vertex_offset   = renderer.buffer_offsets.meshlet_vertex_indices / sizeof(uint32_t);
+    size_t base_meshlet_triangle_offset = renderer.buffer_offsets.meshlet_primitive_buffer / sizeof(uint8_t);
 
     std::vector<unsigned char> vertices(header.vertex_buffer_size);
     archive.loadBinary(vertices.data(), header.vertex_buffer_size);
@@ -228,104 +214,104 @@ int World::load_mesh(AssetID id) {
     }
 
     void* staging_buffer_ptr = nullptr;
-    VK_CHECK(vmaMapMemory(gpu.allocator, gpu.buffers->staging_buffer.allocation, &staging_buffer_ptr));
+    VK_CHECK(vmaMapMemory(renderer.vma_allocator, renderer.buffers.staging_buffer.allocation, &staging_buffer_ptr));
 
     {
-        auto command_buffer = gpu.allocate_temporary_command_buffer();
+        auto command_buffer = renderer.allocate_temporary_command_buffer();
         memcpy(staging_buffer_ptr, vertices.data(), header.vertex_buffer_size);
         copy_buffer(
-            gpu.buffers->staging_buffer,
-            gpu.buffers->vertex_buffer,
+            renderer.buffers.staging_buffer,
+            renderer.buffers.vertex_buffer,
             command_buffer,
-            gpu.queue,
-            gpu.device,
+            renderer.graphics_queue,
+            renderer.device,
             header.vertex_buffer_size,
-            gpu.buffer_offsets->vertex_buffer
+            renderer.buffer_offsets.vertex_buffer
         );
-        gpu.buffer_offsets->vertex_buffer += header.vertex_buffer_size;
-        gpu.free_temporary_command_buffer(command_buffer);
+        renderer.buffer_offsets.vertex_buffer += header.vertex_buffer_size;
+        renderer.free_temporary_command_buffer(command_buffer);
     }
 
     {
-        auto command_buffer = gpu.allocate_temporary_command_buffer();
+        auto command_buffer = renderer.allocate_temporary_command_buffer();
         memcpy(staging_buffer_ptr, indices.data(), header.index_buffer_size);
         copy_buffer(
-            gpu.buffers->staging_buffer,
-            gpu.buffers->index_buffer,
+            renderer.buffers.staging_buffer,
+            renderer.buffers.index_buffer,
             command_buffer,
-            gpu.queue,
-            gpu.device,
+            renderer.graphics_queue,
+            renderer.device,
             header.index_buffer_size,
-            gpu.buffer_offsets->index_buffer
+            renderer.buffer_offsets.index_buffer
         );
-        gpu.buffer_offsets->index_buffer += header.index_buffer_size;
-        gpu.free_temporary_command_buffer(command_buffer);
+        renderer.buffer_offsets.index_buffer += header.index_buffer_size;
+        renderer.free_temporary_command_buffer(command_buffer);
     }
 
     {
-        auto command_buffer = gpu.allocate_temporary_command_buffer();
+        auto command_buffer = renderer.allocate_temporary_command_buffer();
         memcpy(staging_buffer_ptr, meshlets.data(), header.meshlet_buffer_size);
         copy_buffer(
-            gpu.buffers->staging_buffer,
-            gpu.buffers->meshlet_buffer,
+            renderer.buffers.staging_buffer,
+            renderer.buffers.meshlet_buffer,
             command_buffer,
-            gpu.queue,
-            gpu.device,
+            renderer.graphics_queue,
+            renderer.device,
             header.meshlet_buffer_size,
-            gpu.buffer_offsets->meshlet_buffer
+            renderer.buffer_offsets.meshlet_buffer
         );
-        gpu.buffer_offsets->meshlet_buffer += header.meshlet_buffer_size;
-        gpu.free_temporary_command_buffer(command_buffer);
+        renderer.buffer_offsets.meshlet_buffer += header.meshlet_buffer_size;
+        renderer.free_temporary_command_buffer(command_buffer);
     }
 
     {
-        auto command_buffer = gpu.allocate_temporary_command_buffer();
+        auto command_buffer = renderer.allocate_temporary_command_buffer();
         memcpy(staging_buffer_ptr, meshlet_vertices.data(), header.meshlet_vertex_indicies_buffer_size);
         copy_buffer(
-            gpu.buffers->staging_buffer,
-            gpu.buffers->meshlet_vertex_indices,
+            renderer.buffers.staging_buffer,
+            renderer.buffers.meshlet_vertex_indices,
             command_buffer,
-            gpu.queue,
-            gpu.device,
+            renderer.graphics_queue,
+            renderer.device,
             header.meshlet_vertex_indicies_buffer_size,
-            gpu.buffer_offsets->meshlet_vertex_indices
+            renderer.buffer_offsets.meshlet_vertex_indices
         );
-        gpu.buffer_offsets->meshlet_vertex_indices += header.meshlet_vertex_indicies_buffer_size;
-        gpu.free_temporary_command_buffer(command_buffer);
+        renderer.buffer_offsets.meshlet_vertex_indices += header.meshlet_vertex_indicies_buffer_size;
+        renderer.free_temporary_command_buffer(command_buffer);
     }
 
     {
-        auto command_buffer = gpu.allocate_temporary_command_buffer();
+        auto command_buffer = renderer.allocate_temporary_command_buffer();
         memcpy(staging_buffer_ptr, meshlet_triangles.data(), header.meshlet_primitive_buffer_size);
         copy_buffer(
-            gpu.buffers->staging_buffer,
-            gpu.buffers->meshlet_primitive_buffer,
+            renderer.buffers.staging_buffer,
+            renderer.buffers.meshlet_primitive_buffer,
             command_buffer,
-            gpu.queue,
-            gpu.device,
+            renderer.graphics_queue,
+            renderer.device,
             header.meshlet_primitive_buffer_size,
-            gpu.buffer_offsets->meshlet_primitive_buffer
+            renderer.buffer_offsets.meshlet_primitive_buffer
         );
-        gpu.buffer_offsets->meshlet_primitive_buffer += header.meshlet_primitive_buffer_size;
-        gpu.free_temporary_command_buffer(command_buffer);
+        renderer.buffer_offsets.meshlet_primitive_buffer += header.meshlet_primitive_buffer_size;
+        renderer.free_temporary_command_buffer(command_buffer);
     }
 
     {
-        auto command_buffer = gpu.allocate_temporary_command_buffer();
+        auto command_buffer = renderer.allocate_temporary_command_buffer();
         memcpy(staging_buffer_ptr, meshlet_bounds.data(), header.meshlet_bounds_buffer_size);
         copy_buffer(
-            gpu.buffers->staging_buffer,
-            gpu.buffers->meshlet_bounds_buffer,
+            renderer.buffers.staging_buffer,
+            renderer.buffers.meshlet_bounds_buffer,
             command_buffer,
-            gpu.queue,
-            gpu.device,
+            renderer.graphics_queue,
+            renderer.device,
             header.meshlet_bounds_buffer_size,
-            gpu.buffer_offsets->meshlet_bounds_buffer
+            renderer.buffer_offsets.meshlet_bounds_buffer
         );
-        gpu.buffer_offsets->meshlet_bounds_buffer += header.meshlet_bounds_buffer_size;
-        gpu.free_temporary_command_buffer(command_buffer);
+        renderer.buffer_offsets.meshlet_bounds_buffer += header.meshlet_bounds_buffer_size;
+        renderer.free_temporary_command_buffer(command_buffer);
     }
-    vmaUnmapMemory(gpu.allocator, gpu.buffers->staging_buffer.allocation);
+    vmaUnmapMemory(renderer.vma_allocator, renderer.buffers.staging_buffer.allocation);
 
     int index = resources.meshes.size();
     resources.meshes.push_back(mesh);
@@ -477,7 +463,7 @@ void World::register_bindless_texture(int index, const Sampler& sampler) {
     VkWriteDescriptorSet write_set = {
         .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
         .pNext            = nullptr,
-        .dstSet           = gpu.bindless_texture_set,
+        .dstSet           = renderer.global_texture_descriptor_set,
         .dstBinding       = 0,
         .dstArrayElement  = slot,
         .descriptorCount  = 1,
@@ -486,7 +472,7 @@ void World::register_bindless_texture(int index, const Sampler& sampler) {
         .pBufferInfo      = nullptr,
         .pTexelBufferView = nullptr
     };
-    vkUpdateDescriptorSets(gpu.device, 1, &write_set, 0, nullptr);
+    vkUpdateDescriptorSets(renderer.device, 1, &write_set, 0, nullptr);
 }
 
 Sampler World::get_sampler(const SamplerDescription& description) {
@@ -503,7 +489,7 @@ Sampler World::get_sampler(const SamplerDescription& description) {
         description.address_mode,
         description.address_mode,
         description.anisotropy,
-        gpu.device
+        renderer.device
     );
 
     resources.samplers.insert({description.state_hash(), std::move(sampler)});
@@ -544,4 +530,17 @@ Material* World::get_material(AssetID id) {
     int index = load_material(id);
 
     return index == -1 ? nullptr : &resources.materials[load_material(id)];
+}
+
+void World::cleanup() {
+    for (auto& image : resources.images) {
+        destroy_image(image.image, renderer.device, renderer.vma_allocator);
+    }
+
+    for (auto& [hash, sampler] : resources.samplers) {
+        destroy_sampler(sampler, renderer.device);
+    }
+
+    scene.cleanup();
+    renderer.cleanup();
 }

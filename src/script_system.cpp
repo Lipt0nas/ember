@@ -49,7 +49,7 @@ namespace {
         }
 
         auto include_path = std::filesystem::path("assets") / "scripts" / include;
-        auto source       = world->load_script(include_path);
+        auto source       = world->load_script(include_path.string());
         if (source.empty()) {
             return -1;
         }

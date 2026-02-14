@@ -14,8 +14,7 @@ public:
     entt::registry entity_registry;
 
     void initialize(class World* world);
-
-    void destroy_scene(VkDevice device, VmaAllocator allocator);
+    void cleanup();
 
     Entity create_node(const std::string& name = "New Node");
     void   delete_node(Entity node, bool delete_children = false);

@@ -448,7 +448,7 @@ Pipeline create_debug_render_pipeline(
         .pNext                 = nullptr,
         .flags                 = 0,
         .depthTestEnable       = VK_TRUE,
-        .depthWriteEnable      = VK_TRUE,
+        .depthWriteEnable      = VK_FALSE,
         .depthCompareOp        = VK_COMPARE_OP_GREATER,
         .depthBoundsTestEnable = VK_FALSE,
         .stencilTestEnable     = VK_FALSE,
