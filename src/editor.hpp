@@ -21,7 +21,7 @@ struct SceneNodeComponentInfo {
 
 class Editor {
 public:
-    Editor(std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles, ImFont* icon_font);
+    Editor(ImFont* icon_font);
 
     void initialize(World* world);
 
@@ -84,8 +84,6 @@ private:
 
     std::unordered_map<AssetType, AssetTypeInfo> asset_type_infos;
     AssetTypeInfo                                get_asset_info(AssetType type);
-
-    std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles;
 };
 
 template <> bool Editor::render_component_ui<components::Transform>(Entity e);

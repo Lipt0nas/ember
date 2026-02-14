@@ -54,7 +54,7 @@ template <> bool Editor::render_component_ui<components::Mesh>(Entity e) {
 
     auto* m = world->scene.get_component<components::Mesh>(e);
 
-    ImGui::Text("Mesh: ");
+    ImGui::Text(ICON_FA_CUBE "  Mesh: ");
     ImGui::SameLine();
     auto metadata = world->asset_registry.get_metadata<MeshMetadata>(m->id);
     if (metadata) {
@@ -75,6 +75,7 @@ template <> bool Editor::render_component_ui<components::Mesh>(Entity e) {
         }
         ImGui::EndDragDropTarget();
     }
+    ImGui::NewLine();
 
     return edited;
 }
@@ -493,11 +494,14 @@ template <> bool Editor::render_component_ui<components::Material>(Entity e) {
     auto* m = world->scene.get_component<components::Material>(e);
 
     auto metadata = world->asset_registry.get_metadata<MaterialMetadata>(m->id);
+    ImGui::Text(ICON_FA_TH "  Material: ");
+    ImGui::SameLine();
     if (metadata) {
         ImGui::Text("%s", metadata->source_path.c_str());
     } else {
         ImGui::Text("Invalid");
     }
+    ImGui::NewLine();
 
     if (ImGui::BeginDragDropTarget()) {
         const ImGuiPayload* payload =
@@ -559,8 +563,7 @@ template <> bool Editor::render_component_ui<components::Material>(Entity e) {
     return edited;
 }
 
-Editor::Editor(std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles, ImFont* icon_font)
-    : imgui_material_image_handles(imgui_material_image_handles), icon_font(icon_font) {
+Editor::Editor(ImFont* icon_font) : icon_font(icon_font) {
     asset_type_infos = {
         {AssetType::MATERIAL,
          AssetTypeInfo{
