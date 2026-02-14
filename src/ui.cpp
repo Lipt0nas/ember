@@ -189,6 +189,17 @@ VkDescriptorPool imgui_init(
     return imgui_descriptor_pool;
 }
 
+ImFont* generate_icon_font(float size) {
+    static ImWchar glyph_ranges[] = {ICON_MIN_FA, ICON_MAX_16_FA, 0};
+
+    ImFontConfig config;
+    config.GlyphMinAdvanceX = 48.0f;
+
+    return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(
+        (void*)&embedded::icon_font[0], embedded::icon_font_size, 48.0f, &config, glyph_ranges
+    );
+}
+
 VkDescriptorSet imgui_image_handle(const Image& image, VkSampler sampler) {
     return ImGui_ImplVulkan_AddTexture(sampler, image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }

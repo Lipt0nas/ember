@@ -93,7 +93,7 @@ AssetID AssetRegistry::hash_path(const std::filesystem::path& path) {
     constexpr uint64_t FNV_OFFSET_BASIS = 14695981039346656037ULL;
     constexpr uint64_t FNV_PRIME        = 1099511628211ULL;
 
-    auto normalized_path = path.lexically_relative(root).generic_string();
+    auto normalized_path = relative_path(path).generic_string();
 
     uint64_t hash = FNV_OFFSET_BASIS;
     for (char c : normalized_path) {
@@ -124,6 +124,10 @@ std::filesystem::path AssetRegistry::metadata_path() {
 
 std::filesystem::path AssetRegistry::root_path() {
     return root;
+}
+
+std::filesystem::path AssetRegistry::relative_path(const std::filesystem::path& path) {
+    return path.lexically_relative(root).generic_string();
 }
 
 void AssetRegistry::register_asset(AssetID id, MetadataHandle metadata) {

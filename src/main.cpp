@@ -1963,10 +1963,22 @@ int main(int argc, char* argv[]) {
         VK_CHECK(vkAllocateDescriptorSets(device, &global_texture_descriptor_set_info, &global_texture_descriptor_set));
     }
 
+    VkDescriptorPool imgui_descriptor_pool = imgui_init(
+        window,
+        instance,
+        physical_device,
+        device,
+        swapchain.format,
+        graphics_family_index,
+        graphics_queue,
+        FRAMES_IN_FLIGHT
+    );
+    ImFont* icon_font = generate_icon_font(48.0f);
+
     std::string project_path = args.get_arg<std::string>("project", "");
 
     std::unordered_map<uint32_t, VkDescriptorSet> imgui_material_image_handles;
-    Editor                                        editor(imgui_material_image_handles);
+    Editor                                        editor(imgui_material_image_handles, icon_font);
 
     ComponentRegistry::register_components(&editor);
 
@@ -2068,17 +2080,6 @@ int main(int argc, char* argv[]) {
             get_buffer_device_address(global_index_buffer, device)
         );
     }
-
-    VkDescriptorPool imgui_descriptor_pool = imgui_init(
-        window,
-        instance,
-        physical_device,
-        device,
-        swapchain.format,
-        graphics_family_index,
-        graphics_queue,
-        FRAMES_IN_FLIGHT
-    );
 
     bool    use_editor_camera = true;
     Camera* camera;
@@ -6332,118 +6333,7 @@ int main(int argc, char* argv[]) {
             }
         }
         editor.render_asset_importer();
-
-        ImGui::Begin(ICON_FA_FILE " Assets");
-        if (ImGui::TreeNode("Materials")) {
-            if (ImGui::Button("Load All Materials")) {
-                for (auto& [id, handle] : world.asset_registry.get_metadata_store()) {
-                    if (dynamic_cast<MaterialMetadata*>(handle.get())) {
-                        auto index = world.load_material(handle->id);
-                        if (index == -1) {
-                            spdlog::error("Failed to load {}", handle->source_path);
-                        }
-                    }
-                }
-            }
-
-            for (auto& [id, handle] : world.asset_registry.get_metadata_store()) {
-                if (dynamic_cast<MaterialMetadata*>(handle.get())) {
-                    ImGui::Text("%s", handle->source_path.c_str());
-                    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-                        ImGui::Text("%s", handle->source_path.c_str());
-                        ImGui::SetDragDropPayload("material_id", &id, sizeof(AssetID));
-                        ImGui::EndDragDropSource();
-                    }
-                }
-            }
-
-            ImGui::TreePop();
-        }
-
-        if (ImGui::TreeNode("Meshes")) {
-            if (ImGui::Button("Load All Meshes")) {
-                for (auto& [id, handle] : world.asset_registry.get_metadata_store()) {
-                    if (dynamic_cast<MeshMetadata*>(handle.get())) {
-                        auto index = world.load_mesh(handle->id);
-                        if (index == -1) {
-                            spdlog::error("Failed to load {}", handle->source_path);
-                        }
-                    }
-                }
-            }
-
-            for (auto& [id, handle] : world.asset_registry.get_metadata_store()) {
-                if (dynamic_cast<MeshMetadata*>(handle.get())) {
-                    ImGui::Text("%s", handle->source_path.c_str());
-                    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-                        ImGui::Text("%s", handle->source_path.c_str());
-                        ImGui::SetDragDropPayload("mesh_id", &id, sizeof(AssetID));
-                        ImGui::EndDragDropSource();
-                    }
-                }
-            }
-
-            ImGui::TreePop();
-        }
-
-        if (ImGui::TreeNode("Models")) {
-            for (auto& [id, handle] : world.asset_registry.get_metadata_store()) {
-                auto metadata = dynamic_cast<ModelMetadata*>(handle.get());
-                if (metadata) {
-                    ImGui::Text("%s", handle->source_path.c_str());
-                    if (ImGui::BeginPopupContextItem()) {
-                        if (ImGui::MenuItem("Append scene to world")) {
-                            for (auto& desc : metadata->scene_description.nodes) {
-                                append_node(world, desc, entt::null);
-                            }
-
-                            scene_history.create_snapshot(world);
-                        }
-                        ImGui::EndPopup();
-                    }
-                }
-            }
-
-            ImGui::TreePop();
-        }
-
-        if (ImGui::TreeNode("Textures")) {
-            if (ImGui::Button("Load Textures")) {
-                for (auto& [id, handle] : world.asset_registry.get_metadata_store()) {
-                    if (dynamic_cast<TextureMetadata*>(handle.get())) {
-                        auto index = world.load_texture(handle->id);
-                        if (index == -1) {
-                            spdlog::error("Failed to load {}", handle->source_path);
-                        } else {
-                            imgui_material_image_handles.insert(
-                                {index, imgui_image_handle(world.resources.images[index].image, nearest_sampler)}
-                            );
-                        }
-                    }
-                }
-            }
-
-            int images_per_row = (ImGui::GetContentRegionAvail().x) / 50 - 1;
-            int row_id         = 0;
-            for (auto& [slot, handle] : imgui_material_image_handles) {
-                ImGui::Image(handle, ImVec2(50, 50));
-                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-                    ImGui::Image(handle, ImVec2(50, 50));
-                    ImGui::SetDragDropPayload("texture_id", &slot, sizeof(uint32_t));
-                    ImGui::EndDragDropSource();
-                }
-
-                row_id++;
-                if (row_id < images_per_row) {
-                    ImGui::SameLine();
-                } else {
-                    row_id = 0;
-                }
-            }
-
-            ImGui::TreePop();
-        }
-        ImGui::End();
+        editor.render_asset_explorer();
 
         std::vector<std::pair<std::string, PassTiming>> pass_timings = {};
         for (const auto& pass : framegraph.passes) {
