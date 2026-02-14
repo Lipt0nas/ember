@@ -14,6 +14,8 @@ VkDescriptorPool imgui_init(
     uint32_t         image_count
 );
 
+ImFont* generate_icon_font(float size);
+
 // Register a image to be used with imgui draw image commands, this assumes that the image layout is
 // SHADER_READ_ONLY_OPTIMAL
 VkDescriptorSet imgui_image_handle(const Image& image, VkSampler sampler);

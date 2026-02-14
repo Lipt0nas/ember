@@ -63,7 +63,8 @@ template <> bool Editor::render_component_ui<components::Mesh>(Entity e) {
         ImGui::Text("Invalid");
     }
     if (ImGui::BeginDragDropTarget()) {
-        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("mesh_id");
+        const ImGuiPayload* payload =
+            ImGui::AcceptDragDropPayload(get_asset_info(AssetType::MESH).drag_drop_id.c_str());
         if (payload) {
             AssetID new_id = *(AssetID*)payload->Data;
 
@@ -499,7 +500,8 @@ template <> bool Editor::render_component_ui<components::Material>(Entity e) {
     }
 
     if (ImGui::BeginDragDropTarget()) {
-        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("material_id");
+        const ImGuiPayload* payload =
+            ImGui::AcceptDragDropPayload(get_asset_info(AssetType::MATERIAL).drag_drop_id.c_str());
         if (payload) {
             AssetID new_id = *(AssetID*)payload->Data;
             if (m->id != new_id) {
@@ -557,8 +559,58 @@ template <> bool Editor::render_component_ui<components::Material>(Entity e) {
     return edited;
 }
 
-Editor::Editor(std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles)
-    : imgui_material_image_handles(imgui_material_image_handles) {
+Editor::Editor(std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles, ImFont* icon_font)
+    : imgui_material_image_handles(imgui_material_image_handles), icon_font(icon_font) {
+    asset_type_infos = {
+        {AssetType::MATERIAL,
+         AssetTypeInfo{
+             .icon          = ICON_FA_TH,
+             .category_name = "Materials",
+             .drag_drop_id  = "DRAG_DROP_MATERIAL",
+         }},
+        {AssetType::MESH,
+         AssetTypeInfo{
+             .icon          = ICON_FA_CUBE,
+             .category_name = "Meshes",
+             .drag_drop_id  = "DRAG_DROP_MESH",
+         }},
+        {AssetType::MODEL,
+         AssetTypeInfo{
+             .icon          = ICON_FA_CUBES,
+             .category_name = "Models",
+             .drag_drop_id  = "DRAG_DROP_MODEL",
+         }},
+        {AssetType::SCRIPT,
+         AssetTypeInfo{
+             .icon          = ICON_FA_SCROLL,
+             .category_name = "Scripts",
+             .drag_drop_id  = "DRAG_DROP_SCRIPT",
+         }},
+        {AssetType::SHADER,
+         AssetTypeInfo{
+             .icon          = ICON_FA_LIGHTBULB,
+             .category_name = "Shaders",
+             .drag_drop_id  = "DRAG_DROP_SHADER",
+         }},
+        {AssetType::SOUND,
+         AssetTypeInfo{
+             .icon          = ICON_FA_VOLUME_UP,
+             .category_name = "Sounds",
+             .drag_drop_id  = "DRAG_DROP_SOUND",
+         }},
+        {AssetType::TEXTURE,
+         AssetTypeInfo{
+             .icon          = ICON_FA_IMAGE,
+             .category_name = "Textures",
+             .drag_drop_id  = "DRAG_DROP_TEXTURE",
+         }},
+        {AssetType::UNSUPPORTED,
+         AssetTypeInfo{
+             .icon          = ICON_FA_QUESTION,
+             .category_name = "Unsupported",
+             .drag_drop_id  = "DRAG_DROP_UNSUPPORTED",
+         }},
+    };
 }
 
 void Editor::initialize(World* world) {
@@ -1099,6 +1151,91 @@ void Editor::render_asset_importer() {
     }
 }
 
+bool Editor::render_asset_explorer() {
+    static AssetType selected_type  = AssetType::UNSUPPORTED;
+    static AssetID   selected_asset = AssetMetadata::INVALID_METADATA;
+
+    std::unordered_map<AssetType, std::vector<const AssetMetadata*>> assets;
+    for (auto& [id, handle] : world->asset_registry.get_metadata_store()) {
+        auto it = assets.find(handle->type);
+        if (it == assets.end()) {
+            assets[handle->type] = {};
+        }
+        assets[handle->type].push_back(handle.get());
+    }
+
+    ImGui::Begin(ICON_FA_FILE " Assets");
+    if (ImGui::BeginTable("asset_explorer_table", 3, ImGuiTableFlags_Resizable)) {
+        ImGui::TableNextRow();
+
+        ImGui::TableSetColumnIndex(0);
+        ImGui::BeginChild("asset_explorer_tree");
+        for (auto& [type, asset] : assets) {
+            AssetTypeInfo info = get_asset_info(type);
+
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf;
+            if (selected_type == type) {
+                flags |= ImGuiTreeNodeFlags_Selected;
+            }
+
+            if (ImGui::TreeNodeEx((info.icon + "  " + info.category_name).c_str(), flags)) {
+                ImGui::TreePop();
+            }
+
+            if (ImGui::IsItemClicked()) {
+                selected_type = type;
+            }
+        }
+        ImGui::EndChild();
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::BeginChild("asset_explorer_grid");
+
+        AssetTypeInfo info = get_asset_info(selected_type);
+
+        float column_width = ImGui::GetContentRegionAvail().x;
+        int   colum_count  = glm::max(1, (int)(column_width / (asset_icon_width + 20.0f)));
+
+        if (ImGui::BeginTable("asset_explorer_grid_inner", colum_count)) {
+            for (const auto asset : assets[selected_type]) {
+                ImGui::TableNextColumn();
+
+                bool selected = selected_asset == asset->id;
+                if (draw_asset(
+                        info.icon.c_str(),
+                        world->asset_registry.relative_path(asset->source_path).string().c_str(),
+                        info.drag_drop_id.c_str(),
+                        asset->id,
+                        selected
+                    )) {
+                    selected_asset = asset->id;
+                }
+            }
+            ImGui::EndTable();
+        }
+        ImGui::EndChild();
+
+        ImGui::TableSetColumnIndex(2);
+        ImGui::BeginChild("asset_explorer_info");
+        auto selected_metadata = world->asset_registry.get_metadata<AssetMetadata>(selected_asset);
+        if (selected_metadata && selected_metadata->is_valid()) {
+            ImGui::Text("ID: %lu", selected_metadata->id);
+            ImGui::Text("Source Path: %s", selected_metadata->source_path.c_str());
+            ImGui::Text("Asset Path: %s", selected_metadata->asset_path.c_str());
+            ImGui::Text("Type: %lu", selected_metadata->type);
+            ImGui::Text("Source Timestamp: %lu", selected_metadata->source_timestamp);
+            ImGui::Text("Import Timestamp: %lu", selected_metadata->imported_timestamp);
+            ImGui::Text("Is Standalone: %s", selected_metadata->standalone ? "Yes" : "No");
+        }
+        ImGui::EndChild();
+
+        ImGui::EndTable();
+    }
+    ImGui::End();
+
+    return false;
+}
+
 void Editor::render_texture_import_dialog(TextureMetadata::TextureImportOptions& options) {
     ImGui::SeparatorText("Texture Import Options");
     ImGui::Checkbox("sRGB Tetxure", &options.is_srgb);
@@ -1207,4 +1344,65 @@ void Editor::render_mesh_import_dialog(MeshMetadata::MeshImportOptions& options)
 void Editor::render_model_import_dialog(ModelMetadata::ModelImportOptions& options) {
     render_mesh_import_dialog(options.mesh_import_options);
     render_texture_import_dialog(options.texture_import_options);
+}
+
+bool Editor::draw_asset(
+    const char* icon, const char* label, const char* drag_drop_id, AssetID asset_id, bool& selected
+) {
+    ImGui::PushID(label);
+
+    ImVec2 cursor_pos = ImGui::GetCursorPos();
+
+    bool clicked = ImGui::InvisibleButton("##asset", ImVec2(asset_icon_width, asset_icon_height));
+    bool hovered = ImGui::IsItemHovered();
+
+    if (clicked) {
+        selected = !selected;
+    }
+
+    if (hovered || selected) {
+        ImVec2 p1 = ImGui::GetItemRectMin();
+        ImVec2 p2 = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            p1, p2, ImGui::GetColorU32(selected ? ImGuiCol_ButtonActive : ImGuiCol_ButtonHovered), 4.0f
+        );
+    }
+
+    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+        ImGui::SetDragDropPayload(drag_drop_id, &asset_id, sizeof(AssetID));
+        ImGui::Text("%s", label);
+        ImGui::EndDragDropSource();
+    }
+
+    ImGui::SetCursorPos(cursor_pos);
+
+    ImGui::PushFont(icon_font);
+    ImVec2 icon_size = ImGui::CalcTextSize(icon);
+    ImGui::SetCursorPosX(cursor_pos.x + (asset_icon_width - icon_size.x) * 0.5f);
+    ImGui::Text("%s", icon);
+    ImGui::PopFont();
+
+    ImGui::SetCursorPosX(cursor_pos.x);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + asset_icon_width);
+
+    ImVec2 text_size = ImGui::CalcTextSize(label, NULL, false, asset_icon_width);
+    if (text_size.x < asset_icon_width) {
+        ImGui::SetCursorPosX(cursor_pos.x + (asset_icon_width - text_size.x) * 0.5f);
+    }
+
+    ImGui::TextWrapped("%s", label);
+    ImGui::PopTextWrapPos();
+
+    ImGui::PopID();
+
+    return clicked;
+}
+
+Editor::AssetTypeInfo Editor::get_asset_info(AssetType type) {
+    auto it = asset_type_infos.find(type);
+    if (it != asset_type_infos.end()) {
+        return it->second;
+    }
+
+    return {};
 }

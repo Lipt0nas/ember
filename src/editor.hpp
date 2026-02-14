@@ -21,13 +21,14 @@ struct SceneNodeComponentInfo {
 
 class Editor {
 public:
-    Editor(std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles);
+    Editor(std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles, ImFont* icon_font);
 
     void initialize(World* world);
 
     void on_files_dropped(const std::queue<std::string>& paths);
 
     void render_asset_importer();
+    bool render_asset_explorer();
     bool render_main_menu(std::function<void()> scene_save_callback);
     bool render_scene_hierarchy_window();
     bool render_scene_node_property_window();
@@ -52,6 +53,10 @@ private:
         float              column_width = 70.0f
     );
 
+    static constexpr float asset_icon_width  = 80.0f;
+    static constexpr float asset_icon_height = 100.0f;
+    bool draw_asset(const char* icon, const char* label, const char* drag_drop_id, AssetID asset_id, bool& selected);
+
     std::queue<std::string> import_queue;
     bool                    import_dialog_open = false;
 
@@ -69,6 +74,16 @@ private:
     Entity        selected_entity = entt::null;
     World*        world           = nullptr;
     AssetImporter asset_importer;
+    ImFont*       icon_font = nullptr;
+
+    struct AssetTypeInfo {
+        std::string icon          = "?";
+        std::string category_name = "Unknown";
+        std::string drag_drop_id  = "unknown";
+    };
+
+    std::unordered_map<AssetType, AssetTypeInfo> asset_type_infos;
+    AssetTypeInfo                                get_asset_info(AssetType type);
 
     std::unordered_map<uint32_t, VkDescriptorSet>& imgui_material_image_handles;
 };

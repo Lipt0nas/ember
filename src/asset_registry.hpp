@@ -24,6 +24,7 @@ public:
     std::filesystem::path stored_asset_path();
     std::filesystem::path metadata_path();
     std::filesystem::path root_path();
+    std::filesystem::path relative_path(const std::filesystem::path& path);
 
     void register_asset(AssetID id, MetadataHandle metadata);
 

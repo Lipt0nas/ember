@@ -1,12 +1,6 @@
 #pragma once
 
 namespace embedded {
-    extern const int           ui_atlas_size;
-    extern const unsigned char ui_atlas[];
-
-    extern const int           ui_image_size;
-    extern const unsigned char ui_image[];
-
     extern const int           roboto_font_size;
     extern const unsigned char roboto_font[];
 
