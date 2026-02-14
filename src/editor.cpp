@@ -2,9 +2,11 @@
 
 #include "component_registry.hpp"
 #include "embedded.hpp"
-#include "imgui_internal.h"
+#include "scene_serializer.hpp"
+#include "ui.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_stdlib.h>
 
 template <> bool Editor::render_component_ui<components::Transform>(Entity e) {
@@ -563,7 +565,7 @@ template <> bool Editor::render_component_ui<components::Material>(Entity e) {
     return edited;
 }
 
-Editor::Editor(ImFont* icon_font) : icon_font(icon_font) {
+Editor::Editor() {
     asset_type_infos = {
         {AssetType::MATERIAL,
          AssetTypeInfo{
@@ -619,10 +621,12 @@ Editor::Editor(ImFont* icon_font) : icon_font(icon_font) {
 void Editor::initialize(World* world) {
     this->world = world;
 
+    icon_font = generate_icon_font(48.0f);
+
     asset_importer.initialize(world);
 }
 
-bool Editor::render_main_menu(std::function<void()> scene_save_callback) {
+bool Editor::render_main_menu() {
     static char save_scene_path[256] = "\0";
     static bool show_save_popup      = false;
 
@@ -702,7 +706,7 @@ bool Editor::render_main_menu(std::function<void()> scene_save_callback) {
         ImGui::Separator();
 
         if (ImGui::Button("Save")) {
-            scene_save_callback();
+            SceneSerializer::save(world->asset_registry.root_path(), *world);
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();

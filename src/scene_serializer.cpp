@@ -62,8 +62,6 @@ void SceneSerializer::save(const std::filesystem::path& path, World& world) {
     }
 
     spdlog::info("Saving scene to {}", path.string());
-    VK_CHECK(vkDeviceWaitIdle(world.gpu.device));
-
     spdlog::info("Saving scene data");
     std::ofstream os(path / "scene.json", std::ios::binary);
     if (!os.is_open()) {

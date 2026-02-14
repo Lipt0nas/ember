@@ -289,14 +289,14 @@ struct RendererBuffers {
 
 // TODO: This should probably be merged into the buffer struct somehow, or wrapped in another struct
 struct BufferOffsets {
-    uint64_t vertex_buffer;
-    uint64_t index_buffer;
-    uint64_t meshlet_buffer;
-    uint64_t meshlet_vertex_indices;
-    uint64_t meshlet_primitive_buffer;
-    uint64_t meshlet_bounds_buffer;
+    uint64_t vertex_buffer            = 0;
+    uint64_t index_buffer             = 0;
+    uint64_t meshlet_buffer           = 0;
+    uint64_t meshlet_vertex_indices   = 0;
+    uint64_t meshlet_primitive_buffer = 0;
+    uint64_t meshlet_bounds_buffer    = 0;
 
-    uint64_t texture_data_size;
+    uint64_t texture_data_size = 0;
 };
 
 struct ImageResource {

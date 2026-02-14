@@ -58,7 +58,7 @@ void Scene::delete_node(Entity node, bool delete_children) {
     entity_registry.destroy(node);
 }
 
-void Scene::destroy_scene(VkDevice device, VmaAllocator allocator) {
+void Scene::cleanup() {
 }
 
 void Scene::set_node_parent(Entity child, Entity parent) {

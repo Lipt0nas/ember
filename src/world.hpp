@@ -1,15 +1,18 @@
 #pragma once
 
-#include "asset_registry.hpp"
 #include "ember.hpp"
+
+#include "asset_registry.hpp"
 #include "input_system.hpp"
 #include "physics.hpp"
+#include "renderer.hpp"
 #include "resources.hpp"
 #include "scene.hpp"
 #include "script_system.hpp"
 
 class World {
 public:
+    Renderer      renderer;
     PhysicsSystem physics;
     InputSystem   input;
     ScriptSystem  script;
@@ -24,22 +27,6 @@ public:
         std::vector<Material>               runtime_materials;
     } resources;
 
-    // NOTE: temporary structure taking the place of a renderer, to facilitate resource loading
-    struct GPU {
-        VkDescriptorSet bindless_texture_set;
-
-        RendererBuffers* buffers;
-        BufferOffsets*   buffer_offsets;
-
-        VkDevice      device;
-        VkQueue       queue;
-        VmaAllocator  allocator;
-        VkCommandPool temp_pool;
-
-        VkCommandBuffer allocate_temporary_command_buffer();
-        void            free_temporary_command_buffer(VkCommandBuffer command_buffer);
-    } gpu;
-
     // True when in the "play" state
     bool is_running = false;
 
@@ -47,7 +34,7 @@ public:
 
     World();
 
-    void initialize();
+    void initialize(struct SDL_Window* window, bool meshlets_enabled, bool hardware_rt_enabled, bool vsync);
 
     int load_texture(AssetID id);
     int load_texture(const std::string& path);
@@ -70,6 +57,8 @@ public:
     std::unordered_map<AssetID, int> texture_map;
     std::unordered_map<AssetID, int> mesh_map;
     std::unordered_map<AssetID, int> material_map;
+
+    void cleanup();
 
 private:
     void    register_bindless_texture(int index, const Sampler& sampler);

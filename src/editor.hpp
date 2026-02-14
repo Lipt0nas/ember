@@ -21,7 +21,7 @@ struct SceneNodeComponentInfo {
 
 class Editor {
 public:
-    Editor(ImFont* icon_font);
+    Editor();
 
     void initialize(World* world);
 
@@ -29,7 +29,7 @@ public:
 
     void render_asset_importer();
     bool render_asset_explorer();
-    bool render_main_menu(std::function<void()> scene_save_callback);
+    bool render_main_menu();
     bool render_scene_hierarchy_window();
     bool render_scene_node_property_window();
     bool render_performance_window(const std::vector<std::pair<std::string, PassTiming>>& passes);

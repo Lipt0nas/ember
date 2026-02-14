@@ -37,17 +37,13 @@ bool is_mesh_same(const Mesh& m1, const Mesh& m2);
 VkTransformMatrixKHR glm_to_vk_transform(const glm::mat4& mat);
 
 RTScene create_rt_scene(
-    VkDevice                         device,
-    VkPhysicalDevice                 physical_device,
-    VmaAllocator                     allocator,
-    VkCommandBuffer                  command_buffer,
-    VkQueue                          queue,
-    uint32_t                         max_tlas_instance_count,
-    uint32_t                         frames_in_flight,
-    const std::vector<Mesh>&         meshes,
-    const std::vector<MeshInstance>& mesh_instances,
-    VkDeviceAddress                  global_vertex_buffer_address,
-    VkDeviceAddress                  global_index_buffer_address
+    VkDevice         device,
+    VkPhysicalDevice physical_device,
+    VmaAllocator     allocator,
+    VkCommandBuffer  command_buffer,
+    VkQueue          queue,
+    uint32_t         max_tlas_instance_count,
+    uint32_t         frames_in_flight
 );
 
 void rebuild_blas(

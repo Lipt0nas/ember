@@ -163,8 +163,8 @@ void AssetRegistry::scan_for_scripts() {
 
         auto meta         = std::make_unique<ScriptMetadata>();
         meta->id          = id;
-        meta->source_path = entry.path();
-        meta->asset_path  = entry.path();
+        meta->source_path = entry.path().string();
+        meta->asset_path  = entry.path().string();
         meta->type        = AssetType::SCRIPT;
         meta->standalone  = true;
 

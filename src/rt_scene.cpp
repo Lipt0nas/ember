@@ -3,17 +3,13 @@
 #include "world.hpp"
 
 RTScene create_rt_scene(
-    VkDevice                         device,
-    VkPhysicalDevice                 physical_device,
-    VmaAllocator                     allocator,
-    VkCommandBuffer                  command_buffer,
-    VkQueue                          queue,
-    uint32_t                         max_tlas_instance_count,
-    uint32_t                         frames_in_flight,
-    const std::vector<Mesh>&         meshes,
-    const std::vector<MeshInstance>& mesh_instances,
-    VkDeviceAddress                  global_vertex_buffer_address,
-    VkDeviceAddress                  global_index_buffer_address
+    VkDevice         device,
+    VkPhysicalDevice physical_device,
+    VmaAllocator     allocator,
+    VkCommandBuffer  command_buffer,
+    VkQueue          queue,
+    uint32_t         max_tlas_instance_count,
+    uint32_t         frames_in_flight
 ) {
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR ray_tracing_properties = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR
@@ -218,8 +214,8 @@ void rebuild_blas(
     );
 
     for (auto& blas : scene.blas_instances) {
-        vkDestroyAccelerationStructureKHR(world->gpu.device, blas.handle, nullptr);
-        destroy_buffer(blas.buffer, world->gpu.device, world->gpu.allocator);
+        vkDestroyAccelerationStructureKHR(world->renderer.device, blas.handle, nullptr);
+        destroy_buffer(blas.buffer, world->renderer.device, world->renderer.vma_allocator);
     }
     scene.blas_instances.clear();
     scene.blas_instances.reserve(world->resources.meshes.size());
@@ -268,7 +264,7 @@ void rebuild_blas(
             .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
         };
         vkGetAccelerationStructureBuildSizesKHR(
-            world->gpu.device,
+            world->renderer.device,
             VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
             &acceleration_structure_build_geometry_info,
             &primitive_count,
@@ -278,7 +274,7 @@ void rebuild_blas(
         Buffer bottom_level_acceleration_structure_buffer = create_buffer(
             acceleration_structure_build_sizes_info.accelerationStructureSize,
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            world->gpu.allocator,
+            world->renderer.vma_allocator,
             VMA_MEMORY_USAGE_GPU_ONLY
         );
 
@@ -291,25 +287,25 @@ void rebuild_blas(
 
         VkAccelerationStructureKHR bottom_level_acceleration_structure = VK_NULL_HANDLE;
         vkCreateAccelerationStructureKHR(
-            world->gpu.device, &acceleration_structure_create_info, nullptr, &bottom_level_acceleration_structure
+            world->renderer.device, &acceleration_structure_create_info, nullptr, &bottom_level_acceleration_structure
         );
 
         if (acceleration_structure_build_sizes_info.buildScratchSize > scene.scratch_buffers[frame_index].size) {
             spdlog::debug("want to rebuild scratch");
 
-            VK_CHECK(vkDeviceWaitIdle(world->gpu.device));
+            VK_CHECK(vkDeviceWaitIdle(world->renderer.device));
 
-            destroy_buffer(scene.scratch_buffers[frame_index], world->gpu.device, world->gpu.allocator);
+            destroy_buffer(scene.scratch_buffers[frame_index], world->renderer.device, world->renderer.vma_allocator);
 
             scene.scratch_buffers[frame_index] = create_buffer(
                 acceleration_structure_build_sizes_info.buildScratchSize * 2,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                world->gpu.allocator,
+                world->renderer.vma_allocator,
                 VMA_MEMORY_USAGE_GPU_ONLY
             );
         }
         VkDeviceAddress scratch_buffer_address =
-            get_buffer_device_address(scene.scratch_buffers[frame_index], world->gpu.device);
+            get_buffer_device_address(scene.scratch_buffers[frame_index], world->renderer.device);
 
         VkAccelerationStructureBuildGeometryInfoKHR acceleration_build_geometry_info = {
             .sType                    = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
@@ -353,7 +349,7 @@ void rebuild_blas(
         };
 
         VkDeviceAddress bottom_level_acceleration_structure_address =
-            vkGetAccelerationStructureDeviceAddressKHR(world->gpu.device, &acceleration_device_address_info);
+            vkGetAccelerationStructureDeviceAddressKHR(world->renderer.device, &acceleration_device_address_info);
 
         scene.blas_instances.push_back(
             {.buffer  = bottom_level_acceleration_structure_buffer,

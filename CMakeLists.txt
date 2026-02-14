@@ -311,8 +311,12 @@ set(SOURCES
     "src/asset_registry.cpp"
     "src/asset_importer.cpp"
     "src/asset.cpp"
+    "src/renderer.cpp"
 )
 add_executable(Ember ${SOURCES})
+if(MINGW)
+    target_compile_options(Ember PRIVATE -Wa,-mbig-obj)
+endif()
 target_compile_definitions(Ember PRIVATE 
     TRACY_ENABLE
     TRACY_ONLY_LOCALHOST
