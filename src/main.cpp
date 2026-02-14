@@ -1977,8 +1977,7 @@ int main(int argc, char* argv[]) {
 
     std::string project_path = args.get_arg<std::string>("project", "");
 
-    std::unordered_map<uint32_t, VkDescriptorSet> imgui_material_image_handles;
-    Editor                                        editor(imgui_material_image_handles, icon_font);
+    Editor editor(icon_font);
 
     ComponentRegistry::register_components(&editor);
 
