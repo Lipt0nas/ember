@@ -192,6 +192,19 @@ void fill_drawcalls(
     mesh_instances.clear();
     mesh_instance_entities.clear();
 
+    auto mat_view = world.scene.entity_registry.view<components::Material>();
+    for (auto [e, mat] : mat_view.each()) {
+        auto mat_index = world.load_material(mat.id);
+        if (mat_index != -1) {
+            if (mat.overrides.active()) {
+                if (mat.dedicated_material_index == -1) {
+                    mat.dedicated_material_index = world.dedicate_material(mat, mat_index);
+                }
+                world.apply_material_override(mat);
+            }
+        }
+    }
+
     auto view = world.scene.entity_registry.view<components::Mesh, components::Material>();
     for (auto [e, mesh, mat] : view.each()) {
         if (mesh.id == AssetMetadata::INVALID_METADATA || mat.id == AssetMetadata::INVALID_METADATA) {
@@ -200,16 +213,9 @@ void fill_drawcalls(
 
         auto mat_index = world.load_material(mat.id);
         if (mat_index != -1) {
-            mesh.instance.material_id = mat_index;
-
-            if (mat.overrides.active()) {
-                if (mat.dedicated_material_index == -1) {
-                    mat.dedicated_material_index = world.dedicate_material(mat, mat_index);
-                }
-                world.apply_material_override(mat);
-
-                mesh.instance.material_id = world.resources.materials.size() + mat.dedicated_material_index;
-            }
+            mesh.instance.material_id = mat.dedicated_material_index == -1
+                                            ? mat_index
+                                            : world.resources.materials.size() + mat.dedicated_material_index;
         }
 
         auto mesh_index = world.load_mesh(mesh.id);
@@ -379,8 +385,9 @@ int main(int argc, char* argv[]) {
     add_viewport_source("RT Reflection", world.renderer.rt_reflection_buffer);
     add_viewport_source("RT Shadows", world.renderer.directional_shadow_buffer);
     add_viewport_source("Bloom Buffer", world.renderer.bloom_buffer);
+    add_viewport_source("Composite UI Buffer", world.renderer.ui_buffer);
 
-    std::string editor_viewport_source = "Anti-Aliased Composite";
+    std::string editor_viewport_source = "Composite UI Buffer";
 
     glm::vec4 viewport_pos_size = glm::vec4();
     int       pick_frame        = UINT32_MAX;

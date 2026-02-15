@@ -213,7 +213,7 @@ ImFont* generate_icon_font(float size) {
 }
 
 VkDescriptorSet imgui_image_handle(const Image& image, VkSampler sampler) {
-    return ImGui_ImplVulkan_AddTexture(sampler, image.view, VK_IMAGE_LAYOUT_GENERAL);
+    return ImGui_ImplVulkan_AddTexture(sampler, image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
 void imgui_image_handle_free(VkDescriptorSet handle) {

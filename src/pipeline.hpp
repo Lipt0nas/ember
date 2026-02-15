@@ -89,22 +89,18 @@ std::vector<VkDescriptorSet>
 allocate_descriptor_sets(VkDevice device, VkDescriptorPool descriptor_pool, const Pipeline& pipeline);
 
 Pipeline create_graphics_pipeline(
-    VkDevice                             device,
-    const std::vector<Shader>&           shaders,
-    const std::vector<DescriptorLayout>& descriptor_sets,
-    const std::vector<VkFormat>&         color_attachment_formats,
-    VkFormat                             depth_format        = VK_FORMAT_UNDEFINED,
-    uint32_t                             push_constants_size = 0,
-    VkDescriptorSetLayout                additional_set      = VK_NULL_HANDLE
-);
-
-Pipeline create_debug_render_pipeline(
-    VkDevice                             device,
-    const std::vector<Shader>&           shaders,
-    const std::vector<DescriptorLayout>& descriptor_sets,
-    const std::vector<VkFormat>&         color_attachment_formats,
-    VkFormat                             depth_format,
-    uint32_t                             push_constants_size
+    VkDevice                               device,
+    const std::vector<Shader>&             shaders,
+    const std::vector<DescriptorLayout>&   descriptor_sets,
+    const std::vector<VkFormat>&           color_attachment_formats,
+    VkPipelineVertexInputStateCreateInfo   vertex_input_state,
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_state,
+    bool                                   enable_blending,
+    VkFormat                               depth_format        = VK_FORMAT_UNDEFINED,
+    bool                                   depth_test_enabled  = false,
+    bool                                   depth_write_enabled = false,
+    uint32_t                               push_constants_size = 0,
+    VkDescriptorSetLayout                  additional_set      = VK_NULL_HANDLE
 );
 
 Pipeline create_compute_pipeline(

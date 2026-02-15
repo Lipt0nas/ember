@@ -45,6 +45,24 @@
 
 #define XE_GTAO_OCCLUSION_TERM_SCALE                    1.5
 
+struct SpriteDraw {
+    vec3 position;
+    vec4 rotation;
+    vec2 size;
+    vec2 pivot;
+    vec4 uvs;
+    vec4 color;
+    int data_index;
+};
+
+struct SpriteVertex {
+    vec3 position;
+    vec3 normal;
+    vec2 uv;
+    vec4 color;
+    int data_index;
+};
+
 struct IndirectDispatchCommand {
     uint workgroups_x;
     uint workgroups_y;

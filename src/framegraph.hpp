@@ -150,7 +150,7 @@ struct PassTiming {
     float get_avg_timing_ms() const;
 };
 
-constexpr uint32_t QUERY_COUNT = 64;
+constexpr uint32_t QUERY_COUNT = 128;
 struct Framegraph {
     std::vector<RenderPass> passes;
 
