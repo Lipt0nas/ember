@@ -260,7 +260,53 @@ Renderer::DebugRenderer Renderer::create_debug_renderer(
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
 
-    Pipeline pipeline = create_debug_render_pipeline(
+    VkVertexInputBindingDescription vertex_binding_description = {
+        .binding   = 0,
+        .stride    = sizeof(float) * 8,
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+
+    std::array<VkVertexInputAttributeDescription, 3> attribute_desriptions = {
+        VkVertexInputAttributeDescription{
+            .location = 0,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset   = 0,
+
+        },
+        VkVertexInputAttributeDescription{
+            .location = 1,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset   = sizeof(float) * 3,
+        },
+        VkVertexInputAttributeDescription{
+            .location = 2,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32_SFLOAT,
+            .offset   = sizeof(float) * 6,
+        },
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertex_input_state = {
+        .sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .pNext                           = nullptr,
+        .flags                           = 0,
+        .vertexBindingDescriptionCount   = 1,
+        .pVertexBindingDescriptions      = &vertex_binding_description,
+        .vertexAttributeDescriptionCount = attribute_desriptions.size(),
+        .pVertexAttributeDescriptions    = attribute_desriptions.data()
+    };
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
+        .sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .pNext                  = nullptr,
+        .flags                  = 0,
+        .topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = VK_FALSE,
+    };
+
+    Pipeline pipeline = create_graphics_pipeline(
         device,
         {
             shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/debug.vert.spv"),
@@ -297,7 +343,12 @@ Renderer::DebugRenderer Renderer::create_debug_renderer(
             },
         },
         {VK_FORMAT_R8G8B8A8_UNORM},
+        vertex_input_state,
+        input_assembly_state,
+        false,
         depth_format,
+        true,
+        true,
         sizeof(DebugRendererConstants)
     );
 
@@ -353,6 +404,18 @@ void Renderer::cleanup() {
     framegraph->destroy(device);
     delete framegraph;
 
+    destroy_buffer(world_sprite_batcher->drawcall_buffer, device, vma_allocator);
+    destroy_buffer(world_sprite_batcher->geometry_buffer, device, vma_allocator);
+    destroy_pipeline(device, world_sprite_batcher->geometry_build_pipline);
+    destroy_pipeline(device, world_sprite_pipeline);
+    delete world_sprite_batcher;
+
+    destroy_buffer(ui_sprite_batcher->drawcall_buffer, device, vma_allocator);
+    destroy_buffer(ui_sprite_batcher->geometry_buffer, device, vma_allocator);
+    destroy_pipeline(device, ui_sprite_batcher->geometry_build_pipline);
+    destroy_pipeline(device, ui_sprite_pipeline);
+    delete ui_sprite_batcher;
+
     destroy_buffer(staging_buffer, device, vma_allocator);
     destroy_buffer(global_index_buffer, device, vma_allocator);
     destroy_buffer(global_vertex_buffer, device, vma_allocator);
@@ -374,6 +437,7 @@ void Renderer::cleanup() {
     destroy_buffer(particle_position_buffer, device, vma_allocator);
     destroy_buffer(particle_velocity_buffer, device, vma_allocator);
 
+    destroy_image(ui_buffer, device, vma_allocator);
     destroy_image(depth_buffer, device, vma_allocator);
     destroy_image(lightpass_output, device, vma_allocator);
     destroy_image(composite_output, device, vma_allocator);
@@ -602,6 +666,24 @@ void Renderer::setup_framegraph() {
                 vkCmdDispatch(command_buffer, (mesh_instances.size() + 255) / 256, 1, 1);
             });
 
+    auto sprite_build_pass =
+        framegraph->add_pass("sprite batch build")
+            .reads_buffer_dynamic(
+                world_sprite_batcher->drawcall_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                world_sprite_batcher->drawcall_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .writes_buffer(
+                world_sprite_batcher->geometry_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_WRITE_BIT
+            )
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                world_sprite_batcher->build_geometry_buffer(vma_allocator, command_buffer, frame_index);
+                ui_sprite_batcher->build_geometry_buffer(vma_allocator, command_buffer, frame_index);
+            });
+
     auto gbuffer_pass =
         framegraph->add_pass("gbuffer")
             .writes_depth_attachment(depth_buffer)
@@ -643,6 +725,11 @@ void Renderer::setup_framegraph() {
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
                 VK_ACCESS_2_SHADER_READ_BIT,
                 material_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer(
+                world_sprite_batcher->geometry_buffer,
+                VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 vkCmdBeginQuery(command_buffer, statistics_pools[frame_index], 0, 0);
@@ -741,6 +828,42 @@ void Renderer::setup_framegraph() {
                 };
 
                 vkCmdBeginRendering(command_buffer, &rendering_info);
+                {
+                    auto&     pipeline = world_sprite_pipeline;
+                    glm::mat4 push     = camera->combined_matrix;
+
+                    std::array<VkDescriptorSet, 2> descriptors = {
+                        world_sprite_pipeline_descriptor_sets[0], global_texture_descriptor_set
+                    };
+
+                    std::array<uint32_t, 4> offsets = {
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
+                    };
+
+                    vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                    vkCmdBindDescriptorSets(
+                        command_buffer,
+                        pipeline.bind_point,
+                        pipeline.pipeline_layout,
+                        0,
+                        descriptors.size(),
+                        descriptors.data(),
+                        offsets.size(),
+                        offsets.data()
+                    );
+                    vkCmdPushConstants(
+                        command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, sizeof(glm::mat4), &push
+                    );
+                    VkDeviceSize offset = 0;
+                    vkCmdBindVertexBuffers(
+                        command_buffer, 0, 1, &world_sprite_batcher->geometry_buffer.handle, &offset
+                    );
+                    vkCmdDraw(command_buffer, world_sprite_batcher->drawcall_count * 6, 1, 0, 0);
+                }
+
                 vkCmdBindPipeline(command_buffer, gpass_pipeline.bind_point, gpass_pipeline.pipeline_handle);
 
                 vkCmdPushConstants(
@@ -2570,7 +2693,6 @@ void Renderer::setup_framegraph() {
                     0,
                     nullptr
                 );
-                vkCmdPushConstants(command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, 0, nullptr);
 
                 vkCmdDispatch(command_buffer, (particle_count + 255) / 256, 1, 1);
             });
@@ -2597,7 +2719,22 @@ void Renderer::setup_framegraph() {
         {
             lightpass_output.format,
         },
-        depth_buffer.format
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+        },
+        {
+            .sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .pNext                  = nullptr,
+            .flags                  = 0,
+            .topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            .primitiveRestartEnable = VK_FALSE,
+        },
+        true,
+        depth_buffer.format,
+        true,
+        true
     );
     particle_render_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, particle_render_pipeline);
 
@@ -3410,27 +3547,21 @@ void Renderer::setup_framegraph() {
                 vkCmdDispatch(command_buffer, (smaa_weights.width + 7) / 8, (smaa_weights.height + 7) / 8, 1);
             });
 
-    auto& blit_ui_pass =
-        framegraph->add_pass("Final blit + UI").render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-            image_pipeline_barrier(
-                swapchain.images[swapchain_image_index],
-                command_buffer,
-                VK_IMAGE_LAYOUT_UNDEFINED,
-                editor_overlay ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                0,
-                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                }
-            );
+    auto game_ui_pass =
+        framegraph->add_pass("Game UI + Composite")
+            .writes_color_attachment(ui_buffer)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                image_pipeline_barrier(
+                    ui_buffer,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    0,
+                    0,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT
+                );
 
-            if (!editor_overlay) {
                 auto& blit_source = smaa_output;
                 image_pipeline_barrier(
                     blit_source,
@@ -3449,7 +3580,7 @@ void Renderer::setup_framegraph() {
                     .srcOffsets =
                         {
                             {0, 0, 0},
-                            {static_cast<int32_t>(swapchain.width), static_cast<int32_t>(swapchain.height), 1},
+                            {static_cast<int32_t>(ui_buffer.width), static_cast<int32_t>(ui_buffer.height), 1},
                         },
                     .dstSubresource =
                         {
@@ -3460,7 +3591,7 @@ void Renderer::setup_framegraph() {
                         },
                     .dstOffsets = {
                         {},
-                        {static_cast<int32_t>(swapchain.width), static_cast<int32_t>(swapchain.height), 1},
+                        {static_cast<int32_t>(ui_buffer.width), static_cast<int32_t>(ui_buffer.height), 1},
                     },
                 };
 
@@ -3468,7 +3599,7 @@ void Renderer::setup_framegraph() {
                     command_buffer,
                     blit_source.handle,
                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    swapchain.images[swapchain_image_index],
+                    ui_buffer.handle,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     1,
                     &blit_region,
@@ -3485,21 +3616,34 @@ void Renderer::setup_framegraph() {
                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
                 );
-            } else {
-                VkRenderingAttachmentInfo swapchain_attachment_info = {
-                    .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                    .pNext              = nullptr,
-                    .imageView          = swapchain.image_views[swapchain_image_index],
-                    .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    .resolveMode        = VK_RESOLVE_MODE_NONE,
-                    .resolveImageView   = VK_NULL_HANDLE,
-                    .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                    .loadOp             = editor_overlay ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
-                    .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-                    .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+
+                image_pipeline_barrier(
+                    ui_buffer,
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+                );
+
+                std::vector<VkRenderingAttachmentInfo> color_attachments = {
+                    {
+                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                        .pNext              = nullptr,
+                        .imageView          = ui_buffer.view,
+                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .resolveMode        = VK_RESOLVE_MODE_NONE,
+                        .resolveImageView   = VK_NULL_HANDLE,
+                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
+                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                    },
                 };
 
-                VkRenderingInfo imgui_rendering_info = {
+                VkRenderingInfo rendering_info = {
                     .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
                     .pNext = nullptr,
                     .flags = 0,
@@ -3510,34 +3654,173 @@ void Renderer::setup_framegraph() {
                         },
                     .layerCount           = 1,
                     .viewMask             = 0,
-                    .colorAttachmentCount = 1,
-                    .pColorAttachments    = &swapchain_attachment_info,
+                    .colorAttachmentCount = static_cast<uint32_t>(color_attachments.size()),
+                    .pColorAttachments    = color_attachments.data(),
                     .pDepthAttachment     = nullptr,
                     .pStencilAttachment   = nullptr
                 };
-                vkCmdBeginRendering(command_buffer, &imgui_rendering_info);
-                ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
-                vkCmdEndRendering(command_buffer);
-            }
 
-            image_pipeline_barrier(
-                swapchain.images[swapchain_image_index],
-                command_buffer,
-                editor_overlay ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                0,
-                0,
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
+                update_camera(ui_camera);
+
+                vkCmdBeginRendering(command_buffer, &rendering_info);
+
+                auto&     pipeline = ui_sprite_pipeline;
+                glm::mat4 push     = ui_camera.combined_matrix;
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    pipeline.bind_point,
+                    pipeline.pipeline_layout,
+                    0,
+                    1,
+                    &global_texture_descriptor_set,
+                    0,
+                    nullptr
+                );
+                vkCmdPushConstants(
+                    command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, sizeof(glm::mat4), &push
+                );
+                VkDeviceSize offset = 0;
+                vkCmdBindVertexBuffers(command_buffer, 0, 1, &ui_sprite_batcher->geometry_buffer.handle, &offset);
+                vkCmdDraw(command_buffer, ui_sprite_batcher->drawcall_count * 6, 1, 0, 0);
+
+                vkCmdEndRendering(command_buffer);
+            });
+
+    auto& blit_ui_pass =
+        framegraph->add_pass("Final blit + UI")
+            .samples_image(ui_buffer, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                image_pipeline_barrier(
+                    swapchain.images[swapchain_image_index],
+                    command_buffer,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    editor_overlay ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    0,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    {
+                        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .baseMipLevel   = 0,
+                        .levelCount     = 1,
+                        .baseArrayLayer = 0,
+                        .layerCount     = 1,
+                    }
+                );
+
+                if (!editor_overlay) {
+                    auto& blit_source = ui_buffer;
+                    image_pipeline_barrier(
+                        blit_source,
+                        command_buffer,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                        VK_ACCESS_2_TRANSFER_READ_BIT
+                    );
+
+                    VkImageBlit blit_region = {
+                        .srcSubresource =
+                            {.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .mipLevel       = 0,
+                             .baseArrayLayer = 0,
+                             .layerCount     = 1},
+                        .srcOffsets =
+                            {
+                                {0, 0, 0},
+                                {static_cast<int32_t>(swapchain.width), static_cast<int32_t>(swapchain.height), 1},
+                            },
+                        .dstSubresource =
+                            {
+                                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                                .mipLevel       = 0,
+                                .baseArrayLayer = 0,
+                                .layerCount     = 1,
+                            },
+                        .dstOffsets = {
+                            {},
+                            {static_cast<int32_t>(swapchain.width), static_cast<int32_t>(swapchain.height), 1},
+                        },
+                    };
+
+                    vkCmdBlitImage(
+                        command_buffer,
+                        blit_source.handle,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        swapchain.images[swapchain_image_index],
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        1,
+                        &blit_region,
+                        VK_FILTER_LINEAR
+                    );
+
+                    image_pipeline_barrier(
+                        blit_source,
+                        command_buffer,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                        VK_ACCESS_2_TRANSFER_READ_BIT,
+                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+                    );
+                } else {
+                    VkRenderingAttachmentInfo swapchain_attachment_info = {
+                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                        .pNext              = nullptr,
+                        .imageView          = swapchain.image_views[swapchain_image_index],
+                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .resolveMode        = VK_RESOLVE_MODE_NONE,
+                        .resolveImageView   = VK_NULL_HANDLE,
+                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .loadOp             = editor_overlay ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                    };
+
+                    VkRenderingInfo imgui_rendering_info = {
+                        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                        .pNext = nullptr,
+                        .flags = 0,
+                        .renderArea =
+                            {
+                                .offset = {.x = 0, .y = 0},
+                                .extent = {.width = swapchain.width, .height = swapchain.height},
+                            },
+                        .layerCount           = 1,
+                        .viewMask             = 0,
+                        .colorAttachmentCount = 1,
+                        .pColorAttachments    = &swapchain_attachment_info,
+                        .pDepthAttachment     = nullptr,
+                        .pStencilAttachment   = nullptr
+                    };
+                    vkCmdBeginRendering(command_buffer, &imgui_rendering_info);
+                    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command_buffer);
+                    vkCmdEndRendering(command_buffer);
                 }
-            );
-        });
+
+                image_pipeline_barrier(
+                    swapchain.images[swapchain_image_index],
+                    command_buffer,
+                    editor_overlay ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    0,
+                    0,
+                    {
+                        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .baseMipLevel   = 0,
+                        .levelCount     = 1,
+                        .baseArrayLayer = 0,
+                        .layerCount     = 1,
+                    }
+                );
+            });
 
     framegraph->build();
 }
@@ -4024,6 +4307,26 @@ void Renderer::initialize(
         };
         VK_CHECK(vkCreateImageView(device, &bloom_mip_view_info, nullptr, &bloom_mip_views[i]));
     }
+
+    ui_camera.position        = {0.0f, 0.0f, 0.0f};
+    ui_camera.orientation     = {0.0f, 0.0f, 0.0f, 1.0f};
+    ui_camera.near_plane      = 0.01f;
+    ui_camera.far_plane       = 10.0f;
+    ui_camera.type            = CameraType::ORTHOGRAPHIC;
+    ui_camera.viewport_width  = swapchain.width;
+    ui_camera.viewport_height = swapchain.height;
+
+    ui_buffer = create_image(
+        VK_FORMAT_R8G8B8A8_UNORM,
+        swapchain.width,
+        swapchain.height,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        false,
+        vma_allocator,
+        device
+    );
 
     gbuffer_albedo = create_image(
         VK_FORMAT_R8G8B8A8_SRGB,
@@ -4860,7 +5163,23 @@ void Renderer::initialize(
             gbuffer_velocity.format,
             gbuffer_id.format,
         },
+
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+        },
+        {
+            .sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .pNext                  = nullptr,
+            .flags                  = 0,
+            .topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            .primitiveRestartEnable = VK_FALSE,
+        },
+        false,
         depth_buffer.format,
+        true,
+        true,
         sizeof(GeometryPushConstants),
         global_texture_descriptor_layout
     );
@@ -4870,6 +5189,109 @@ void Renderer::initialize(
          .disable_cone_cull           = false,
          .disable_small_triangle_cull = false,
     };
+
+    VkVertexInputBindingDescription vertex_binding_description = {
+        .binding   = 0,
+        .stride    = sizeof(float) * 13,
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+
+    std::array<VkVertexInputAttributeDescription, 5> attribute_desriptions = {
+        VkVertexInputAttributeDescription{
+            .location = 0,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset   = 0,
+
+        },
+        VkVertexInputAttributeDescription{
+            .location = 1,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset   = sizeof(float) * 3,
+
+        },
+        VkVertexInputAttributeDescription{
+            .location = 2,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32_SFLOAT,
+            .offset   = sizeof(float) * 6,
+        },
+        VkVertexInputAttributeDescription{
+            .location = 3,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .offset   = sizeof(float) * 8,
+        },
+        VkVertexInputAttributeDescription{
+            .location = 4,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32_SINT,
+            .offset   = sizeof(float) * 12,
+        },
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertex_input_state = {
+        .sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .pNext                           = nullptr,
+        .flags                           = 0,
+        .vertexBindingDescriptionCount   = 1,
+        .pVertexBindingDescriptions      = &vertex_binding_description,
+        .vertexAttributeDescriptionCount = attribute_desriptions.size(),
+        .pVertexAttributeDescriptions    = attribute_desriptions.data()
+    };
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
+        .sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .pNext                  = nullptr,
+        .flags                  = 0,
+        .topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = VK_FALSE,
+    };
+
+    world_sprite_pipeline = create_graphics_pipeline(
+        device,
+        {
+            shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/sprite_draw.vert.spv"),
+            shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/sprite_draw_world.frag.spv"),
+        },
+        {draw_data_layout},
+        {
+            gbuffer_albedo.format,
+            gbuffer_normals.format,
+            gbuffer_emissive.format,
+            gbuffer_velocity.format,
+            gbuffer_id.format,
+        },
+        vertex_input_state,
+        input_assembly_state,
+        false,
+        depth_buffer.format,
+        true,
+        true,
+        sizeof(glm::mat4),
+        global_texture_descriptor_layout
+    );
+    world_sprite_pipeline_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, world_sprite_pipeline);
+
+    ui_sprite_pipeline = create_graphics_pipeline(
+        device,
+        {
+            shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/sprite_draw.vert.spv"),
+            shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/sprite_draw_ui.frag.spv"),
+        },
+        {},
+        {ui_buffer.format},
+        vertex_input_state,
+        input_assembly_state,
+        true,
+        VK_FORMAT_UNDEFINED,
+        false,
+        false,
+        sizeof(glm::mat4),
+        global_texture_descriptor_layout
+
+    );
 
     hiz_pipeline = create_compute_pipeline(
         device,
@@ -5175,6 +5597,9 @@ void Renderer::initialize(
 
     dynamic_offsets.resize(static_cast<uint32_t>(DynamicOffset::COUNT));
 
+    world_sprite_batcher = new SpriteBatcher(this, 10000);
+    ui_sprite_batcher    = new SpriteBatcher(this, 10000);
+
     setup_framegraph();
 }
 
@@ -5283,6 +5708,65 @@ void Renderer::render_frame(float delta_time) {
     scene_ubo.lod_target = (2 / scene_ubo.P11) * (1.0f / float(swapchain.height)) * (1 << min_lod);
 
     scene_ubo.last_frame_view_proj = last_frame_view_proj;
+
+    world_sprite_batcher->reset();
+    auto sprite_view =
+        world->scene.entity_registry.view<components::Transform, components::Material, components::Sprite>();
+    for (auto [e, t, m, s] : sprite_view.each()) {
+        if (m.id == AssetMetadata::INVALID_METADATA) {
+            continue;
+        }
+
+        int mat_index = world->load_material(m.id);
+
+        if (mat_index == -1) {
+            continue;
+        }
+
+        world_sprite_batcher->draw(
+            SpriteBatcher::Drawcall{
+                .position   = t.world_position,
+                .rotation   = t.world_rotation,
+                .size       = s.size * t.world_scale,
+                .pivot      = s.pivot,
+                .uvs        = s.uvs,
+                .color      = {1.0f, 1.0f, 1.0f, 1.0},
+                .data_index = static_cast<int>(
+                    m.dedicated_material_index == -1 ? mat_index
+                                                     : world->resources.materials.size() + m.dedicated_material_index
+                ),
+            }
+        );
+    }
+
+    ui_sprite_batcher->reset();
+    auto ui_sprite_view = world->scene.entity_registry.view<components::Transform, components::UISprite>();
+    for (auto [e, t, s] : ui_sprite_view.each()) {
+        if (s.texture_id == AssetMetadata::INVALID_METADATA) {
+            continue;
+        }
+
+        int tex_index = world->load_texture(s.texture_id);
+
+        if (tex_index == -1) {
+            continue;
+        }
+
+        float     rotation    = glm::eulerAngles(t.world_rotation).z;
+        glm::quat ui_rotation = glm::angleAxis(rotation, glm::vec3(0, 0, 1));
+
+        ui_sprite_batcher->draw(
+            SpriteBatcher::Drawcall{
+                .position   = glm::vec3(glm::vec2(t.world_position), 0.0f),
+                .rotation   = ui_rotation,
+                .size       = t.scale * s.size,
+                .pivot      = s.pivot,
+                .uvs        = s.uvs,
+                .color      = s.color,
+                .data_index = tex_index,
+            }
+        );
+    }
 
     {
         void*  scene_ubo_ptr  = nullptr;
@@ -5487,4 +5971,87 @@ void Renderer::end_frame() {
 
 VkCommandBuffer Renderer::get_current_command_buffer() {
     return command_buffers[frame_index];
+}
+
+SpriteBatcher::SpriteBatcher(Renderer* renderer, uint32_t max_drawcalls) {
+    this->frames_in_flight = Renderer::FRAMES_IN_FLIGHT;
+    this->max_drawcalls    = max_drawcalls;
+    this->drawcall_count   = 0;
+
+    this->drawcalls.resize(this->max_drawcalls);
+
+    this->drawcall_buffer = create_buffer(
+        sizeof(Drawcall) * this->max_drawcalls * frames_in_flight,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        renderer->vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+    spdlog::debug("Sprite Batch drawcall buffer size: {}MB", (float)drawcall_buffer.size / 1024.0f / 1024.0f);
+
+    this->geometry_buffer = create_buffer(
+        sizeof(SpriteVertex) * 6 * this->max_drawcalls,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        renderer->vma_allocator
+    );
+    spdlog::debug("Sprite Batch geometry buffer size: {}MB", (float)geometry_buffer.size / 1024.0f / 1024.0f);
+
+    this->geometry_build_pipline = create_compute_pipeline(
+        renderer->device,
+        shader_from_file(renderer->device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/sprite_batch_build.comp.spv"),
+        {DescriptorLayout{
+            .bindings = {
+                DescriptorBinding{
+                    .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                    .write_info = DescriptorInfo(drawcall_buffer.handle, 0, drawcall_buffer.size / frames_in_flight)
+                },
+                DescriptorBinding{
+                    .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .write_info = DescriptorInfo(geometry_buffer.handle),
+                },
+            }
+        }}
+    );
+    this->geometry_build_pipline_descriptor_sets =
+        allocate_descriptor_sets(renderer->device, renderer->descriptor_pool, this->geometry_build_pipline);
+}
+
+void SpriteBatcher::reset() {
+    drawcall_count = 0;
+}
+
+void SpriteBatcher::draw(const Drawcall& drawcall) {
+    if (drawcall_count >= max_drawcalls - 1) {
+        return;
+    }
+
+    drawcalls[drawcall_count++] = drawcall;
+}
+
+void SpriteBatcher::build_geometry_buffer(
+    VmaAllocator vma_allocator, VkCommandBuffer command_buffer, uint32_t frame_index
+) {
+    auto& pipeline = geometry_build_pipline;
+
+    uint32_t dynamic_offset = (drawcall_buffer.size / frames_in_flight) * frame_index;
+    {
+        void* ptr = nullptr;
+        VK_CHECK(vmaMapMemory(vma_allocator, drawcall_buffer.allocation, &ptr));
+        memcpy(reinterpret_cast<char*>(ptr) + dynamic_offset, drawcalls.data(), sizeof(Drawcall) * drawcall_count);
+        vmaUnmapMemory(vma_allocator, drawcall_buffer.allocation);
+        VK_CHECK(vmaFlushAllocation(vma_allocator, drawcall_buffer.allocation, 0, drawcall_buffer.size));
+    }
+
+    vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+    vkCmdBindDescriptorSets(
+        command_buffer,
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        pipeline.pipeline_layout,
+        0,
+        geometry_build_pipline_descriptor_sets.size(),
+        geometry_build_pipline_descriptor_sets.data(),
+        1,
+        &dynamic_offset
+    );
+
+    vkCmdDispatch(command_buffer, drawcall_count, 1, 1);
 }

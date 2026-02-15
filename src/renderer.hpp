@@ -13,6 +13,48 @@ namespace tracy {
     class VkCtx;
 }
 
+class SpriteBatcher {
+public:
+    struct Drawcall {
+        glm::vec3 position   = {0.0f, 0.0f, 0.0f};
+        glm::quat rotation   = {0.0f, 0.0f, 0.0f, 1.0f};
+        glm::vec2 size       = {1.0f, 1.0f};
+        glm::vec2 pivot      = {0.5f, 0.5f};
+        glm::vec4 uvs        = {0.0f, 0.0f, 1.0f, 1.0f};
+        glm::vec4 color      = {1.0f, 1.0f, 1.0f, 1.0f};
+        int       data_index = 0;
+    };
+
+    struct SpriteVertex {
+        glm::vec3 position;
+        glm::vec2 uv;
+        glm::vec4 color;
+        int       data_index;
+    };
+
+    Buffer drawcall_buffer;
+    Buffer geometry_buffer;
+
+    Pipeline                     geometry_build_pipline;
+    std::vector<VkDescriptorSet> geometry_build_pipline_descriptor_sets;
+
+    SpriteBatcher(class Renderer* renderer, uint32_t max_drawcalls);
+
+    void reset();
+    void draw(const Drawcall& drawcall);
+    void build_geometry_buffer(VmaAllocator vma_allocator, VkCommandBuffer command_buffer, uint32_t frame_index);
+
+    void destroy();
+
+    uint32_t drawcall_count = 0;
+
+private:
+    uint32_t frames_in_flight = 0;
+    uint32_t max_drawcalls    = 0;
+
+    std::vector<Drawcall> drawcalls;
+};
+
 class Renderer {
 public:
     Renderer();
@@ -53,6 +95,8 @@ public:
 
     constexpr static int FRAMES_IN_FLIGHT = 2;
 
+    VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+
     VkDescriptorSet       global_texture_descriptor_set    = VK_NULL_HANDLE;
     VkDescriptorSetLayout global_texture_descriptor_layout = VK_NULL_HANDLE;
 
@@ -72,6 +116,8 @@ public:
     Image gbuffer_emissive;
     Image gbuffer_velocity;
     Image gbuffer_id;
+
+    Image ui_buffer;
 
     Image ddgi_depth_atlas;
     Image ddgi_depth_atlas_history;
@@ -137,6 +183,7 @@ public:
     uint32_t swapchain_image_index = 0;
 
     Camera*                   camera;
+    Camera                    ui_camera;
     std::vector<MeshInstance> mesh_instances;
 
     Framegraph* framegraph = nullptr;
@@ -157,8 +204,10 @@ private:
 
     VkCommandBuffer command_buffers[FRAMES_IN_FLIGHT];
 
+    SpriteBatcher* world_sprite_batcher = nullptr;
+    SpriteBatcher* ui_sprite_batcher    = nullptr;
+
     std::vector<VkDescriptorPoolSize> descriptor_pool_sizes;
-    VkDescriptorPool                  descriptor_pool = VK_NULL_HANDLE;
 
     Buffer staging_buffer;
 
@@ -476,6 +525,12 @@ private:
 
     Pipeline                     smaa_blend_pipeline;
     std::vector<VkDescriptorSet> smaa_blend_descriptor_sets;
+
+    Pipeline                     world_sprite_pipeline;
+    std::vector<VkDescriptorSet> world_sprite_pipeline_descriptor_sets;
+
+    Pipeline                     ui_sprite_pipeline;
+    std::vector<VkDescriptorSet> ui_sprite_pipeline_descriptor_sets;
 
     std::vector<uint32_t> dynamic_offsets;
 

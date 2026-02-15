@@ -565,6 +565,66 @@ template <> bool Editor::render_component_ui<components::Material>(Entity e) {
     return edited;
 }
 
+template <> bool Editor::render_component_ui<components::UISprite>(Entity e) {
+    bool edited = false;
+
+    auto* s = world->scene.get_component<components::UISprite>(e);
+
+    auto metadata = world->asset_registry.get_metadata<TextureMetadata>(s->texture_id);
+    ImGui::Text(ICON_FA_IMAGE "  Texture: ");
+    ImGui::SameLine();
+    if (metadata) {
+        ImGui::Text("%s", metadata->source_path.c_str());
+    } else {
+        ImGui::Text("Invalid");
+    }
+    ImGui::NewLine();
+
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* payload =
+            ImGui::AcceptDragDropPayload(get_asset_info(AssetType::TEXTURE).drag_drop_id.c_str());
+        if (payload) {
+            AssetID new_id = *(AssetID*)payload->Data;
+            if (s->texture_id != new_id) {
+                s->texture_id = new_id;
+                edited        = true;
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    ImGui::DragFloat2("Size", &s->size.x);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::DragFloat2("Pivot", &s->pivot.x);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::DragFloat4("UV's", &s->uvs.x);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::ColorEdit4("Tint", &s->color.x);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    return edited;
+}
+
+template <> bool Editor::render_component_ui<components::Sprite>(Entity e) {
+    bool edited = false;
+
+    auto* s = world->scene.get_component<components::Sprite>(e);
+
+    ImGui::DragFloat2("Size", &s->size.x);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::DragFloat2("Pivot", &s->pivot.x);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::DragFloat4("UV's", &s->uvs.x);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    return edited;
+}
+
 Editor::Editor() {
     asset_type_infos = {
         {AssetType::MATERIAL,

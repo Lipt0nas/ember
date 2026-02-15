@@ -17,16 +17,6 @@
 #include <weakref.h>
 
 namespace {
-    auto hash_script = [](const std::filesystem::path& path) -> uint32_t {
-        uint32_t hash = 0;
-
-        for (auto& it : path.string()) {
-            hash = 37 * hash + 17 + static_cast<char>(it);
-        }
-
-        return hash;
-    };
-
     void script_message_callback(const asSMessageInfo* msg, void* param) {
         switch (msg->type) {
         case asMSGTYPE_ERROR:
@@ -1726,6 +1716,47 @@ void ScriptSystem::initialize(class World* world) {
             type->GetTypeId(),
             [](Scene& scene, Entity e) {
                 return scene.get_component<components::Mesh>(e);
+            },
+        });
+    }
+
+    {
+        engine->RegisterObjectType("UISprite", 0, asOBJ_REF | asOBJ_NOCOUNT);
+        engine->RegisterObjectProperty("UISprite", "vec4 color", asOFFSET(components::UISprite, color));
+        engine->RegisterObjectProperty("UISprite", "vec2 pivot", asOFFSET(components::UISprite, pivot));
+        engine->RegisterObjectProperty("UISprite", "vec2 size", asOFFSET(components::UISprite, size));
+        engine->RegisterObjectProperty("UISprite", "vec4 uvs", asOFFSET(components::UISprite, uvs));
+
+        auto type = engine->GetTypeInfoByName("UISprite");
+        if (!type) {
+            spdlog::error("Failed to get type info for UISprite component");
+            return;
+        }
+
+        component_retrieve_map.insert({
+            type->GetTypeId(),
+            [](Scene& scene, Entity e) {
+                return scene.get_component<components::UISprite>(e);
+            },
+        });
+    }
+
+    {
+        engine->RegisterObjectType("Sprite", 0, asOBJ_REF | asOBJ_NOCOUNT);
+        engine->RegisterObjectProperty("Sprite", "vec2 pivot", asOFFSET(components::UISprite, pivot));
+        engine->RegisterObjectProperty("Sprite", "vec2 size", asOFFSET(components::UISprite, size));
+        engine->RegisterObjectProperty("Sprite", "vec4 uvs", asOFFSET(components::UISprite, uvs));
+
+        auto type = engine->GetTypeInfoByName("Sprite");
+        if (!type) {
+            spdlog::error("Failed to get type info for Sprite component");
+            return;
+        }
+
+        component_retrieve_map.insert({
+            type->GetTypeId(),
+            [](Scene& scene, Entity e) {
+                return scene.get_component<components::Sprite>(e);
             },
         });
     }
