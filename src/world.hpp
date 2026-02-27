@@ -25,6 +25,7 @@ public:
         std::unordered_map<size_t, Sampler> samplers;
         std::vector<Material>               materials;
         std::vector<Material>               runtime_materials;
+        std::vector<Font>                   fonts;
     } resources;
 
     // True when in the "play" state
@@ -42,6 +43,9 @@ public:
     int load_mesh(AssetID id);
     int load_mesh(const std::string& path);
 
+    int load_font(AssetID id);
+    int load_font(const std::string& path);
+
     int       load_material(AssetID id);
     int       load_material(const std::string& path);
     Material* get_material(AssetID id);
@@ -57,6 +61,7 @@ public:
     std::unordered_map<AssetID, int> texture_map;
     std::unordered_map<AssetID, int> mesh_map;
     std::unordered_map<AssetID, int> material_map;
+    std::unordered_map<AssetID, int> font_map;
 
     void cleanup();
 

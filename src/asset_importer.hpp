@@ -12,6 +12,8 @@ public:
 
     AssetID import_model(const std::filesystem::path& path, const ModelMetadata::ModelImportOptions& import_options);
 
+    AssetID import_font(const std::filesystem::path& path, const FontMetadata::FontImportOptions& import_options);
+
 private:
     bool process_texture(
         const std::filesystem::path&                 destination,

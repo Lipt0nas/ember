@@ -14,6 +14,8 @@ AssetRegistry::AssetRegistry() {
         {".mat", AssetType::MATERIAL},
 
         {".as", AssetType::SCRIPT},
+
+        {".ttf", AssetType::FONT},
     };
 }
 
@@ -74,6 +76,11 @@ void AssetRegistry::load(const std::filesystem::path& path) {
             case AssetType::SCRIPT:
                 break;
             case AssetType::SOUND:
+                break;
+            case AssetType::FONT:
+                auto font_metadata = std::make_unique<FontMetadata>();
+                archive(*font_metadata);
+                handle = std::move(font_metadata);
                 break;
             }
 

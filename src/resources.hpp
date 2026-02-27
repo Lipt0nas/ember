@@ -3,6 +3,49 @@
 #include "asset.hpp"
 #include "ember.hpp"
 
+struct Font {
+    AssetID atlas_texture_id;
+
+    struct GlyphInfo {
+        uint32_t codepoint;
+
+        glm::vec4 uvs;
+
+        float advance_x;
+        float bearing_x;
+        float bearing_y;
+
+        float width;
+        float height;
+
+        template <class Archive> void serialize(Archive& ar) {
+            ar(CEREAL_NVP(codepoint),
+               CEREAL_NVP(uvs),
+               CEREAL_NVP(advance_x),
+               CEREAL_NVP(bearing_x),
+               CEREAL_NVP(bearing_y),
+               CEREAL_NVP(width),
+               CEREAL_NVP(height));
+        }
+    };
+
+    std::unordered_map<uint32_t, GlyphInfo> glyphs;
+
+    float font_size;
+    float line_height;
+    float ascender;
+    float descender;
+
+    template <class Archive> void serialize(Archive& ar) {
+        ar(CEREAL_NVP(atlas_texture_id),
+           CEREAL_NVP(glyphs),
+           CEREAL_NVP(font_size),
+           CEREAL_NVP(line_height),
+           CEREAL_NVP(ascender),
+           CEREAL_NVP(descender));
+    }
+};
+
 struct MaterialDescription {
     AssetID albedo;
     AssetID normals;

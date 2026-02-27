@@ -84,7 +84,8 @@ enum class AssetType {
     MATERIAL,
     SHADER,
     SCRIPT,
-    SOUND
+    SOUND,
+    FONT
 };
 
 class AssetMetadata {
@@ -213,3 +214,33 @@ struct ModelMetadata : AssetMetadata {
 struct MaterialMetadata : AssetMetadata {};
 
 struct ScriptMetadata : AssetMetadata {};
+
+struct FontMetadata : AssetMetadata {
+    struct GlyphRange {
+        uint32_t first_codepoint;
+        uint32_t last_codepoint;
+
+        template <class Archive> void serialize(Archive& ar) {
+            ar(CEREAL_NVP(first_codepoint), CEREAL_NVP(last_codepoint));
+        }
+    };
+
+    struct FontImportOptions {
+        bool                    is_sdf           = true;
+        float                   font_size        = 64.0f;
+        std::vector<GlyphRange> character_ranges = {
+            {32, 126},
+        };
+
+        template <class Archive> void serialize(Archive& ar) {
+            ar(CEREAL_NVP(is_sdf), CEREAL_NVP(font_size), CEREAL_NVP(character_ranges));
+        }
+    } import_options;
+
+    AssetID atlas_texture_id;
+
+    template <class Archive> void serialize(Archive& ar) {
+        AssetMetadata::serialize(ar);
+        ar(CEREAL_NVP(import_options), CEREAL_NVP(atlas_texture_id));
+    }
+};

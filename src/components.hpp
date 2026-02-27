@@ -185,6 +185,14 @@ namespace components {
         glm::vec4 uvs   = {0.0f, 0.0f, 1.0f, 1.0f};
     };
 
+    struct Text {
+        std::string text  = "Text";
+        glm::vec2   pivot = {0.5f, 0.5f};
+        glm::vec4   color = {1.0f, 1.0f, 1.0f, 1.0f};
+
+        AssetID font_id = AssetMetadata::INVALID_METADATA;
+    };
+
     template <typename Archive> void serialize(Archive& archive, Transform& transform) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
             archive(
@@ -338,6 +346,19 @@ namespace components {
             );
         } else {
             archive(sprite.size, sprite.pivot, sprite.uvs);
+        }
+    }
+
+    template <typename Archive> void serialize(Archive& archive, Text& text) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("text", text.text),
+                cereal::make_nvp("color", text.color),
+                cereal::make_nvp("pivot", text.pivot),
+                cereal::make_nvp("font_id", text.font_id)
+            );
+        } else {
+            archive(text.text, text.color, text.pivot, text.font_id);
         }
     }
 

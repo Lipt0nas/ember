@@ -3667,23 +3667,47 @@ void Renderer::setup_framegraph() {
                 auto&     pipeline = ui_sprite_pipeline;
                 glm::mat4 push     = ui_camera.combined_matrix;
 
-                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
-                vkCmdBindDescriptorSets(
-                    command_buffer,
-                    pipeline.bind_point,
-                    pipeline.pipeline_layout,
-                    0,
-                    1,
-                    &global_texture_descriptor_set,
-                    0,
-                    nullptr
-                );
-                vkCmdPushConstants(
-                    command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, sizeof(glm::mat4), &push
-                );
-                VkDeviceSize offset = 0;
-                vkCmdBindVertexBuffers(command_buffer, 0, 1, &ui_sprite_batcher->geometry_buffer.handle, &offset);
-                vkCmdDraw(command_buffer, ui_sprite_batcher->drawcall_count * 6, 1, 0, 0);
+                {
+                    vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                    vkCmdBindDescriptorSets(
+                        command_buffer,
+                        pipeline.bind_point,
+                        pipeline.pipeline_layout,
+                        0,
+                        1,
+                        &global_texture_descriptor_set,
+                        0,
+                        nullptr
+                    );
+                    vkCmdPushConstants(
+                        command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, sizeof(glm::mat4), &push
+                    );
+                    VkDeviceSize offset = 0;
+                    vkCmdBindVertexBuffers(command_buffer, 0, 1, &ui_sprite_batcher->geometry_buffer.handle, &offset);
+                    vkCmdDraw(command_buffer, ui_sprite_batcher->drawcall_batches[0] * 6, 1, 0, 0);
+                }
+
+                if (ui_sprite_batcher->drawcall_batches.size() > 1) {
+                    auto& pipeline = ui_sprite_text_pipeline;
+
+                    vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                    vkCmdBindDescriptorSets(
+                        command_buffer,
+                        pipeline.bind_point,
+                        pipeline.pipeline_layout,
+                        0,
+                        1,
+                        &global_texture_descriptor_set,
+                        0,
+                        nullptr
+                    );
+                    vkCmdPushConstants(
+                        command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, sizeof(glm::mat4), &push
+                    );
+                    VkDeviceSize offset = ui_sprite_batcher->drawcall_batches[0] * sizeof(float) * 13 * 6;
+                    vkCmdBindVertexBuffers(command_buffer, 0, 1, &ui_sprite_batcher->geometry_buffer.handle, &offset);
+                    vkCmdDraw(command_buffer, ui_sprite_batcher->drawcall_batches[1] * 6, 1, 0, 0);
+                }
 
                 vkCmdEndRendering(command_buffer);
             });
@@ -5293,6 +5317,25 @@ void Renderer::initialize(
 
     );
 
+    ui_sprite_text_pipeline = create_graphics_pipeline(
+        device,
+        {
+            shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/sprite_draw.vert.spv"),
+            shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/sprite_draw_ui_text.frag.spv"),
+        },
+        {},
+        {ui_buffer.format},
+        vertex_input_state,
+        input_assembly_state,
+        true,
+        VK_FORMAT_UNDEFINED,
+        false,
+        false,
+        sizeof(glm::mat4),
+        global_texture_descriptor_layout
+
+    );
+
     hiz_pipeline = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/hi_z.comp.spv"),
@@ -5768,6 +5811,99 @@ void Renderer::render_frame(float delta_time) {
         );
     }
 
+    ui_sprite_batcher->end_batch();
+    auto text_sprite_view = world->scene.entity_registry.view<components::Transform, components::Text>();
+    for (auto [e, t, tx] : text_sprite_view.each()) {
+        if (tx.font_id == AssetMetadata::INVALID_METADATA) {
+            continue;
+        }
+
+        int font_index = world->load_font(tx.font_id);
+        if (font_index == -1) {
+            continue;
+        }
+
+        Font& font = world->resources.fonts[font_index];
+
+        int tex_index = world->load_texture(font.atlas_texture_id);
+        if (tex_index == -1) {
+            continue;
+        }
+
+        float total_width = 0.0f;
+        float min_y       = 0.0f;
+        float max_y       = 0.0f;
+
+        float cursor_x = 0.0f;
+        for (char c : tx.text) {
+            auto it = font.glyphs.find((uint32_t)c);
+            if (it == font.glyphs.end()) {
+                continue;
+            }
+
+            const auto& glyph = it->second;
+
+            float top_y    = -glyph.bearing_y * t.world_scale;
+            float bottom_y = top_y - glyph.height * t.world_scale;
+
+            min_y = std::min(min_y, bottom_y);
+            max_y = std::max(max_y, top_y);
+
+            cursor_x += glyph.advance_x * t.world_scale;
+        }
+        total_width        = cursor_x;
+        float total_height = max_y - min_y;
+
+        glm::vec3 pivot_offset = glm::vec3(-total_width * tx.pivot.x, -(min_y + total_height * tx.pivot.y), 0.0f);
+
+        float local_cursor_x = 0.0f;
+        float local_cursor_y = 0.0f;
+
+        float     rotation    = glm::eulerAngles(t.world_rotation).z;
+        glm::quat ui_rotation = glm::angleAxis(rotation, glm::vec3(0, 0, 1));
+
+        for (char c : tx.text) {
+            auto it = font.glyphs.find((uint32_t)c);
+            if (it == font.glyphs.end()) {
+                continue;
+            }
+
+            const auto& glyph = it->second;
+
+            if (glyph.width == 0 || glyph.height == 0) {
+                local_cursor_x += glyph.advance_x * t.world_scale;
+                continue;
+            }
+
+            float w = glyph.width * t.world_scale;
+            float h = glyph.height * t.world_scale;
+
+            float top_left_x = local_cursor_x + glyph.bearing_x * t.world_scale;
+            float top_left_y = local_cursor_y - glyph.bearing_y * t.world_scale;
+
+            float local_x = top_left_x + w * 0.5f;
+            float local_y = top_left_y - h;
+
+            glm::vec3 local_pos = glm::vec3(local_x, local_y, 0.0f) + pivot_offset;
+            glm::vec3 world_pos = t.world_position + (ui_rotation * local_pos);
+
+            ui_sprite_batcher->draw(
+                SpriteBatcher::Drawcall{
+                    .position   = glm::vec3(glm::vec2(world_pos), 0.0f),
+                    .rotation   = ui_rotation,
+                    .size       = glm::vec2(w, h),
+                    .pivot      = {0.5f, 0.0f},
+                    .uvs        = glyph.uvs,
+                    .color      = tx.color,
+                    .data_index = tex_index,
+                }
+            );
+
+            local_cursor_x += glyph.advance_x * t.world_scale;
+        }
+    }
+    ui_sprite_batcher->end_batch();
+
     {
         void*  scene_ubo_ptr  = nullptr;
         size_t ubo_ptr_offset = (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
@@ -6017,6 +6153,7 @@ SpriteBatcher::SpriteBatcher(Renderer* renderer, uint32_t max_drawcalls) {
 
 void SpriteBatcher::reset() {
     drawcall_count = 0;
+    drawcall_batches.clear();
 }
 
 void SpriteBatcher::draw(const Drawcall& drawcall) {
@@ -6054,4 +6191,10 @@ void SpriteBatcher::build_geometry_buffer(
     );
 
     vkCmdDispatch(command_buffer, drawcall_count, 1, 1);
+}
+
+void SpriteBatcher::end_batch() {
+    drawcall_batches.push_back(
+        drawcall_count - (drawcall_batches.size() == 0 ? 0 : drawcall_batches[drawcall_batches.size() - 1])
+    );
 }
