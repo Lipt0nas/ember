@@ -1762,6 +1762,26 @@ void ScriptSystem::initialize(class World* world) {
     }
 
     {
+        engine->RegisterObjectType("Text", 0, asOBJ_REF | asOBJ_NOCOUNT);
+        engine->RegisterObjectProperty("Text", "string text", asOFFSET(components::Text, text));
+        engine->RegisterObjectProperty("Text", "vec4 color", asOFFSET(components::Text, color));
+        engine->RegisterObjectProperty("Text", "vec2 pivot", asOFFSET(components::Text, pivot));
+
+        auto type = engine->GetTypeInfoByName("Text");
+        if (!type) {
+            spdlog::error("Failed to get type info for Text component");
+            return;
+        }
+
+        component_retrieve_map.insert({
+            type->GetTypeId(),
+            [](Scene& scene, Entity e) {
+                return scene.get_component<components::Text>(e);
+            },
+        });
+    }
+
+    {
         engine->RegisterObjectType("Material", 0, asOBJ_REF | asOBJ_NOCOUNT);
         engine->RegisterObjectMethod(
             "Material", "vec4 get_albedo() property", asFUNCTION(material_get_albedo), asCALL_CDECL_OBJLAST

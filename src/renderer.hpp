@@ -27,6 +27,7 @@ public:
 
     struct SpriteVertex {
         glm::vec3 position;
+        glm::vec3 normal;
         glm::vec2 uv;
         glm::vec4 color;
         int       data_index;
@@ -43,10 +44,12 @@ public:
     void reset();
     void draw(const Drawcall& drawcall);
     void build_geometry_buffer(VmaAllocator vma_allocator, VkCommandBuffer command_buffer, uint32_t frame_index);
+    void end_batch();
 
     void destroy();
 
-    uint32_t drawcall_count = 0;
+    uint32_t              drawcall_count = 0;
+    std::vector<uint32_t> drawcall_batches;
 
 private:
     uint32_t frames_in_flight = 0;
@@ -529,8 +532,8 @@ private:
     Pipeline                     world_sprite_pipeline;
     std::vector<VkDescriptorSet> world_sprite_pipeline_descriptor_sets;
 
-    Pipeline                     ui_sprite_pipeline;
-    std::vector<VkDescriptorSet> ui_sprite_pipeline_descriptor_sets;
+    Pipeline ui_sprite_pipeline;
+    Pipeline ui_sprite_text_pipeline;
 
     std::vector<uint32_t> dynamic_offsets;
 

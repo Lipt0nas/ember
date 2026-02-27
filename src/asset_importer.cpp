@@ -10,6 +10,7 @@
 
 #include <stb_image.h>
 #include <stb_image_resize2.h>
+#include <stb_truetype.h>
 
 void AssetImporter::initialize(class World* world) {
     this->world = world;
@@ -1004,8 +1005,260 @@ bool AssetImporter::process_texture(
 
         ktxTexture_Destroy(ktxTexture(ktx_texture));
     } else {
-        spdlog::warn("Uncompressed textures not supported currently");
+        TextureAssetHeader header = {
+            .format              = format,
+            .width               = static_cast<uint32_t>(width),
+            .height              = static_cast<uint32_t>(height),
+            .mip_levels          = mip_levels,
+            .size                = data_size,
+            .compressed          = false,
+            .sampler_description = import_options.sampler_description,
+        };
+
+        std::ofstream               asset_file(destination, std::ios::binary);
+        cereal::BinaryOutputArchive archive(asset_file);
+        archive(header);
+        archive.saveBinary(data, data_size);
     }
 
     return true;
+}
+
+AssetID
+AssetImporter::import_font(const std::filesystem::path& path, const FontMetadata::FontImportOptions& import_options) {
+    spdlog::info("Importing font: {}", path.string());
+
+    auto source_destination = world->asset_registry.source_asset_path() / "fonts" / path.filename();
+    auto hash               = world->asset_registry.hash_path(source_destination);
+
+    auto processed_destination = world->asset_registry.stored_asset_path() / "fonts" / (std::to_string(hash) + ".font");
+    auto metadata_destination  = world->asset_registry.metadata_path() / "fonts" / (std::to_string(hash) + ".metadata");
+
+    std::filesystem::create_directories(source_destination.parent_path());
+    std::filesystem::create_directories(processed_destination.parent_path());
+    std::filesystem::create_directories(metadata_destination.parent_path());
+
+    try {
+        std::filesystem::copy(path, source_destination, std::filesystem::copy_options::overwrite_existing);
+    } catch (const std::filesystem::filesystem_error& e) {
+        spdlog::error("Failed to copy source file: {}", e.what());
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    std::ifstream font_file(source_destination, std::ios::in | std::ios::binary);
+    if (!font_file.is_open()) {
+        spdlog::error("Failed to open font file for reading");
+        return AssetMetadata::INVALID_METADATA;
+    }
+    std::vector<uint8_t> font_data((std::istreambuf_iterator<char>(font_file)), std::istreambuf_iterator<char>());
+
+    stbtt_fontinfo font;
+    stbtt_InitFont(&font, font_data.data(), 0);
+
+    spdlog::info("Font initialized");
+
+    Font asset;
+    asset.font_size = import_options.font_size;
+
+    struct GlyphBitmap {
+        uint32_t             codepoint;
+        int                  width;
+        int                  height;
+        int                  bearing_x;
+        int                  bearing_y;
+        float                advance;
+        std::vector<uint8_t> bitmap;
+    };
+
+    std::vector<GlyphBitmap> glyph_bitmaps;
+
+    const int   SDF_PADDING          = 8;
+    const int   SDF_ONEDGE_VALUE     = 128;
+    const float SDF_PIXEL_DIST_SCALE = 10.0f;
+    for (uint32_t i = 32; i < 128; i++) {
+        int glyph_index = stbtt_FindGlyphIndex(&font, i);
+        if (glyph_index == 0) {
+            continue;
+        }
+
+        GlyphBitmap bitmap;
+        bitmap.codepoint = i;
+
+        float scale = stbtt_ScaleForPixelHeight(&font, import_options.font_size);
+        int   advance;
+        int   lsb;
+        stbtt_GetGlyphHMetrics(&font, glyph_index, &advance, &lsb);
+        bitmap.advance = advance * scale;
+
+        unsigned char* sdf_bitmap = stbtt_GetGlyphSDF(
+            &font,
+            scale,
+            glyph_index,
+            SDF_PADDING,
+            SDF_ONEDGE_VALUE,
+            SDF_PIXEL_DIST_SCALE,
+            &bitmap.width,
+            &bitmap.height,
+            &bitmap.bearing_x,
+            &bitmap.bearing_y
+        );
+        if (sdf_bitmap == nullptr) {
+            Font::GlyphInfo glyph_info;
+            glyph_info.codepoint = i;
+            glyph_info.uvs       = {0.0f, 0.0f, 0.0f, 0.0f};
+            glyph_info.advance_x = bitmap.advance;
+            glyph_info.bearing_x = 0;
+            glyph_info.bearing_y = 0;
+            glyph_info.width     = 0;
+            glyph_info.height    = 0;
+
+            asset.glyphs[i] = glyph_info;
+            continue;
+        }
+
+        spdlog::info("Char '{}' ({}): bearing_y={}, height={}", (char)i, i, bitmap.bearing_y, bitmap.height);
+
+        bitmap.bitmap.assign(sdf_bitmap, sdf_bitmap + bitmap.width * bitmap.height);
+        stbtt_FreeSDF(sdf_bitmap, nullptr);
+
+        glyph_bitmaps.push_back(bitmap);
+    }
+
+    spdlog::info("packing bitmap");
+
+    int                  atlas_width  = 1024;
+    int                  atlas_height = 1024;
+    std::vector<uint8_t> atlas_data(atlas_width * atlas_height * 4, 0);
+
+    int current_x  = 0;
+    int current_y  = 0;
+    int row_height = 0;
+
+    const int ATLAS_GLYPH_PADDING = SDF_PADDING;
+    for (auto& gb : glyph_bitmaps) {
+        if (current_x + gb.width + ATLAS_GLYPH_PADDING > atlas_width) {
+            current_x = 0;
+            current_y += row_height + ATLAS_GLYPH_PADDING;
+            row_height = 0;
+        }
+
+        for (int y = 0; y < gb.height; y++) {
+            for (int x = 0; x < gb.width; x++) {
+                int atlas_idx = ((current_y + y) * atlas_width + (current_x + x)) * 4;
+                int glyph_idx = y * gb.width + x;
+
+                atlas_data[atlas_idx + 0] = gb.bitmap[glyph_idx];
+                atlas_data[atlas_idx + 1] = 0;
+                atlas_data[atlas_idx + 2] = 0;
+                atlas_data[atlas_idx + 3] = 255;
+            }
+        }
+
+        Font::GlyphInfo glyph_info;
+        glyph_info.codepoint = gb.codepoint;
+        glyph_info.uvs =
+            {
+                (float)current_x / atlas_width,
+                (float)current_y / atlas_height,
+                (float)(current_x + gb.width) / atlas_width,
+                (float)(current_y + gb.height) / atlas_height,
+            },
+        glyph_info.advance_x = gb.advance;
+        glyph_info.bearing_x = gb.bearing_x;
+        glyph_info.bearing_y = gb.bearing_y;
+        glyph_info.width     = gb.width;
+        glyph_info.height    = gb.height;
+
+        asset.glyphs[gb.codepoint] = glyph_info;
+
+        current_x += gb.width + ATLAS_GLYPH_PADDING;
+        row_height = std::max(row_height, gb.height);
+    }
+
+    int ascent;
+    int descent;
+    int line_gap;
+    stbtt_GetFontVMetrics(&font, &ascent, &descent, &line_gap);
+    float scale       = stbtt_ScaleForPixelHeight(&font, import_options.font_size);
+    asset.ascender    = ascent * scale;
+    asset.descender   = descent * scale;
+    asset.line_height = (ascent - descent + line_gap) * scale;
+
+    AssetID texture_atlas_id;
+    {
+        auto virtual_source =
+            world->asset_registry.source_asset_path() / "textures" / source_destination.stem() / "atlas";
+        auto hash = world->asset_registry.hash_path(virtual_source);
+        spdlog::info("Texture virtual source: {}", virtual_source.string());
+
+        auto tex_destination = world->asset_registry.stored_asset_path() / "textures" / (std::to_string(hash) + ".tex");
+        auto tex_metadata_destination =
+            world->asset_registry.metadata_path() / "textures" / (std::to_string(hash) + ".metadata");
+        spdlog::info("Texture destination: {}", tex_destination.string());
+
+        std::filesystem::create_directories(tex_destination.parent_path());
+        std::filesystem::create_directories(tex_metadata_destination.parent_path());
+
+        TextureMetadata::TextureImportOptions options = {
+            .is_srgb             = false,
+            .is_normal_map       = false,
+            .generate_mipmaps    = false,
+            .compression         = TextureMetadata::TextureImportOptions::Compression::None,
+            .sampler_description = {
+                .filter       = VK_FILTER_LINEAR,
+                .address_mode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+                .mipmap_mode  = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                .anisotropy   = 0.0f
+            }
+        };
+
+        if (!process_texture(tex_destination, atlas_width, atlas_height, 4, atlas_data.data(), options)) {
+            spdlog::error("Failed to process {} atlas texture", tex_destination.string());
+            return AssetMetadata::INVALID_METADATA;
+        }
+
+        std::ofstream             metadata_file(tex_metadata_destination);
+        cereal::JSONOutputArchive archive(metadata_file);
+
+        std::unique_ptr<TextureMetadata> metadata = std::make_unique<TextureMetadata>();
+        metadata->id                              = hash;
+        metadata->source_path                     = virtual_source.string();
+        metadata->asset_path                      = tex_destination.string();
+        metadata->type                            = AssetType::TEXTURE;
+        metadata->source_timestamp   = std::filesystem::last_write_time(source_destination).time_since_epoch().count();
+        metadata->imported_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+        metadata->standalone         = false;
+        metadata->import_options     = options;
+        archive(cereal::make_nvp("metadata", *metadata));
+
+        texture_atlas_id = hash;
+
+        world->asset_registry.register_asset(hash, std::move(metadata));
+    }
+
+    asset.atlas_texture_id = texture_atlas_id;
+    {
+        std::ofstream               asset_file(processed_destination, std::ios::binary);
+        cereal::BinaryOutputArchive archive(asset_file);
+        archive(asset);
+    }
+
+    std::ofstream             metadata_file(metadata_destination);
+    cereal::JSONOutputArchive archive(metadata_file);
+
+    std::unique_ptr<FontMetadata> metadata = std::make_unique<FontMetadata>();
+    metadata->id                           = hash;
+    metadata->source_path                  = source_destination.string();
+    metadata->asset_path                   = processed_destination.string();
+    metadata->type                         = AssetType::FONT;
+    metadata->source_timestamp   = std::filesystem::last_write_time(source_destination).time_since_epoch().count();
+    metadata->imported_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+    metadata->standalone         = true;
+    metadata->import_options     = import_options;
+    metadata->atlas_texture_id   = texture_atlas_id;
+    archive(cereal::make_nvp("metadata", *metadata));
+
+    world->asset_registry.register_asset(hash, std::move(metadata));
+
+    return hash;
 }

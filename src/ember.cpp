@@ -11,3 +11,6 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define TINYGLTF_NOEXCEPTION
 #include <tiny_gltf.h>
+
+#define STB_TRUETYPE_IMPLEMENTATION
+#include <stb_truetype.h>

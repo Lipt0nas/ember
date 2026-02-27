@@ -40,6 +40,8 @@ int World::load_texture(AssetID id) {
     TextureAssetHeader header;
     archive(header);
 
+    Image image;
+
     if (header.compressed) {
         std::vector<unsigned char> texture_data(header.size);
         archive.loadBinary(texture_data.data(), header.size);
@@ -72,13 +74,13 @@ int World::load_texture(AssetID id) {
             return -1;
         }
 
-        Image image = create_image(
+        image = create_image(
             static_cast<VkFormat>(header.format),
             header.width,
             header.height,
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT,
-            true,
+            header.mip_levels > 0,
             renderer.vma_allocator,
             renderer.device
         );
@@ -106,23 +108,45 @@ int World::load_texture(AssetID id) {
         }
         ktxTexture2_Destroy(ktx_texture);
 
-        auto sampler = get_sampler(header.sampler_description);
-
-        int index = resources.images.size();
-        resources.images.push_back({
-            .image         = image,
-            .sampler_index = 0,
-        });
-
-        texture_map.insert({id, index});
-        register_bindless_texture(index, sampler);
-
-        return index;
     } else {
-        spdlog::warn("Uncompressed texture loading is not supported yet");
+        image = create_image(
+            static_cast<VkFormat>(header.format),
+            header.width,
+            header.height,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            header.mip_levels > 0,
+            renderer.vma_allocator,
+            renderer.device
+        );
+
+        std::vector<unsigned char> texture_data(header.size);
+        archive.loadBinary(texture_data.data(), header.size);
+
+        void* staging_buffer_ptr = nullptr;
+        VK_CHECK(vmaMapMemory(renderer.vma_allocator, renderer.buffers.staging_buffer.allocation, &staging_buffer_ptr));
+        std::memcpy(staging_buffer_ptr, texture_data.data(), texture_data.size());
+        vmaUnmapMemory(renderer.vma_allocator, renderer.buffers.staging_buffer.allocation);
+
+        auto command_buffer = renderer.allocate_temporary_command_buffer();
+        copy_image_mip(
+            renderer.buffers.staging_buffer, image, 0, command_buffer, renderer.graphics_queue, renderer.device
+        );
+        renderer.free_temporary_command_buffer(command_buffer);
     }
 
-    return -1;
+    auto sampler = get_sampler(header.sampler_description);
+
+    int index = resources.images.size();
+    resources.images.push_back({
+        .image         = image,
+        .sampler_index = 0,
+    });
+
+    texture_map.insert({id, index});
+    register_bindless_texture(index, sampler);
+
+    return index;
 }
 
 int World::load_texture(const std::string& path) {
@@ -323,6 +347,42 @@ int World::load_mesh(AssetID id) {
 
 int World::load_mesh(const std::string& path) {
     return load_mesh(asset_registry.hash_path(asset_registry.root_path() / path));
+}
+
+int World::load_font(AssetID id) {
+    auto it = font_map.find(id);
+    if (it != font_map.end()) {
+        return it->second;
+    }
+
+    auto metadata = asset_registry.get_metadata<FontMetadata>(id);
+    if (!metadata) {
+        spdlog::error("Failed to load font {}", id);
+        return -1;
+    }
+
+    std::ifstream asset_file(metadata->asset_path, std::ios::binary);
+    if (!asset_file.is_open()) {
+        spdlog::error("Failed to open font {} for reading", metadata->asset_path);
+        return -1;
+    }
+
+    cereal::BinaryInputArchive archive(asset_file);
+
+    Font font;
+    archive(font);
+
+    load_texture(font.atlas_texture_id);
+
+    int index = resources.fonts.size();
+    resources.fonts.push_back(font);
+    font_map[id] = index;
+
+    return index;
+}
+
+int World::load_font(const std::string& path) {
+    return load_font(asset_registry.hash_path(asset_registry.root_path() / path));
 }
 
 int World::load_material(AssetID id) {

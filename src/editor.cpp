@@ -9,6 +9,33 @@
 #include <imgui_internal.h>
 #include <imgui_stdlib.h>
 
+void append_node(World* world, const ModelMetadata::NodeDescription& desc, Entity parent) {
+    auto node = world->scene.create_node(desc.name);
+
+    auto t      = world->scene.get_component<components::Transform>(node);
+    t->position = desc.position;
+    t->scale    = desc.scale;
+    t->rotation = desc.rotation;
+
+    if (desc.material_id != AssetMetadata::INVALID_METADATA) {
+        auto& mat = world->scene.add_component<components::Material>(node);
+        mat.id    = desc.material_id;
+    }
+
+    if (desc.mesh_id != AssetMetadata::INVALID_METADATA) {
+        auto& mesh = world->scene.add_component<components::Mesh>(node);
+        mesh.id    = desc.mesh_id;
+    }
+
+    if (parent != entt::null) {
+        world->scene.set_node_parent(node, parent);
+    }
+
+    for (auto& child : desc.children) {
+        append_node(world, child, node);
+    }
+}
+
 template <> bool Editor::render_component_ui<components::Transform>(Entity e) {
     bool edited = false;
 
@@ -593,16 +620,16 @@ template <> bool Editor::render_component_ui<components::UISprite>(Entity e) {
         ImGui::EndDragDropTarget();
     }
 
-    ImGui::DragFloat2("Size", &s->size.x);
+    ImGui::DragFloat2("Size", &s->size.x, 0.01f);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::DragFloat2("Pivot", &s->pivot.x);
+    ImGui::DragFloat2("Pivot", &s->pivot.x, 0.01f);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::DragFloat4("UV's", &s->uvs.x);
+    ImGui::DragFloat4("UV's", &s->uvs.x, 0.01f);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::ColorEdit4("Tint", &s->color.x);
+    ImGui::ColorEdit4("Tint", &s->color.x, 0.01f);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     return edited;
@@ -613,13 +640,59 @@ template <> bool Editor::render_component_ui<components::Sprite>(Entity e) {
 
     auto* s = world->scene.get_component<components::Sprite>(e);
 
-    ImGui::DragFloat2("Size", &s->size.x);
+    ImGui::DragFloat2("Size", &s->size.x, 0.01f);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::DragFloat2("Pivot", &s->pivot.x);
+    ImGui::DragFloat2("Pivot", &s->pivot.x, 0.01f);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::DragFloat4("UV's", &s->uvs.x);
+    ImGui::DragFloat4("UV's", &s->uvs.x, 0.01f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    return edited;
+}
+
+template <> bool Editor::render_component_ui<components::Text>(Entity e) {
+    bool edited = false;
+
+    auto* t = world->scene.get_component<components::Text>(e);
+
+    auto metadata = world->asset_registry.get_metadata<FontMetadata>(t->font_id);
+    ImGui::Text(ICON_FA_FONT "  Font: ");
+    ImGui::SameLine();
+    if (metadata) {
+        ImGui::Text("%s", metadata->source_path.c_str());
+    } else {
+        ImGui::Text("Invalid");
+    }
+    ImGui::NewLine();
+
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* payload =
+            ImGui::AcceptDragDropPayload(get_asset_info(AssetType::FONT).drag_drop_id.c_str());
+        if (payload) {
+            AssetID new_id = *(AssetID*)payload->Data;
+            if (t->font_id != new_id) {
+                t->font_id = new_id;
+                edited     = true;
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    static std::string temp_string;
+    if (temp_string.compare(t->text) != 0) {
+        temp_string = t->text;
+    }
+
+    if (ImGui::InputText("##text", &temp_string, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        if (t->text.compare(temp_string) != 0) {
+            t->text = temp_string;
+            edited  = true;
+        }
+    }
+
+    ImGui::DragFloat2("Pivot", &t->pivot.x, 0.01f);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     return edited;
@@ -668,6 +741,12 @@ Editor::Editor() {
              .icon          = ICON_FA_IMAGE,
              .category_name = "Textures",
              .drag_drop_id  = "DRAG_DROP_TEXTURE",
+         }},
+        {AssetType::FONT,
+         AssetTypeInfo{
+             .icon          = ICON_FA_FONT,
+             .category_name = "Fonts",
+             .drag_drop_id  = "DRAG_DROP_FONT",
          }},
         {AssetType::UNSUPPORTED,
          AssetTypeInfo{
@@ -1182,6 +1261,9 @@ void Editor::render_asset_importer() {
             ImGui::CloseCurrentPopup();
             import_dialog_open = false;
             break;
+        case AssetType::FONT:
+            render_font_import_dialog(font_import_options);
+            break;
         }
 
         ImGui::NewLine();
@@ -1200,6 +1282,9 @@ void Editor::render_asset_importer() {
             case AssetType::SHADER:
             case AssetType::SCRIPT:
             case AssetType::SOUND:
+                break;
+            case AssetType::FONT:
+                asset_importer.import_font(import_asset_path, font_import_options);
                 break;
             }
 
@@ -1413,6 +1498,11 @@ void Editor::render_model_import_dialog(ModelMetadata::ModelImportOptions& optio
     render_texture_import_dialog(options.texture_import_options);
 }
 
+void Editor::render_font_import_dialog(FontMetadata::FontImportOptions& options) {
+    ImGui::InputFloat("Font Size", &options.font_size);
+    ImGui::Checkbox("SDF Font", &options.is_sdf);
+}
+
 bool Editor::draw_asset(
     const char* icon, const char* label, const char* drag_drop_id, AssetID asset_id, bool& selected
 ) {
@@ -1421,6 +1511,19 @@ bool Editor::draw_asset(
     ImVec2 cursor_pos = ImGui::GetCursorPos();
 
     bool clicked = ImGui::InvisibleButton("##asset", ImVec2(asset_icon_width, asset_icon_height));
+
+    // TODO: this is temporary (i hope)
+    auto asset = world->asset_registry.get_metadata<ModelMetadata>(asset_id);
+    if (asset != nullptr) {
+        if (ImGui::BeginPopupContextItem()) {
+            if (ImGui::MenuItem("Append scene to world")) {
+                for (auto& desc : asset->scene_description.nodes) {
+                    append_node(world, desc, entt::null);
+                }
+            }
+            ImGui::EndPopup();
+        }
+    }
     bool hovered = ImGui::IsItemHovered();
 
     if (clicked) {

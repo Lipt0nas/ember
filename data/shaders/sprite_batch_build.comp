@@ -27,12 +27,12 @@ void main() {
     SpriteDraw drawcall = draw_calls[drawcall_id];
 
     vec2 uvs[6] = vec2[](
-            drawcall.uvs.xy,
-            drawcall.uvs.zy,
             drawcall.uvs.xw,
-            drawcall.uvs.zy,
             drawcall.uvs.zw,
-            drawcall.uvs.xw
+            drawcall.uvs.xy,
+            drawcall.uvs.zw,
+            drawcall.uvs.zy,
+            drawcall.uvs.xy
         );
 
     vec2 offsets[6] = vec2[](

@@ -711,53 +711,6 @@ int main(int argc, char* argv[]) {
         }
 
         {
-            ZoneScopedN("Update Character Controllers");
-            auto view = world.scene.entity_registry.view<components::CharacterController, components::Transform>();
-
-            for (auto [e, c, t] : view.each()) {
-                if (!c.controller) {
-                    continue;
-                }
-
-                JPH::CharacterVirtual::EGroundState ground_state = c.controller->GetGroundState();
-                c.is_grounded = (ground_state == JPH::CharacterVirtual::EGroundState::OnGround);
-
-                JPH::Vec3 jolt_normal = c.controller->GetGroundNormal();
-                c.ground_normal       = glm::vec3(jolt_normal.GetX(), jolt_normal.GetY(), jolt_normal.GetZ());
-
-                if (!c.is_grounded) {
-                    JPH::Vec3 current_vel = c.controller->GetLinearVelocity();
-                    JPH::Vec3 gravity     = world.physics.system.GetGravity();
-
-                    c.velocity.y = current_vel.GetY() + gravity.GetY() * delta_time;
-                }
-
-                c.controller->SetLinearVelocity(JPH::Vec3(c.velocity.x, c.velocity.y, c.velocity.z));
-
-                JPH::CharacterVirtual::ExtendedUpdateSettings update_settings;
-                update_settings.mStickToFloorStepDown = JPH::Vec3(0, -c.step_down_distance, 0);
-                update_settings.mWalkStairsStepUp     = JPH::Vec3(0, c.step_up_height, 0);
-
-                c.controller->ExtendedUpdate(
-                    delta_time,
-                    world.physics.system.GetGravity(),
-                    update_settings,
-                    world.physics.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
-                    world.physics.system.GetDefaultLayerFilter(Layers::MOVING),
-                    {},
-                    {},
-                    *world.physics.temp_allocator
-                );
-
-                JPH::RVec3 new_pos = c.controller->GetPosition();
-                t.position         = glm::vec3(new_pos.GetX(), new_pos.GetY(), new_pos.GetZ());
-
-                JPH::Vec3 new_vel = c.controller->GetLinearVelocity();
-                c.velocity        = glm::vec3(new_vel.GetX(), new_vel.GetY(), new_vel.GetZ());
-            }
-        }
-
-        {
             ZoneScopedN("Physics Sync Bodies");
             auto view = world.scene.entity_registry.view<components::Transform, components::Physics>();
             for (auto [entity, transform, physics] : view.each()) {
@@ -882,6 +835,51 @@ int main(int argc, char* argv[]) {
             auto script_view = world.scene.entity_registry.view<components::Script>();
             for (auto [e, s] : script_view.each()) {
                 world.script.call_on_update(s, delta_time);
+            }
+        }
+
+        {
+            ZoneScopedN("Update Character Controllers");
+            auto view = world.scene.entity_registry.view<components::CharacterController, components::Transform>();
+
+            for (auto [e, c, t] : view.each()) {
+                if (!c.controller) {
+                    continue;
+                }
+
+                JPH::CharacterVirtual::EGroundState ground_state = c.controller->GetGroundState();
+                c.is_grounded = (ground_state == JPH::CharacterVirtual::EGroundState::OnGround);
+
+                JPH::Vec3 jolt_normal = c.controller->GetGroundNormal();
+                c.ground_normal       = glm::vec3(jolt_normal.GetX(), jolt_normal.GetY(), jolt_normal.GetZ());
+
+                if (!c.is_grounded) {
+                    JPH::Vec3 gravity = world.physics.system.GetGravity();
+                    c.velocity.y      = c.velocity.y + gravity.GetY() * delta_time;
+                }
+
+                c.controller->SetLinearVelocity(JPH::Vec3(c.velocity.x, c.velocity.y, c.velocity.z));
+
+                JPH::CharacterVirtual::ExtendedUpdateSettings update_settings;
+                update_settings.mStickToFloorStepDown = JPH::Vec3(0, -c.step_down_distance, 0);
+                update_settings.mWalkStairsStepUp     = JPH::Vec3(0, c.step_up_height, 0);
+
+                c.controller->ExtendedUpdate(
+                    delta_time,
+                    world.physics.system.GetGravity(),
+                    update_settings,
+                    world.physics.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
+                    world.physics.system.GetDefaultLayerFilter(Layers::MOVING),
+                    {},
+                    {},
+                    *world.physics.temp_allocator
+                );
+
+                JPH::RVec3 new_pos = c.controller->GetPosition();
+                t.position         = glm::vec3(new_pos.GetX(), new_pos.GetY(), new_pos.GetZ());
+
+                JPH::Vec3 new_vel = c.controller->GetLinearVelocity();
+                c.velocity        = glm::vec3(new_vel.GetX(), new_vel.GetY(), new_vel.GetZ());
             }
         }
 
