@@ -1414,6 +1414,59 @@ namespace {
     void material_reset_overrides(components::Material* mat) {
         mat->overrides = MaterialOverrides{};
     }
+
+    void component_play_sound(components::Sound* sound) {
+        auto world = get_world_from_context();
+
+        auto entity = world->scene.get_node_from_component(*sound);
+        if (world->scene.entity_registry.valid(entity)) {
+            sound->instance_id = get_world_from_context()->node_play_sound(entity);
+        }
+    }
+
+    void component_stop_sound(components::Sound* sound) {
+        get_world_from_context()->sound.stop_sound(sound->instance_id);
+    }
+
+    int world_play_sound(const std::string& asset_id, bool spatial) {
+        return get_world_from_context()->play_sound(asset_id, spatial);
+    }
+
+    void world_stop_sound(int sound_id) {
+        get_world_from_context()->sound.stop_sound(sound_id);
+    }
+
+    void world_set_sound_volume(int sound_id, float volume) {
+        get_world_from_context()->sound.set_sound_volume(sound_id, volume);
+    }
+
+    void world_set_sound_pitch(int sound_id, float pitch) {
+        get_world_from_context()->sound.set_sound_pitch(sound_id, pitch);
+    }
+
+    void world_set_sound_min_distance(int sound_id, float min_distance) {
+        get_world_from_context()->sound.set_sound_min_distance(sound_id, min_distance);
+    }
+
+    void world_set_sound_max_distance(int sound_id, float max_distance) {
+        get_world_from_context()->sound.set_sound_max_distance(sound_id, max_distance);
+    }
+
+    void world_set_sound_rolloff(int sound_id, float rolloff) {
+        get_world_from_context()->sound.set_sound_rolloff(sound_id, rolloff);
+    }
+
+    void world_set_sound_looping(int sound_id, bool looping) {
+        get_world_from_context()->sound.set_sound_looping(sound_id, looping);
+    }
+
+    void world_set_sound_position(int sound_id, glm::vec3 position) {
+        get_world_from_context()->sound.set_sound_position(sound_id, position);
+    }
+
+    void world_set_sound_listener(glm::vec3 position, glm::vec3 direction) {
+        get_world_from_context()->sound.set_listener(position, direction);
+    }
 } // namespace
 
 void node_get_component(asIScriptGeneric* gen) {
@@ -1836,6 +1889,7 @@ void ScriptSystem::initialize(class World* world) {
 
     register_camera_component(engine);
     register_character_controller_component(engine);
+    register_sound_component(engine);
 
     engine->SetDefaultNamespace("World");
     engine->RegisterGlobalFunction(
@@ -1861,6 +1915,31 @@ void ScriptSystem::initialize(class World* world) {
 
     engine->RegisterGlobalFunction(
         "Node find_node(string &in)", asMETHOD(ScriptSystem, ScriptSystem::find_node), asCALL_THISCALL_ASGLOBAL, this
+    );
+
+    engine->RegisterGlobalFunction("int play_sound(string &in, bool)", asFUNCTION(world_play_sound), asCALL_CDECL);
+    engine->RegisterGlobalFunction("void stop_sound(int)", asFUNCTION(world_stop_sound), asCALL_CDECL);
+    engine->RegisterGlobalFunction(
+        "void set_sound_volume(int, float)", asFUNCTION(world_set_sound_volume), asCALL_CDECL
+    );
+    engine->RegisterGlobalFunction("void set_sound_pitch(int, float)", asFUNCTION(world_set_sound_pitch), asCALL_CDECL);
+    engine->RegisterGlobalFunction(
+        "void set_sound_min_distance(int, float)", asFUNCTION(world_set_sound_min_distance), asCALL_CDECL
+    );
+    engine->RegisterGlobalFunction(
+        "void set_sound_max_distance(int, float)", asFUNCTION(world_set_sound_max_distance), asCALL_CDECL
+    );
+    engine->RegisterGlobalFunction(
+        "void set_sound_rolloff(int, float)", asFUNCTION(world_set_sound_rolloff), asCALL_CDECL
+    );
+    engine->RegisterGlobalFunction(
+        "void set_sound_looping(int, bool)", asFUNCTION(world_set_sound_looping), asCALL_CDECL
+    );
+    engine->RegisterGlobalFunction(
+        "void set_sound_position(int, vec3)", asFUNCTION(world_set_sound_position), asCALL_CDECL
+    );
+    engine->RegisterGlobalFunction(
+        "void set_sound_listener(vec3, vec3)", asFUNCTION(world_set_sound_listener), asCALL_CDECL
     );
 
     engine->SetDefaultNamespace("Random");
@@ -2711,6 +2790,35 @@ void ScriptSystem::register_character_controller_component(class asIScriptEngine
         type->GetTypeId(),
         [](Scene& scene, Entity e) {
             return scene.get_component<components::CharacterController>(e);
+        },
+    });
+}
+
+void ScriptSystem::register_sound_component(class asIScriptEngine* engine) {
+    engine->RegisterObjectType("Sound", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    engine->RegisterObjectProperty("Sound", "float volume", asOFFSET(components::Sound, volume));
+    engine->RegisterObjectProperty("Sound", "float pitch", asOFFSET(components::Sound, pitch));
+    engine->RegisterObjectProperty("Sound", "float min_distance", asOFFSET(components::Sound, min_distance));
+    engine->RegisterObjectProperty("Sound", "float max_distance", asOFFSET(components::Sound, max_distance));
+    engine->RegisterObjectProperty("Sound", "float rolloff", asOFFSET(components::Sound, rolloff));
+    engine->RegisterObjectProperty("Sound", "const bool spacial", asOFFSET(components::Sound, spatial));
+    engine->RegisterObjectProperty("Sound", "const bool autoplay", asOFFSET(components::Sound, autoplay));
+    engine->RegisterObjectProperty("Sound", "bool loop", asOFFSET(components::Sound, loop));
+    engine->RegisterObjectProperty("Sound", "const int instance_id", asOFFSET(components::Sound, instance_id));
+
+    engine->RegisterObjectMethod("Sound", "void play()", asFUNCTION(component_play_sound), asCALL_CDECL_OBJFIRST);
+    engine->RegisterObjectMethod("Sound", "void stop()", asFUNCTION(component_stop_sound), asCALL_CDECL_OBJFIRST);
+
+    auto type = engine->GetTypeInfoByName("Sound");
+    if (!type) {
+        spdlog::error("Failed to get type info for Sound component");
+        return;
+    }
+
+    component_retrieve_map.insert({
+        type->GetTypeId(),
+        [](Scene& scene, Entity e) {
+            return scene.get_component<components::Sound>(e);
         },
     });
 }

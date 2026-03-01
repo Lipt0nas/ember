@@ -5,6 +5,7 @@
 #include "ember.hpp"
 #include "geometry.hpp"
 #include "physics.hpp"
+#include "sound_system.hpp"
 
 #include <memory>
 #include <variant>
@@ -193,6 +194,21 @@ namespace components {
         AssetID font_id = AssetMetadata::INVALID_METADATA;
     };
 
+    struct Sound {
+        AssetID sound_id = AssetMetadata::INVALID_METADATA;
+
+        float volume       = 1.0f;
+        float pitch        = 1.0f;
+        float min_distance = 1.0f;
+        float max_distance = 50.0f;
+        float rolloff      = 1.0f;
+        bool  spatial      = true;
+        bool  autoplay     = false;
+        bool  loop         = false;
+
+        int instance_id = SoundSystem::INVALID_SOUND_INSTANCE;
+    };
+
     template <typename Archive> void serialize(Archive& archive, Transform& transform) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
             archive(
@@ -359,6 +375,35 @@ namespace components {
             );
         } else {
             archive(text.text, text.color, text.pivot, text.font_id);
+        }
+    }
+
+    template <typename Archive> void serialize(Archive& archive, Sound& sound) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("id", sound.sound_id),
+                cereal::make_nvp("volume", sound.volume),
+                cereal::make_nvp("pitch", sound.pitch),
+                cereal::make_nvp("min_distance", sound.min_distance),
+                cereal::make_nvp("max_distance", sound.max_distance),
+                cereal::make_nvp("rolloff", sound.rolloff),
+                cereal::make_nvp("spatial", sound.spatial),
+                cereal::make_nvp("autoplay", sound.autoplay),
+                cereal::make_nvp("loop", sound.autoplay)
+
+            );
+        } else {
+            archive(
+                sound.sound_id,
+                sound.volume,
+                sound.pitch,
+                sound.min_distance,
+                sound.max_distance,
+                sound.rolloff,
+                sound.spatial,
+                sound.autoplay,
+                sound.loop
+            );
         }
     }
 

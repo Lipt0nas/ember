@@ -16,6 +16,10 @@ AssetRegistry::AssetRegistry() {
         {".as", AssetType::SCRIPT},
 
         {".ttf", AssetType::FONT},
+
+        {".wav", AssetType::SOUND},
+        {".mp3", AssetType::SOUND},
+        {".flac", AssetType::SOUND},
     };
 }
 
@@ -75,13 +79,18 @@ void AssetRegistry::load(const std::filesystem::path& path) {
                 break;
             case AssetType::SCRIPT:
                 break;
-            case AssetType::SOUND:
+            case AssetType::SOUND: {
+                auto sound_metadata = std::make_unique<SoundMetadata>();
+                archive(*sound_metadata);
+                handle = std::move(sound_metadata);
                 break;
-            case AssetType::FONT:
+            }
+            case AssetType::FONT: {
                 auto font_metadata = std::make_unique<FontMetadata>();
                 archive(*font_metadata);
                 handle = std::move(font_metadata);
                 break;
+            }
             }
 
             if (handle) {

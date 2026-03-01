@@ -646,6 +646,12 @@ int main(int argc, char* argv[]) {
                 editor_overlay   = true;
                 world.is_running = false;
 
+                auto sound_view = world.scene.entity_registry.view<components::Sound>();
+                for (auto [e, s] : sound_view.each()) {
+                    s.instance_id = SoundSystem::INVALID_SOUND_INSTANCE;
+                }
+                world.sound.stop_all_sounds();
+
                 auto physics_view = world.scene.entity_registry.view<components::Physics>();
                 for (auto [e, p] : physics_view.each()) {
                     if (!p.body_id.IsInvalid()) {
@@ -693,6 +699,13 @@ int main(int argc, char* argv[]) {
                     c.controller->SetEnhancedInternalEdgeRemoval(c.enhanced_edge_removal);
                 }
 
+                auto sound_view = world.scene.entity_registry.view<components::Sound>();
+                for (auto [e, s] : sound_view.each()) {
+                    if (s.autoplay && s.instance_id == SoundSystem::INVALID_SOUND_INSTANCE) {
+                        s.instance_id = world.node_play_sound(e);
+                    }
+                }
+
                 auto view = world.scene.entity_registry.view<components::Script>();
                 for (auto [e, s] : view.each()) {
                     world.script.construct_script_objects(e, s);
@@ -708,6 +721,24 @@ int main(int argc, char* argv[]) {
             SDL_SetWindowMouseGrab(window, true);
             SDL_SetWindowRelativeMouseMode(window, true);
             capturing_mouse = true;
+        }
+
+        {
+            auto view = world.scene.entity_registry.view<components::Transform, components::Sound>();
+            for (auto [entity, t, s] : view.each()) {
+                world.sound.set_sound_properties(
+                    s.instance_id,
+                    s.volume,
+                    s.pitch,
+                    s.min_distance,
+                    s.max_distance,
+                    s.rolloff,
+                    s.loop,
+                    t.world_position
+                );
+            }
+
+            world.sound.update();
         }
 
         {

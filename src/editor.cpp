@@ -698,6 +698,64 @@ template <> bool Editor::render_component_ui<components::Text>(Entity e) {
     return edited;
 }
 
+template <> bool Editor::render_component_ui<components::Sound>(Entity e) {
+    bool edited = false;
+
+    auto* s = world->scene.get_component<components::Sound>(e);
+
+    auto metadata = world->asset_registry.get_metadata<SoundMetadata>(s->sound_id);
+    ImGui::Text(ICON_FA_VOLUME_UP "  Sound: ");
+    ImGui::SameLine();
+    if (metadata) {
+        ImGui::Text("%s", metadata->source_path.c_str());
+    } else {
+        ImGui::Text("Invalid");
+    }
+    ImGui::NewLine();
+
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* payload =
+            ImGui::AcceptDragDropPayload(get_asset_info(AssetType::SOUND).drag_drop_id.c_str());
+        if (payload) {
+            AssetID new_id = *(AssetID*)payload->Data;
+            if (s->sound_id != new_id) {
+                s->sound_id = new_id;
+                edited      = true;
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    ImGui::SliderFloat("Volume", &s->volume, 0.0f, 1.0f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::DragFloat("Pitch", &s->pitch, 0.01f, 0.1f, 4.0f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::DragFloat("Min Distance", &s->min_distance, 0.1f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::DragFloat("Max Distance", &s->max_distance, 0.1f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::SliderFloat("Rolloff", &s->rolloff, 0.0f, 1.0f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    if (ImGui::Checkbox("Spatial", &s->spatial)) {
+        edited |= true;
+    }
+
+    if (ImGui::Checkbox("Auto Play", &s->autoplay)) {
+        edited |= true;
+    }
+
+    if (ImGui::Checkbox("Loop", &s->loop)) {
+        edited |= true;
+    }
+
+    return edited;
+}
+
 Editor::Editor() {
     asset_type_infos = {
         {AssetType::MATERIAL,
@@ -1253,10 +1311,12 @@ void Editor::render_asset_importer() {
         case AssetType::MODEL:
             render_model_import_dialog(model_import_options);
             break;
+        case AssetType::SOUND:
+            render_sound_import_dialog(sound_import_options);
+            break;
         case AssetType::MATERIAL:
         case AssetType::SHADER:
         case AssetType::SCRIPT:
-        case AssetType::SOUND:
             spdlog::warn("Importer for {} is not implemented", import_asset_path.string());
             ImGui::CloseCurrentPopup();
             import_dialog_open = false;
@@ -1278,10 +1338,12 @@ void Editor::render_asset_importer() {
             case AssetType::MODEL:
                 asset_importer.import_model(import_asset_path, model_import_options);
                 break;
+            case AssetType::SOUND:
+                asset_importer.import_sound(import_asset_path, sound_import_options);
+                break;
             case AssetType::MATERIAL:
             case AssetType::SHADER:
             case AssetType::SCRIPT:
-            case AssetType::SOUND:
                 break;
             case AssetType::FONT:
                 asset_importer.import_font(import_asset_path, font_import_options);
@@ -1501,6 +1563,10 @@ void Editor::render_model_import_dialog(ModelMetadata::ModelImportOptions& optio
 void Editor::render_font_import_dialog(FontMetadata::FontImportOptions& options) {
     ImGui::InputFloat("Font Size", &options.font_size);
     ImGui::Checkbox("SDF Font", &options.is_sdf);
+}
+
+void Editor::render_sound_import_dialog(SoundMetadata::SoundImportOptions& options) {
+    ImGui::Checkbox("Stream", &options.stream);
 }
 
 bool Editor::draw_asset(
