@@ -1262,3 +1262,43 @@ AssetImporter::import_font(const std::filesystem::path& path, const FontMetadata
 
     return hash;
 }
+
+AssetID AssetImporter::import_sound(
+    const std::filesystem::path& path, const SoundMetadata::SoundImportOptions& import_options
+) {
+
+    spdlog::info("Importing sound: {}", path.string());
+
+    auto source_destination = world->asset_registry.source_asset_path() / "sounds" / path.filename();
+    auto hash               = world->asset_registry.hash_path(source_destination);
+
+    auto metadata_destination = world->asset_registry.metadata_path() / "sounds" / (std::to_string(hash) + ".metadata");
+
+    std::filesystem::create_directories(source_destination.parent_path());
+    std::filesystem::create_directories(metadata_destination.parent_path());
+
+    try {
+        std::filesystem::copy(path, source_destination, std::filesystem::copy_options::overwrite_existing);
+    } catch (const std::filesystem::filesystem_error& e) {
+        spdlog::error("Failed to copy source file: {}", e.what());
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    std::ofstream             metadata_file(metadata_destination);
+    cereal::JSONOutputArchive archive(metadata_file);
+
+    std::unique_ptr<SoundMetadata> metadata = std::make_unique<SoundMetadata>();
+    metadata->id                            = hash;
+    metadata->source_path                   = source_destination.string();
+    metadata->asset_path                    = source_destination.string();
+    metadata->type                          = AssetType::SOUND;
+    metadata->source_timestamp   = std::filesystem::last_write_time(source_destination).time_since_epoch().count();
+    metadata->imported_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+    metadata->standalone         = true;
+    metadata->import_options     = import_options;
+    archive(cereal::make_nvp("metadata", *metadata));
+
+    world->asset_registry.register_asset(hash, std::move(metadata));
+
+    return hash;
+}

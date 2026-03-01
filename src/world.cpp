@@ -13,6 +13,7 @@ void World::initialize(SDL_Window* window, bool meshlets_enabled, bool hardware_
     this->script.initialize(this);
     this->asset_registry.initialize(this);
     this->renderer.initialize(this, window, meshlets_enabled, hardware_rt_enabled, vsync);
+    this->sound.initialize();
 }
 
 int World::load_texture(AssetID id) {
@@ -385,6 +386,36 @@ int World::load_font(const std::string& path) {
     return load_font(asset_registry.hash_path(asset_registry.root_path() / path));
 }
 
+int World::load_sound(AssetID id) {
+    auto it = sound_map.find(id);
+    if (it != sound_map.end()) {
+        return it->second;
+    }
+
+    auto metadata = asset_registry.get_metadata<SoundMetadata>(id);
+    if (!metadata) {
+        spdlog::error("Failed to load sound {}", id);
+        return -1;
+    }
+
+    Sound sound = {
+        .path   = metadata->asset_path,
+        .stream = metadata->import_options.stream,
+    };
+
+    this->sound.preload(sound);
+
+    int index = resources.sounds.size();
+    resources.sounds.push_back(sound);
+    sound_map[id] = index;
+
+    return index;
+}
+
+int World::load_sound(const std::string& path) {
+    return load_sound(asset_registry.hash_path(asset_registry.root_path() / path));
+}
+
 int World::load_material(AssetID id) {
     auto it = material_map.find(id);
     if (it != material_map.end()) {
@@ -603,4 +634,44 @@ void World::cleanup() {
 
     scene.cleanup();
     renderer.cleanup();
+}
+
+int World::node_play_sound(Entity e) {
+    auto s = scene.get_component<components::Sound>(e);
+    if (!s) {
+        return SoundSystem::INVALID_SOUND_INSTANCE;
+    }
+
+    auto t = scene.get_component<components::Transform>(e);
+
+    int index = load_sound(s->sound_id);
+    if (index == -1) {
+        spdlog::error("Failed to play sound");
+        return SoundSystem::INVALID_SOUND_INSTANCE;
+    }
+
+    auto& sound = resources.sounds[index];
+
+    int sound_index = this->sound.play_sound(sound.path.c_str(), s->spatial);
+    this->sound.set_sound_properties(
+        sound_index, s->volume, s->pitch, s->min_distance, s->max_distance, s->rolloff, s->loop, t->world_position
+    );
+
+    return sound_index;
+}
+
+int World::play_sound(AssetID id, bool spatial) {
+    int index = load_sound(id);
+    if (index == -1) {
+        spdlog::error("Failed to play sound");
+        return SoundSystem::INVALID_SOUND_INSTANCE;
+    }
+
+    auto& sound = resources.sounds[index];
+
+    return this->sound.play_sound(sound.path.c_str(), spatial);
+}
+
+int World::play_sound(const std::string& path, bool spatial) {
+    return play_sound(asset_registry.hash_path(asset_registry.root_path() / path), spatial);
 }

@@ -9,6 +9,7 @@
 #include "resources.hpp"
 #include "scene.hpp"
 #include "script_system.hpp"
+#include "sound_system.hpp"
 
 class World {
 public:
@@ -16,6 +17,7 @@ public:
     PhysicsSystem physics;
     InputSystem   input;
     ScriptSystem  script;
+    SoundSystem   sound;
     Scene         scene;
     AssetRegistry asset_registry;
 
@@ -26,6 +28,7 @@ public:
         std::vector<Material>               materials;
         std::vector<Material>               runtime_materials;
         std::vector<Font>                   fonts;
+        std::vector<Sound>                  sounds;
     } resources;
 
     // True when in the "play" state
@@ -46,6 +49,9 @@ public:
     int load_font(AssetID id);
     int load_font(const std::string& path);
 
+    int load_sound(AssetID id);
+    int load_sound(const std::string& path);
+
     int       load_material(AssetID id);
     int       load_material(const std::string& path);
     Material* get_material(AssetID id);
@@ -58,10 +64,15 @@ public:
 
     bool load_collision_mesh(AssetID id, JPH::TriangleList& triangles);
 
+    int node_play_sound(Entity e);
+    int play_sound(AssetID id, bool spatial = false);
+    int play_sound(const std::string& path, bool spatial = false);
+
     std::unordered_map<AssetID, int> texture_map;
     std::unordered_map<AssetID, int> mesh_map;
     std::unordered_map<AssetID, int> material_map;
     std::unordered_map<AssetID, int> font_map;
+    std::unordered_map<AssetID, int> sound_map;
 
     void cleanup();
 

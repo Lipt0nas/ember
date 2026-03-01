@@ -3,6 +3,11 @@
 #include "asset.hpp"
 #include "ember.hpp"
 
+struct Sound {
+    std::string path;
+    bool        stream = false;
+};
+
 struct Font {
     AssetID atlas_texture_id;
 

@@ -67,11 +67,13 @@ private:
     MeshMetadata::MeshImportOptions       mesh_import_options;
     ModelMetadata::ModelImportOptions     model_import_options;
     FontMetadata::FontImportOptions       font_import_options;
+    SoundMetadata::SoundImportOptions     sound_import_options;
 
     void render_texture_import_dialog(TextureMetadata::TextureImportOptions& options);
     void render_mesh_import_dialog(MeshMetadata::MeshImportOptions& options);
     void render_model_import_dialog(ModelMetadata::ModelImportOptions& options);
     void render_font_import_dialog(FontMetadata::FontImportOptions& options);
+    void render_sound_import_dialog(SoundMetadata::SoundImportOptions& options);
 
     Entity        selected_entity = entt::null;
     World*        world           = nullptr;
@@ -100,3 +102,4 @@ template <> bool Editor::render_component_ui<components::Material>(Entity e);
 template <> bool Editor::render_component_ui<components::UISprite>(Entity e);
 template <> bool Editor::render_component_ui<components::Sprite>(Entity e);
 template <> bool Editor::render_component_ui<components::Text>(Entity e);
+template <> bool Editor::render_component_ui<components::Sound>(Entity e);

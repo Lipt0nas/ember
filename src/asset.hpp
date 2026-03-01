@@ -213,6 +213,21 @@ struct ModelMetadata : AssetMetadata {
 
 struct MaterialMetadata : AssetMetadata {};
 
+struct SoundMetadata : AssetMetadata {
+    struct SoundImportOptions {
+        bool stream = false;
+
+        template <class Archive> void serialize(Archive& ar) {
+            ar(CEREAL_NVP(stream));
+        }
+    } import_options;
+
+    template <class Archive> void serialize(Archive& ar) {
+        AssetMetadata::serialize(ar);
+        ar(CEREAL_NVP(import_options));
+    }
+};
+
 struct ScriptMetadata : AssetMetadata {};
 
 struct FontMetadata : AssetMetadata {

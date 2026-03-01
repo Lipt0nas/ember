@@ -199,6 +199,14 @@ FetchContent_Declare(
   GIT_SHALLOW TRUE
 )
 
+set(MINIAUDIO_NO_LIBVORBIS "Disable miniaudio_libvorbis" ON)
+set(MINIAUDIO_NO_LIBOPUS "Disable miniaudio_libopus" ON)
+FetchContent_Declare(miniaudio
+  GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+  GIT_TAG 0.11.24
+  GIT_SHALLOW TRUE
+)
+
 FetchContent_MakeAvailable(
     glm
     sdl
@@ -220,6 +228,7 @@ FetchContent_MakeAvailable(
     VulkanUtilityLibraries 
     JoltPhysics
     ktx
+    miniaudio
 )
 
 target_link_libraries(volk PUBLIC Vulkan-Headers)
@@ -312,6 +321,7 @@ set(SOURCES
     "src/asset_importer.cpp"
     "src/asset.cpp"
     "src/renderer.cpp"
+    "src/sound_system.cpp"
 )
 add_executable(Ember ${SOURCES})
 if(MINGW)
@@ -346,6 +356,7 @@ target_link_libraries(Ember PRIVATE
     angelscript_addons
     cereal
     ktx
+    miniaudio
 )
 
 # TODO: temporary convenience
