@@ -1319,6 +1319,22 @@ namespace {
         }
     }
 
+    void node_physics_move_kinematic(glm::vec3 position, glm::quat rotation, float delta, components::Physics* p) {
+        if (p->body_id.IsInvalid()) {
+            return;
+        }
+
+        auto world  = get_world_from_context();
+        auto entity = world->scene.get_node_from_component(*p);
+
+        if (world->scene.entity_registry.valid(entity)) {
+            JPH::Vec3 target_position = JPH::Vec3(position.x, position.y, position.z);
+            JPH::Quat target_rotation = JPH::Quat(rotation.x, rotation.y, rotation.z, rotation.w);
+
+            world->physics.system.GetBodyInterface().MoveKinematic(p->body_id, target_position, target_rotation, delta);
+        }
+    }
+
     void node_physics_set_box_body(glm::vec3 half_extents, float mass, components::Physics* p) {
         auto world  = get_world_from_context();
         auto entity = world->scene.get_node_from_component(*p);
@@ -1711,6 +1727,12 @@ void ScriptSystem::initialize(class World* world) {
 
     {
         engine->RegisterObjectType("Physics", 0, asOBJ_REF | asOBJ_NOCOUNT);
+        engine->RegisterObjectMethod(
+            "Physics",
+            "void move_kinematic(vec3, quat, float)",
+            asFUNCTION(node_physics_move_kinematic),
+            asCALL_CDECL_OBJLAST
+        );
         engine->RegisterObjectMethod(
             "Physics",
             "void set_linear_velocity(vec3)",
