@@ -117,7 +117,6 @@ public:
     Image gbuffer_albedo;
     Image gbuffer_normals;
     Image gbuffer_emissive;
-    Image gbuffer_velocity;
     Image gbuffer_id;
 
     Image ui_buffer;

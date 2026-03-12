@@ -22,8 +22,7 @@ layout(set = 4, binding = 0) uniform sampler2D textures[];
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec3 out_emission;
-layout(location = 3) out vec2 out_velocity;
-layout(location = 4) out uint out_id;
+layout(location = 3) out uint out_id;
 
 void main() {
     Material material = materials[in_material_index];
@@ -42,12 +41,9 @@ void main() {
 
     vec3 w_normal = normalize(normal.r * in_tangent_sign.xyz + normal.g * B + normal.b * in_normal);
 
-    float deband = gradient_noise(gl_FragCoord.xy) * 2 - 1;
-
     out_color = vec4(albedo.rgb, rougness_metallic.x);
-    out_normal = vec4(pack_normals(w_normal) + deband * (0.5 / 1023), 1.0, rougness_metallic.y);
+    out_normal = vec4(pack_normals(w_normal), rougness_metallic.y);
     out_emission = emissive;
-    out_velocity = screen - last_screen;
     out_id = in_draw_id;
 
     if (albedo.a < 0.2) {

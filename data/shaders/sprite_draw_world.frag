@@ -13,8 +13,7 @@ layout(location = 4) flat in int in_data_index;
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec3 out_emission;
-layout(location = 3) out vec2 out_velocity;
-layout(location = 4) out uint out_id;
+layout(location = 3) out uint out_id;
 
 layout(scalar, set = 0, binding = 3) readonly buffer Materials {
     Material materials[];
@@ -34,9 +33,8 @@ void main() {
     vec3 vertex_normal = gl_FrontFacing ? in_normal : -in_normal;
 
     out_color = vec4(albedo.rgb, rougness_metallic.x);
-    out_normal = vec4(pack_normals(vertex_normal), 1.0, rougness_metallic.y);
+    out_normal = vec4(pack_normals(vertex_normal), rougness_metallic.y);
     out_emission = emissive;
-    out_velocity = vec2(0.0);
     out_id = 25565;
 
     if (albedo.a < 0.2) {
