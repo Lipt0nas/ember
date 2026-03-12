@@ -441,6 +441,7 @@ int main(int argc, char* argv[]) {
 
         accumulated_fps++;
         time_passed += delta_time;
+        world.time += delta_time;
         physics_time_accumulator += delta_time;
 
         if (time_passed >= 1.0f) {
@@ -616,9 +617,11 @@ int main(int argc, char* argv[]) {
             }
 
             if (editor.get_selected_entity() != entt::null && world.input.is_key_pressed(Key::DELETE)) {
-                world.scene.delete_node(editor.get_selected_entity());
-                editor.set_selected_entity(entt::null);
-                scene_history.create_snapshot(world);
+                if (editor.handle_delete()) {
+                    world.scene.delete_node(editor.get_selected_entity());
+                    editor.set_selected_entity(entt::null);
+                    scene_history.create_snapshot(world);
+                }
             }
 
             if (world.input.is_key_pressed(Key::LEFT_CTRL) && world.input.is_key_just_pressed(Key::Z)) {
@@ -682,6 +685,7 @@ int main(int argc, char* argv[]) {
                     scene_history.create_snapshot(world);
                 }
                 world.is_running = true;
+                world.time       = 0.0f;
 
                 auto controller_view =
                     world.scene.entity_registry.view<components::CharacterController, components::Transform>();
@@ -1006,7 +1010,12 @@ int main(int argc, char* argv[]) {
         }
 
         ImGui::Begin(ICON_FA_COGS " Configuration");
-        ImGui::Checkbox("Enable Particles", &world.renderer.enable_particles);
+        if (ImGui::Checkbox("Enable Particles", &world.renderer.enable_particles)) {
+            char* str;
+            vmaBuildStatsString(world.renderer.vma_allocator, &str, VK_TRUE);
+            spdlog::info("{}", str);
+            vmaFreeStatsString(world.renderer.vma_allocator, str);
+        }
         ImGui::InputInt("Simulate Target FPS", &simulated_fps);
         ImGui::Checkbox("Simulate FPS", &simulate_lower_fps);
         if (ImGui::CollapsingHeader("Renderer Info", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1216,6 +1225,8 @@ int main(int argc, char* argv[]) {
         if (editor.render_scene_hierarchy_window()) {
             scene_history.create_snapshot(world);
         }
+
+        editor.render_particle_editor();
 
         if (editor.get_selected_entity() != entt::null) {
             auto t = world.scene.get_component<components::Transform>(editor.get_selected_entity());

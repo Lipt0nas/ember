@@ -85,7 +85,8 @@ enum class AssetType {
     SHADER,
     SCRIPT,
     SOUND,
-    FONT
+    FONT,
+    PARTICLE_EFFECT
 };
 
 class AssetMetadata {
@@ -257,5 +258,11 @@ struct FontMetadata : AssetMetadata {
     template <class Archive> void serialize(Archive& ar) {
         AssetMetadata::serialize(ar);
         ar(CEREAL_NVP(import_options), CEREAL_NVP(atlas_texture_id));
+    }
+};
+
+struct ParticleEffectMetadata : AssetMetadata {
+    template <class Archive> void serialize(Archive& ar) {
+        AssetMetadata::serialize(ar);
     }
 };

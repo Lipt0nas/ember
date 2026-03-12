@@ -1,8 +1,10 @@
 #pragma once
 
+#include "asset_exporter.hpp"
 #include "asset_importer.hpp"
 #include "ember.hpp"
 #include "framegraph.hpp"
+#include "particle_editor.hpp"
 #include "scene.hpp"
 #include "script_system.hpp"
 #include "world.hpp"
@@ -33,6 +35,9 @@ public:
     bool render_scene_hierarchy_window();
     bool render_scene_node_property_window();
     bool render_performance_window(const std::vector<std::pair<std::string, PassTiming>>& passes);
+    void render_particle_editor();
+
+    bool handle_delete();
 
     void   set_selected_entity(Entity e);
     Entity get_selected_entity();
@@ -55,7 +60,9 @@ private:
 
     static constexpr float asset_icon_width  = 80.0f;
     static constexpr float asset_icon_height = 100.0f;
-    bool draw_asset(const char* icon, const char* label, const char* drag_drop_id, AssetID asset_id, bool& selected);
+    bool                   draw_asset(
+                          const char* icon, const char* label, const char* drag_drop_id, AssetID asset_id, AssetType type, bool& selected
+                      );
 
     std::queue<std::string> import_queue;
     bool                    import_dialog_open = false;
@@ -75,9 +82,12 @@ private:
     void render_font_import_dialog(FontMetadata::FontImportOptions& options);
     void render_sound_import_dialog(SoundMetadata::SoundImportOptions& options);
 
+    ParticleEditor particle_editor;
+
     Entity        selected_entity = entt::null;
     World*        world           = nullptr;
     AssetImporter asset_importer;
+    AssetExporter asset_exporter;
     ImFont*       icon_font = nullptr;
 
     struct AssetTypeInfo {
@@ -103,3 +113,4 @@ template <> bool Editor::render_component_ui<components::UISprite>(Entity e);
 template <> bool Editor::render_component_ui<components::Sprite>(Entity e);
 template <> bool Editor::render_component_ui<components::Text>(Entity e);
 template <> bool Editor::render_component_ui<components::Sound>(Entity e);
+template <> bool Editor::render_component_ui<components::ParticleEffect>(Entity e);

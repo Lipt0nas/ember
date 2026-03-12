@@ -756,6 +756,77 @@ template <> bool Editor::render_component_ui<components::Sound>(Entity e) {
     return edited;
 }
 
+template <> bool Editor::render_component_ui<components::ParticleEffect>(Entity e) {
+    bool edited = false;
+
+    auto* p = world->scene.get_component<components::ParticleEffect>(e);
+
+    auto metadata = world->asset_registry.get_metadata<ParticleEffectMetadata>(p->effect_id);
+    ImGui::Text(ICON_FA_STAR "  Effect: ");
+    ImGui::SameLine();
+    if (metadata) {
+        ImGui::Text("%s", metadata->source_path.c_str());
+    } else {
+        ImGui::Text("Invalid");
+    }
+    ImGui::NewLine();
+
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* payload =
+            ImGui::AcceptDragDropPayload(get_asset_info(AssetType::PARTICLE_EFFECT).drag_drop_id.c_str());
+        if (payload) {
+            AssetID new_id = *(AssetID*)payload->Data;
+            if (p->effect_id != new_id) {
+                p->effect_id = new_id;
+                edited       = true;
+                p->dirty     = true;
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    if (!p->effect.has_value()) {
+        return edited;
+    }
+
+    for (int i = 0; i < p->effect->emitters.size(); i++) {
+        ImGui::PushID(i);
+
+        auto& cfg     = p->emitter_configs[i];
+        auto& emitter = p->effect->emitters[i];
+
+        ImGui::SeparatorText(emitter.name.c_str());
+        ImGui::InputInt("Particle Count", (int*)&cfg.max_particles);
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+        ImGui::InputFloat("Emission Rate", &cfg.emission_rate);
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+        ImGui::InputFloat("Emmiter Lifetime", &cfg.emitter_lifetime);
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+        if (ImGui::Checkbox("Loop", &cfg.loop)) {
+            edited |= true;
+        }
+
+        if (edited) {
+            p->dirty = true;
+        }
+
+        ImGui::PopID();
+    }
+
+    if (ImGui::Checkbox("Active", &p->active)) {
+        edited |= true;
+    }
+
+    if (ImGui::Button("Reload")) {
+        p->dirty = true;
+    }
+
+    return edited;
+}
+
 Editor::Editor() {
     asset_type_infos = {
         {AssetType::MATERIAL,
@@ -806,6 +877,12 @@ Editor::Editor() {
              .category_name = "Fonts",
              .drag_drop_id  = "DRAG_DROP_FONT",
          }},
+        {AssetType::PARTICLE_EFFECT,
+         AssetTypeInfo{
+             .icon          = ICON_FA_STAR,
+             .category_name = "Particle Effects",
+             .drag_drop_id  = "DRAG_DROP_PARTICLE_EFFECT",
+         }},
         {AssetType::UNSUPPORTED,
          AssetTypeInfo{
              .icon          = ICON_FA_QUESTION,
@@ -821,6 +898,7 @@ void Editor::initialize(World* world) {
     icon_font = generate_icon_font(48.0f);
 
     asset_importer.initialize(world);
+    asset_exporter.initialize(world);
 }
 
 bool Editor::render_main_menu() {
@@ -1317,6 +1395,7 @@ void Editor::render_asset_importer() {
         case AssetType::MATERIAL:
         case AssetType::SHADER:
         case AssetType::SCRIPT:
+        case AssetType::PARTICLE_EFFECT:
             spdlog::warn("Importer for {} is not implemented", import_asset_path.string());
             ImGui::CloseCurrentPopup();
             import_dialog_open = false;
@@ -1344,6 +1423,7 @@ void Editor::render_asset_importer() {
             case AssetType::MATERIAL:
             case AssetType::SHADER:
             case AssetType::SCRIPT:
+            case AssetType::PARTICLE_EFFECT:
                 break;
             case AssetType::FONT:
                 asset_importer.import_font(import_asset_path, font_import_options);
@@ -1410,6 +1490,8 @@ bool Editor::render_asset_explorer() {
         float column_width = ImGui::GetContentRegionAvail().x;
         int   colum_count  = glm::max(1, (int)(column_width / (asset_icon_width + 20.0f)));
 
+        bool open_new_particle_effect_popup = false;
+
         if (ImGui::BeginTable("asset_explorer_grid_inner", colum_count)) {
             for (const auto asset : assets[selected_type]) {
                 ImGui::TableNextColumn();
@@ -1420,13 +1502,47 @@ bool Editor::render_asset_explorer() {
                         world->asset_registry.relative_path(asset->source_path).string().c_str(),
                         info.drag_drop_id.c_str(),
                         asset->id,
+                        asset->type,
                         selected
                     )) {
                     selected_asset = asset->id;
                 }
             }
+
+            if (ImGui::BeginPopupContextWindow(
+                    "##asset_panel_context", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems
+                )) {
+                if (selected_type == AssetType::PARTICLE_EFFECT) {
+                    if (ImGui::MenuItem("New Particle Effect")) {
+                        open_new_particle_effect_popup = true;
+                    }
+                }
+                ImGui::EndPopup();
+            }
             ImGui::EndTable();
         }
+
+        if (open_new_particle_effect_popup) {
+            ImGui::OpenPopup("NewParticleEffect");
+        }
+
+        if (ImGui::BeginPopup("NewParticleEffect")) {
+            static std::string name_buf;
+            if (ImGui::IsWindowAppearing()) {
+                name_buf = "";
+            }
+            ImGui::SetNextItemWidth(200.0f);
+            bool confirm = ImGui::InputText("Name", &name_buf, ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::SameLine();
+            confirm |= ImGui::Button("Create");
+            if (confirm && !name_buf.empty()) {
+                asset_exporter.export_particle_effect({}, {}, name_buf);
+
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+
         ImGui::EndChild();
 
         ImGui::TableSetColumnIndex(2);
@@ -1570,7 +1686,7 @@ void Editor::render_sound_import_dialog(SoundMetadata::SoundImportOptions& optio
 }
 
 bool Editor::draw_asset(
-    const char* icon, const char* label, const char* drag_drop_id, AssetID asset_id, bool& selected
+    const char* icon, const char* label, const char* drag_drop_id, AssetID asset_id, AssetType type, bool& selected
 ) {
     ImGui::PushID(label);
 
@@ -1578,14 +1694,32 @@ bool Editor::draw_asset(
 
     bool clicked = ImGui::InvisibleButton("##asset", ImVec2(asset_icon_width, asset_icon_height));
 
-    // TODO: this is temporary (i hope)
-    auto asset = world->asset_registry.get_metadata<ModelMetadata>(asset_id);
-    if (asset != nullptr) {
-        if (ImGui::BeginPopupContextItem()) {
-            if (ImGui::MenuItem("Append scene to world")) {
-                for (auto& desc : asset->scene_description.nodes) {
-                    append_node(world, desc, entt::null);
+    if (type == AssetType::MODEL) {
+        auto asset = world->asset_registry.get_metadata<ModelMetadata>(asset_id);
+        if (asset != nullptr) {
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Append scene to world")) {
+                    for (auto& desc : asset->scene_description.nodes) {
+                        append_node(world, desc, entt::null);
+                    }
                 }
+                ImGui::EndPopup();
+            }
+        }
+    }
+    if (type == AssetType::PARTICLE_EFFECT) {
+        if (ImGui::BeginPopupContextItem()) {
+            if (ImGui::MenuItem("Edit")) {
+                auto asset = world->asset_registry.get_metadata<ParticleEffectMetadata>(asset_id);
+                if (asset != nullptr) {
+                    std::ifstream            file(asset->source_path);
+                    cereal::JSONInputArchive archive(file);
+
+                    ParticleEffectSaveData data;
+                    archive(data);
+
+                    particle_editor.load(data, std::filesystem::path(asset->source_path).stem().string());
+                };
             }
             ImGui::EndPopup();
         }
@@ -1641,4 +1775,18 @@ Editor::AssetTypeInfo Editor::get_asset_info(AssetType type) {
     }
 
     return {};
+}
+
+void Editor::render_particle_editor() {
+    ImGui::Begin(ICON_FA_STAR " Particle Editor");
+    particle_editor.render(&asset_exporter);
+    ImGui::End();
+}
+
+bool Editor::handle_delete() {
+    if (ax::NodeEditor::GetCurrentEditor() && ax::NodeEditor::IsActive()) {
+        return false;
+    } else {
+        return true;
+    }
 }

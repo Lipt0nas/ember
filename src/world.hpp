@@ -29,10 +29,12 @@ public:
         std::vector<Material>               runtime_materials;
         std::vector<Font>                   fonts;
         std::vector<Sound>                  sounds;
+        std::vector<ParticleEffectAsset>    particle_effects;
     } resources;
 
     // True when in the "play" state
-    bool is_running = false;
+    bool  is_running = false;
+    float time       = 0.0f;
 
     bool needs_blas_rebuild = false;
 
@@ -64,6 +66,10 @@ public:
 
     bool load_collision_mesh(AssetID id, JPH::TriangleList& triangles);
 
+    int  load_particle_effect(AssetID id);
+    int  load_particle_effect(const std::string& path);
+    void reload_particle_effect(AssetID id);
+
     int node_play_sound(Entity e);
     int play_sound(AssetID id, bool spatial = false);
     int play_sound(const std::string& path, bool spatial = false);
@@ -73,6 +79,7 @@ public:
     std::unordered_map<AssetID, int> material_map;
     std::unordered_map<AssetID, int> font_map;
     std::unordered_map<AssetID, int> sound_map;
+    std::unordered_map<AssetID, int> particle_effect_map;
 
     void cleanup();
 

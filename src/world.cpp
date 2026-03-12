@@ -542,6 +542,77 @@ bool World::load_collision_mesh(AssetID id, JPH::TriangleList& triangles) {
     return true;
 }
 
+int World::load_particle_effect(AssetID id) {
+    auto it = particle_effect_map.find(id);
+    if (it != particle_effect_map.end()) {
+        return it->second;
+    }
+
+    auto metadata = asset_registry.get_metadata<ParticleEffectMetadata>(id);
+    if (!metadata) {
+        spdlog::error("Failed to load particle effect {}", id);
+        return -1;
+    }
+
+    std::ifstream asset_file(metadata->asset_path);
+    if (!asset_file.is_open()) {
+        spdlog::error("Failed to open material {} for reading", metadata->asset_path);
+        return -1;
+    }
+
+    cereal::BinaryInputArchive archive(asset_file);
+
+    ParticleEffectHeader effect_header;
+    archive(effect_header);
+
+    spdlog::info("Loading {} emmiters", effect_header.emmiter_count);
+
+    ParticleEffectAsset effect;
+
+    for (int i = 0; i < effect_header.emmiter_count; i++) {
+        spdlog::info("Loading emmiter {}", i);
+
+        ParticleEmitterHeader header;
+        archive(header);
+
+        auto spawn_instruction_count  = header.spawn_instruction_size / sizeof(ParticleInstruction);
+        auto update_instruction_count = header.update_instruction_size / sizeof(ParticleInstruction);
+
+        ParticleEmitterAsset emitter;
+        emitter.spawn_register_state.resize(header.spawn_register_count);
+        emitter.spawn_instructions.resize(spawn_instruction_count);
+
+        emitter.update_register_state.resize(header.update_register_count);
+        emitter.update_instructions.resize(spawn_instruction_count);
+
+        archive.loadBinary(emitter.spawn_register_state.data(), header.spawn_register_count * sizeof(glm::vec4));
+        archive.loadBinary(emitter.spawn_instructions.data(), header.spawn_instruction_size);
+
+        archive.loadBinary(emitter.update_register_state.data(), header.update_register_count * sizeof(glm::vec4));
+        archive.loadBinary(emitter.update_instructions.data(), header.update_instruction_size);
+
+        effect.emitters.push_back(std::move(emitter));
+    }
+
+    int index = resources.particle_effects.size();
+    resources.particle_effects.push_back(effect);
+
+    particle_effect_map.insert({id, index});
+
+    return index;
+}
+
+int World::load_particle_effect(const std::string& path) {
+    return load_particle_effect(asset_registry.hash_path(asset_registry.root_path() / path));
+}
+
+void World::reload_particle_effect(AssetID id) {
+    auto it = particle_effect_map.find(id);
+    if (it != particle_effect_map.end()) {
+        particle_effect_map.erase(it);
+    }
+}
+
 void World::register_bindless_texture(int index, const Sampler& sampler) {
     uint32_t slot = index;
 

@@ -37,7 +37,7 @@ set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG v1.92.3-docking
+    GIT_TAG v1.92.6-docking
     GIT_SHALLOW TRUE
 )
 
@@ -87,6 +87,7 @@ FetchContent_Declare(implot
 )
 
 set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
+set(TRACY_ON_DEMAND ON CACHE BOOL "" FORCE)
 set(TRACY_ONLY_LOCALHOST ON CACHE BOOL "" FORCE)
 set(TRACY_VK_USE_SYMBOL_TABLE ON CACHE BOOL "" FORCE)
 set(TRACY_NO_BROADCAST ON CACHE BOOL "" FORCE)
@@ -132,37 +133,37 @@ set(USE_F16C ON)
 set(USE_FMADD ON)
 
 if (MSVC)
-	set(CMAKE_VS_PLATFORM_TOOLSET_HOST_ARCHITECTURE "x64")
-	if (USE_STATIC_MSVC_RUNTIME_LIBRARY)
-		set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-	endif()
+    set(CMAKE_VS_PLATFORM_TOOLSET_HOST_ARCHITECTURE "x64")
+    if (USE_STATIC_MSVC_RUNTIME_LIBRARY)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
 
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zc:__cplusplus /Gm- /MP /nologo /diagnostics:classic /FC /fp:except- /Zc:inline")
-	
-	if (NOT CPP_RTTI_ENABLED)
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /GR-")
-	endif()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zc:__cplusplus /Gm- /MP /nologo /diagnostics:classic /FC /fp:except- /Zc:inline")
 
-	if (NOT CPP_EXCEPTIONS_ENABLED)
-		string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4577")
-	endif()
+    if (NOT CPP_RTTI_ENABLED)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /GR-")
+    endif()
 
-	if (OVERRIDE_CXX_FLAGS)
-		set(CMAKE_CXX_FLAGS_DEBUG "/GS /Od /Ob0 /RTC1")
-		set(CMAKE_CXX_FLAGS_RELEASE "/GS- /Gy /O2 /Oi /Ot")
-	endif()
+    if (NOT CPP_EXCEPTIONS_ENABLED)
+        string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4577")
+    endif()
 
-	if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
-		if (CROSS_PLATFORM_DETERMINISTIC)
-			set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:precise")
-		else()
-			set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:fast")
-		endif()
-	elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /showFilenames")
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Qunused-arguments")
-	endif()
+    if (OVERRIDE_CXX_FLAGS)
+        set(CMAKE_CXX_FLAGS_DEBUG "/GS /Od /Ob0 /RTC1")
+        set(CMAKE_CXX_FLAGS_RELEASE "/GS- /Gy /O2 /Oi /Ot")
+    endif()
+
+    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+        if (CROSS_PLATFORM_DETERMINISTIC)
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:precise")
+        else()
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /fp:fast")
+        endif()
+    elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /showFilenames")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Qunused-arguments")
+    endif()
 endif()
 
 FetchContent_Declare(
@@ -176,26 +177,25 @@ FetchContent_Declare(
 FetchContent_Declare(
   entt
   GIT_REPOSITORY https://github.com/skypjack/entt
-  GIT_TAG v3.16.0 
+  GIT_TAG v3.16.0
   GIT_SHALLOW TRUE
 )
 
 FetchContent_Declare(
   angelscript
   GIT_REPOSITORY https://github.com/anjo76/angelscript
-  GIT_TAG v2.38.0 
+  GIT_TAG v2.38.0
   GIT_SHALLOW TRUE
   SOURCE_SUBDIR sdk/angelscript/projects/cmake
 )
-
 
 set(BUILD_DOC OFF)
 set(BUILD_SANDBOX OFF)
 set(SKIP_PERFORMANCE_COMPARISON ON)
 FetchContent_Declare(
-  cereal 
+  cereal
   GIT_REPOSITORY https://github.com/USCiLab/cereal
-  GIT_TAG v1.3.2 
+  GIT_TAG v1.3.2
   GIT_SHALLOW TRUE
 )
 
@@ -205,6 +205,12 @@ FetchContent_Declare(miniaudio
   GIT_REPOSITORY https://github.com/mackron/miniaudio.git
   GIT_TAG 0.11.24
   GIT_SHALLOW TRUE
+)
+
+FetchContent_Declare(imgui_node_editor
+    GIT_REPOSITORY https://github.com/thedmd/imgui-node-editor.git
+    GIT_TAG develop
+    GIT_SHALLOW TRUE
 )
 
 FetchContent_MakeAvailable(
@@ -225,10 +231,11 @@ FetchContent_MakeAvailable(
     angelscript
     cereal
     VulkanHeaders
-    VulkanUtilityLibraries 
+    VulkanUtilityLibraries
     JoltPhysics
     ktx
     miniaudio
+    imgui_node_editor
 )
 
 target_link_libraries(volk PUBLIC Vulkan-Headers)
@@ -295,6 +302,36 @@ add_library(imguizmo STATIC
 target_link_libraries(imguizmo PUBLIC imgui)
 target_include_directories(imguizmo INTERFACE ${imguizmo_SOURCE_DIR})
 
+# It's either this or a fork, even though this is extremely cursed
+set(NODE_EDITOR_CPP "${imgui_node_editor_SOURCE_DIR}/imgui_node_editor.cpp")
+file(READ "${NODE_EDITOR_CPP}" SRC)
+
+foreach(VAR
+    "node->m_Bounds"
+    "node->m_GroupBounds"
+    "newBounds"
+    "m_NodeRect"
+    "m_CurrentPin->m_Bounds"
+    "m_GroupBounds"
+)
+    string(REPLACE
+        "${VAR}.Floor();"
+        "${VAR} = ImRect(ImFloor(${VAR}.Min), ImFloor(${VAR}.Max));"
+        SRC "${SRC}"
+    )
+endforeach()
+
+file(WRITE "${NODE_EDITOR_CPP}" "${SRC}")
+
+add_library(imgui_node_editor STATIC
+    ${imgui_node_editor_SOURCE_DIR}/imgui_node_editor.cpp
+    ${imgui_node_editor_SOURCE_DIR}/imgui_node_editor_api.cpp
+    ${imgui_node_editor_SOURCE_DIR}/imgui_canvas.cpp
+    ${imgui_node_editor_SOURCE_DIR}/crude_json.cpp
+)
+target_include_directories(imgui_node_editor PUBLIC ${imgui_node_editor_SOURCE_DIR})
+target_link_libraries(imgui_node_editor PUBLIC imgui)
+
 SET_INTERPROCEDURAL_OPTIMIZATION()
 
 set(SOURCES
@@ -322,13 +359,17 @@ set(SOURCES
     "src/asset.cpp"
     "src/renderer.cpp"
     "src/sound_system.cpp"
+    "src/particle_editor.cpp"
+    "src/particle_effect.cpp"
+    "src/asset_exporter.cpp"
 )
 add_executable(Ember ${SOURCES})
 if(MINGW)
     target_compile_options(Ember PRIVATE -Wa,-mbig-obj)
 endif()
-target_compile_definitions(Ember PRIVATE 
+target_compile_definitions(Ember PRIVATE
     TRACY_ENABLE
+    TRACY_ON_DEMAND
     TRACY_ONLY_LOCALHOST
     TRACY_VK_USE_SYMBOL_TABLE
     TRACY_NO_BROADCAST
@@ -357,6 +398,7 @@ target_link_libraries(Ember PRIVATE
     cereal
     ktx
     miniaudio
+    imgui_node_editor
 )
 
 # TODO: temporary convenience

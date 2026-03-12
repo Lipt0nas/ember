@@ -4,6 +4,7 @@
 #include "camera.hpp"
 #include "ember.hpp"
 #include "geometry.hpp"
+#include "particle_editor.hpp"
 #include "physics.hpp"
 #include "sound_system.hpp"
 
@@ -209,6 +210,16 @@ namespace components {
         int instance_id = SoundSystem::INVALID_SOUND_INSTANCE;
     };
 
+    struct ParticleEffect {
+        AssetID effect_id = AssetMetadata::INVALID_METADATA;
+
+        bool                               active = true;
+        std::vector<ParticleEmitterConfig> emitter_configs;
+
+        std::optional<::ParticleEffect> effect;
+        bool                            dirty = false; // Should the effect be reloaded from the base effect
+    };
+
     template <typename Archive> void serialize(Archive& archive, Transform& transform) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
             archive(
@@ -390,7 +401,6 @@ namespace components {
                 cereal::make_nvp("spatial", sound.spatial),
                 cereal::make_nvp("autoplay", sound.autoplay),
                 cereal::make_nvp("loop", sound.autoplay)
-
             );
         } else {
             archive(
@@ -404,6 +414,18 @@ namespace components {
                 sound.autoplay,
                 sound.loop
             );
+        }
+    }
+
+    template <typename Archive> void serialize(Archive& archive, ParticleEffect& particle) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("effect_id", particle.effect_id),
+                cereal::make_nvp("active", particle.active),
+                cereal::make_nvp("configs", particle.emitter_configs)
+            );
+        } else {
+            archive(particle.effect_id, particle.active, particle.emitter_configs);
         }
     }
 
