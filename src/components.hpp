@@ -400,7 +400,7 @@ namespace components {
                 cereal::make_nvp("rolloff", sound.rolloff),
                 cereal::make_nvp("spatial", sound.spatial),
                 cereal::make_nvp("autoplay", sound.autoplay),
-                cereal::make_nvp("loop", sound.autoplay)
+                cereal::make_nvp("loop", sound.loop)
             );
         } else {
             archive(
