@@ -375,7 +375,6 @@ int main(int argc, char* argv[]) {
     add_viewport_source("Composite", world.renderer.composite_output);
     add_viewport_source("GBuffer Albedo", world.renderer.gbuffer_albedo);
     add_viewport_source("GBuffer Normals", world.renderer.gbuffer_normals);
-    add_viewport_source("GBuffer Velocity", world.renderer.gbuffer_velocity);
     add_viewport_source("GBuffer Emissive", world.renderer.gbuffer_emissive);
     add_viewport_source("GBuffer Depth", world.renderer.depth_buffer);
     add_viewport_source("Lighting", world.renderer.lightpass_output);

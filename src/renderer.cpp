@@ -445,7 +445,6 @@ void Renderer::cleanup() {
     destroy_image(gbuffer_normals, device, vma_allocator);
     destroy_image(gbuffer_emissive, device, vma_allocator);
     destroy_image(gbuffer_id, device, vma_allocator);
-    destroy_image(gbuffer_velocity, device, vma_allocator);
     destroy_image(depth_hiz, device, vma_allocator);
     destroy_image(bloom_buffer, device, vma_allocator);
     destroy_image(ao_output, device, vma_allocator);
@@ -557,7 +556,6 @@ void Renderer::setup_framegraph() {
     framegraph->import_image(gbuffer_albedo, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph->import_image(gbuffer_normals, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph->import_image(gbuffer_emissive, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    framegraph->import_image(gbuffer_velocity, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph->import_image(gbuffer_id, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     framegraph->import_image(lightpass_output, VK_IMAGE_LAYOUT_GENERAL);
     framegraph->import_image(composite_output, VK_IMAGE_LAYOUT_GENERAL);
@@ -690,7 +688,6 @@ void Renderer::setup_framegraph() {
             .writes_color_attachment(gbuffer_albedo)
             .writes_color_attachment(gbuffer_normals)
             .writes_color_attachment(gbuffer_emissive)
-            .writes_color_attachment(gbuffer_velocity)
             .writes_color_attachment(gbuffer_id)
             .reads_buffer_dynamic(
                 indirect_command_buffer,
@@ -763,18 +760,6 @@ void Renderer::setup_framegraph() {
                         .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                         .pNext              = nullptr,
                         .imageView          = gbuffer_emissive.view,
-                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        .resolveMode        = VK_RESOLVE_MODE_NONE,
-                        .resolveImageView   = VK_NULL_HANDLE,
-                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                        .loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
-                    },
-                    {
-                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                        .pNext              = nullptr,
-                        .imageView          = gbuffer_velocity.view,
                         .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                         .resolveMode        = VK_RESOLVE_MODE_NONE,
                         .resolveImageView   = VK_NULL_HANDLE,
@@ -4385,17 +4370,6 @@ void Renderer::initialize(
         device
     );
 
-    gbuffer_velocity = create_image(
-        VK_FORMAT_R16G16_SFLOAT,
-        swapchain.width,
-        swapchain.height,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT,
-        false,
-        vma_allocator,
-        device
-    );
-
     gbuffer_id = create_image(
         VK_FORMAT_R32_UINT,
         swapchain.width,
@@ -4411,7 +4385,6 @@ void Renderer::initialize(
         gbuffer_albedo,
         gbuffer_normals,
         gbuffer_emissive,
-        gbuffer_velocity,
         gbuffer_id,
     };
 
@@ -5184,7 +5157,6 @@ void Renderer::initialize(
             gbuffer_albedo.format,
             gbuffer_normals.format,
             gbuffer_emissive.format,
-            gbuffer_velocity.format,
             gbuffer_id.format,
         },
 
@@ -5284,7 +5256,6 @@ void Renderer::initialize(
             gbuffer_albedo.format,
             gbuffer_normals.format,
             gbuffer_emissive.format,
-            gbuffer_velocity.format,
             gbuffer_id.format,
         },
         vertex_input_state,
