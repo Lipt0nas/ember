@@ -10,9 +10,11 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
+#include <imgui_node_editor.h>
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
@@ -26,6 +28,7 @@
 #define GLM_FORCE_QUAT_CTOR_XYZW
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/random.hpp>
 #include <glm/gtx/euler_angles.hpp>
 #include <glm/gtx/string_cast.hpp>
 

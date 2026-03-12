@@ -22,3 +22,13 @@ VkDescriptorSet imgui_image_handle(const Image& image, VkSampler sampler);
 
 // Deallocate a handle previously acquired from imgui_image_handle()
 void imgui_image_handle_free(VkDescriptorSet handle);
+
+bool imgui_splitter(
+    bool   split_vertically,
+    float  thickness,
+    float* size1,
+    float* size2,
+    float  min_size1,
+    float  min_size2,
+    float  splitter_long_axis_size = -1.0f
+);

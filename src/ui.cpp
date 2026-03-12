@@ -1,6 +1,7 @@
 #include "ui.hpp"
 
 #include "embedded.hpp"
+#include "imgui_internal.h"
 
 PFN_vkVoidFunction imgui_load_function(const char* function_name, void* user_data) {
     return vkGetInstanceProcAddr((VkInstance)user_data, function_name);
@@ -178,23 +179,25 @@ VkDescriptorPool imgui_init(
     };
 
     ImGui_ImplSDL3_InitForVulkan(window);
-    ImGui_ImplVulkan_InitInfo init_info   = {};
-    init_info.Instance                    = instance;
-    init_info.PhysicalDevice              = physical_device;
-    init_info.Device                      = device;
-    init_info.QueueFamily                 = graphics_family_index;
-    init_info.Queue                       = graphics_queue;
-    init_info.PipelineCache               = nullptr;
-    init_info.DescriptorPool              = imgui_descriptor_pool;
-    init_info.MinImageCount               = image_count;
-    init_info.ImageCount                  = image_count;
-    init_info.Subpass                     = 0;
-    init_info.MSAASamples                 = VK_SAMPLE_COUNT_1_BIT;
-    init_info.Allocator                   = nullptr;
-    init_info.UseDynamicRendering         = true;
-    init_info.RenderPass                  = VK_NULL_HANDLE;
-    init_info.PipelineRenderingCreateInfo = imgui_rendering_info;
-    init_info.CheckVkResultFn             = nullptr;
+    ImGui_ImplVulkan_InitInfo init_info = {};
+    init_info.Instance                  = instance;
+    init_info.PhysicalDevice            = physical_device;
+    init_info.Device                    = device;
+    init_info.QueueFamily               = graphics_family_index;
+    init_info.Queue                     = graphics_queue;
+    init_info.PipelineCache             = nullptr;
+    init_info.DescriptorPool            = imgui_descriptor_pool;
+    init_info.MinImageCount             = image_count;
+    init_info.ImageCount                = image_count;
+    init_info.Allocator                 = nullptr;
+    init_info.UseDynamicRendering       = true;
+    init_info.CheckVkResultFn           = nullptr;
+    init_info.PipelineInfoMain          = {
+                 .RenderPass                  = VK_NULL_HANDLE,
+                 .Subpass                     = 0,
+                 .MSAASamples                 = VK_SAMPLE_COUNT_1_BIT,
+                 .PipelineRenderingCreateInfo = imgui_rendering_info,
+    };
     ImGui_ImplVulkan_LoadFunctions(VK_API_VERSION_1_4, imgui_load_function, instance);
     ImGui_ImplVulkan_Init(&init_info);
 
@@ -218,4 +221,31 @@ VkDescriptorSet imgui_image_handle(const Image& image, VkSampler sampler) {
 
 void imgui_image_handle_free(VkDescriptorSet handle) {
     ImGui_ImplVulkan_RemoveTexture(handle);
+}
+
+bool imgui_splitter(
+    bool   split_vertically,
+    float  thickness,
+    float* size1,
+    float* size2,
+    float  min_size1,
+    float  min_size2,
+    float  splitter_long_axis_size
+) {
+    ImGuiContext& g      = *GImGui;
+    ImGuiWindow*  window = g.CurrentWindow;
+    ImGuiID       id     = window->GetID("##Splitter");
+    ImRect        bb;
+
+    bb.Min = window->DC.CursorPos + (split_vertically ? ImVec2(*size1, 0.0f) : ImVec2(0.0f, *size1));
+    bb.Max = bb.Min + ImGui::CalcItemSize(
+                          split_vertically ? ImVec2(thickness, splitter_long_axis_size)
+                                           : ImVec2(splitter_long_axis_size, thickness),
+                          0.0f,
+                          0.0f
+                      );
+
+    return ImGui::SplitterBehavior(
+        bb, id, split_vertically ? ImGuiAxis_X : ImGuiAxis_Y, size1, size2, min_size1, min_size2, 0.0f
+    );
 }

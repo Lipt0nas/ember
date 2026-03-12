@@ -20,6 +20,8 @@ AssetRegistry::AssetRegistry() {
         {".wav", AssetType::SOUND},
         {".mp3", AssetType::SOUND},
         {".flac", AssetType::SOUND},
+
+        {".pfx", AssetType::PARTICLE_EFFECT},
     };
 }
 
@@ -89,6 +91,12 @@ void AssetRegistry::load(const std::filesystem::path& path) {
                 auto font_metadata = std::make_unique<FontMetadata>();
                 archive(*font_metadata);
                 handle = std::move(font_metadata);
+                break;
+            }
+            case AssetType::PARTICLE_EFFECT: {
+                auto particle_effect_metadata = std::make_unique<ParticleEffectMetadata>();
+                archive(*particle_effect_metadata);
+                handle = std::move(particle_effect_metadata);
                 break;
             }
             }

@@ -4,3 +4,5 @@ build-windows/
 imgui.ini
 *.spv
 data/shaders/*.d
+data/textures
+data/models

@@ -5754,7 +5754,9 @@ void Renderer::render_frame(float delta_time) {
 
     world_sprite_batcher->reset();
     auto sprite_view =
-        world->scene.entity_registry.view<components::Transform, components::Material, components::Sprite>();
+        world->scene.entity_registry.view<components::Transform, components::Material, components::Sprite>(
+            entt::exclude<components::ParticleEffect>
+        );
     for (auto [e, t, m, s] : sprite_view.each()) {
         if (m.id == AssetMetadata::INVALID_METADATA) {
             continue;
@@ -5782,8 +5784,85 @@ void Renderer::render_frame(float delta_time) {
         );
     }
 
+    auto sprite_particle_view =
+        world->scene.entity_registry
+            .view<components::Transform, components::Material, components::Sprite, components::ParticleEffect>();
+    for (auto [e, t, m, s, p] : sprite_particle_view.each()) {
+        if (!p.effect.has_value() || p.dirty) {
+            if (p.effect_id == AssetMetadata::INVALID_METADATA) {
+                continue;
+            }
+
+            int effect_index = world->load_particle_effect(p.effect_id);
+            if (effect_index == -1) {
+                continue;
+            }
+
+            p.effect = world->resources.particle_effects[effect_index];
+            p.emitter_configs.resize(p.effect->emitters.size());
+
+            for (size_t i = 0; i < p.effect->emitters.size(); i++) {
+                auto& emitter = p.effect->emitters[i];
+                auto& cfg     = p.emitter_configs[i];
+
+                emitter.resize(cfg.max_particles);
+                emitter.emission_rate    = cfg.emission_rate;
+                emitter.emitter_lifetime = cfg.emitter_lifetime;
+                emitter.loop             = cfg.loop;
+            }
+
+            p.dirty = false;
+        }
+
+        if (!p.active) {
+            continue;
+        }
+
+        if (m.id == AssetMetadata::INVALID_METADATA) {
+            continue;
+        }
+
+        int mat_index = world->load_material(m.id);
+
+        if (mat_index == -1) {
+            continue;
+        }
+
+        SimParams params = {
+            .delta_time  = delta_time,
+            .time        = world->time,
+            .particle_id = 0,
+        };
+
+        for (auto& emitter : p.effect->emitters) {
+            emitter.simulate(params);
+
+            for (uint32_t i = 0; i < emitter.live_count; ++i) {
+                const Particle& pt = emitter.particles[i];
+
+                world_sprite_batcher->draw(
+                    SpriteBatcher::Drawcall{
+                        .position   = t.world_position + glm::vec3(pt.position),
+                        .rotation   = t.world_rotation,
+                        .size       = t.scale * pt.size,
+                        .pivot      = s.pivot,
+                        .uvs        = s.uvs,
+                        .color      = pt.color,
+                        .data_index = static_cast<int>(
+                            m.dedicated_material_index == -1
+                                ? mat_index
+                                : world->resources.materials.size() + m.dedicated_material_index
+                        ),
+                    }
+                );
+            }
+        }
+    }
+
     ui_sprite_batcher->reset();
-    auto ui_sprite_view = world->scene.entity_registry.view<components::Transform, components::UISprite>();
+    auto ui_sprite_view = world->scene.entity_registry.view<components::Transform, components::UISprite>(
+        entt::exclude<components::ParticleEffect>
+    );
     for (auto [e, t, s] : ui_sprite_view.each()) {
         if (s.texture_id == AssetMetadata::INVALID_METADATA) {
             continue;
@@ -5809,6 +5888,81 @@ void Renderer::render_frame(float delta_time) {
                 .data_index = tex_index,
             }
         );
+    }
+
+    auto ui_particle_view =
+        world->scene.entity_registry.view<components::Transform, components::UISprite, components::ParticleEffect>();
+    for (auto [e, t, s, p] : ui_particle_view.each()) {
+        if (!p.effect.has_value() || p.dirty) {
+            if (p.effect_id == AssetMetadata::INVALID_METADATA) {
+                continue;
+            }
+
+            int effect_index = world->load_particle_effect(p.effect_id);
+            if (effect_index == -1) {
+                continue;
+            }
+
+            p.effect = world->resources.particle_effects[effect_index];
+            p.emitter_configs.resize(p.effect->emitters.size());
+
+            for (size_t i = 0; i < p.effect->emitters.size(); i++) {
+                auto& emitter = p.effect->emitters[i];
+                auto& cfg     = p.emitter_configs[i];
+
+                emitter.resize(cfg.max_particles);
+                emitter.emission_rate    = cfg.emission_rate;
+                emitter.emitter_lifetime = cfg.emitter_lifetime;
+                emitter.loop             = cfg.loop;
+            }
+
+            p.dirty = false;
+        }
+
+        if (!p.active) {
+            continue;
+        }
+
+        if (s.texture_id == AssetMetadata::INVALID_METADATA) {
+            continue;
+        }
+
+        int tex_index = world->load_texture(s.texture_id);
+
+        if (tex_index == -1) {
+            continue;
+        }
+
+        SimParams params = {
+            .delta_time  = delta_time,
+            .time        = world->time,
+            .particle_id = 0,
+        };
+
+        float     rotation    = glm::eulerAngles(t.world_rotation).z;
+        glm::quat ui_rotation = glm::angleAxis(rotation, glm::vec3(0, 0, 1));
+
+        for (auto& emitter : p.effect->emitters) {
+            emitter.simulate(params);
+
+            glm::vec2 emitter_pos = glm::vec2(t.world_position);
+
+            for (uint32_t i = 0; i < emitter.live_count; ++i) {
+                const Particle& pt = emitter.particles[i];
+
+                ui_sprite_batcher->draw(
+                    SpriteBatcher::Drawcall{
+                        .position   = glm::vec3(emitter_pos + glm::vec2(pt.position), 0.0f),
+                        .rotation   = ui_rotation,
+                        .size       = t.scale * pt.size,
+                        .pivot      = s.pivot,
+                        .uvs        = s.uvs,
+                        .color      = pt.color,
+                        .data_index = tex_index,
+                    }
+                );
+            }
+        }
     }
 
     ui_sprite_batcher->end_batch();
