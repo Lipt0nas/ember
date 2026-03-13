@@ -199,6 +199,53 @@ Entity Scene::clone_node_internal(Entity base, Entity cloned_parent) {
         camera.is_active       = src_camera->is_active;
     }
 
+    auto src_sprite = get_component<components::Sprite>(base);
+    if (src_sprite) {
+        auto& sprite      = add_component<components::Sprite>(new_entity);
+        sprite.size       = src_sprite->size;
+        sprite.pivot      = src_sprite->pivot;
+        sprite.color      = src_sprite->color;
+        sprite.uvs        = src_sprite->uvs;
+        sprite.texture_id = src_sprite->texture_id;
+    }
+
+    auto src_text = get_component<components::Text>(base);
+    if (src_text) {
+        auto& text   = add_component<components::Text>(new_entity);
+        text.text    = src_text->text;
+        text.pivot   = src_text->pivot;
+        text.color   = src_text->color;
+        text.font_id = src_text->font_id;
+    }
+
+    if (get_component<components::World>(base)) {
+        add_component<components::World>(new_entity);
+    }
+
+    auto src_sound = get_component<components::Sound>(base);
+    if (src_sound) {
+        auto& sound        = add_component<components::Sound>(new_entity);
+        sound.sound_id     = src_sound->sound_id;
+        sound.volume       = src_sound->volume;
+        sound.pitch        = src_sound->pitch;
+        sound.min_distance = src_sound->min_distance;
+        sound.max_distance = src_sound->max_distance;
+        sound.rolloff      = src_sound->rolloff;
+        sound.spatial      = src_sound->spatial;
+        sound.autoplay     = src_sound->autoplay;
+        sound.loop         = src_sound->loop;
+    }
+
+    auto src_particle_effect = get_component<components::ParticleEffect>(base);
+    if (src_particle_effect) {
+        auto& particle_effect           = add_component<components::ParticleEffect>(new_entity);
+        particle_effect.effect_id       = src_particle_effect->effect_id;
+        particle_effect.active          = src_particle_effect->active;
+        particle_effect.emitter_configs = src_particle_effect->emitter_configs;
+        particle_effect.effect          = src_particle_effect->effect;
+        particle_effect.dirty           = true;
+    }
+
     return new_entity;
 }
 
