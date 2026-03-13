@@ -133,18 +133,6 @@ void ComponentRegistry::register_components(Editor* editor) {
         }
     );
 
-    ComponentRegistry::register_component<components::UISprite>(
-        editor,
-        "UISprite",
-        {
-            .removable             = true,
-            .show_in_editor        = true,
-            .accessible_in_scripts = true,
-            .save_to_disk          = true,
-            .save_snapshot         = true,
-        }
-    );
-
     ComponentRegistry::register_component<components::Sprite>(
         editor,
         "Sprite",
@@ -188,6 +176,18 @@ void ComponentRegistry::register_components(Editor* editor) {
             .removable             = true,
             .show_in_editor        = true,
             .accessible_in_scripts = true,
+            .save_to_disk          = true,
+            .save_snapshot         = true,
+        }
+    );
+
+    ComponentRegistry::register_component<components::World>(
+        editor,
+        "World",
+        {
+            .removable             = true,
+            .show_in_editor        = true,
+            .accessible_in_scripts = false,
             .save_to_disk          = true,
             .save_snapshot         = true,
         }

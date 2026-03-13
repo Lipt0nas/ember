@@ -24,11 +24,9 @@ layout(set = 1, binding = 0) uniform sampler2D textures[];
 void main() {
     vec2 uv = vec2(in_uv.x, in_uv.y);
 
-    Material material = materials[in_data_index];
-
-    vec4 albedo = material_get_albedo(material, textures[nonuniformEXT(material.albedo_index)], uv);
-    vec3 emissive = material_get_emissive(material, textures[nonuniformEXT(material.emissive_index)], uv);
-    vec2 rougness_metallic = material_get_roughness_metallic(material, textures[nonuniformEXT(material.material_index)], uv);
+    vec4 albedo = texture(textures[nonuniformEXT(in_data_index)], in_uv);
+    vec3 emissive = vec3(0.0);
+    vec2 rougness_metallic = vec2(1.0, 0.0);
 
     vec3 vertex_normal = gl_FrontFacing ? in_normal : -in_normal;
 

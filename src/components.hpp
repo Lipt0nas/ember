@@ -172,7 +172,7 @@ namespace components {
         bool                   is_grounded   = false;
     };
 
-    struct UISprite {
+    struct Sprite {
         glm::vec2 size  = {10.0f, 10.0f};
         glm::vec2 pivot = {0.5f, 0.5f};
         glm::vec4 color = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -181,18 +181,16 @@ namespace components {
         AssetID texture_id = AssetMetadata::INVALID_METADATA;
     };
 
-    struct Sprite {
-        glm::vec2 size  = {10.0f, 10.0f};
-        glm::vec2 pivot = {0.5f, 0.5f};
-        glm::vec4 uvs   = {0.0f, 0.0f, 1.0f, 1.0f};
-    };
-
     struct Text {
         std::string text  = "Text";
         glm::vec2   pivot = {0.5f, 0.5f};
         glm::vec4   color = {1.0f, 1.0f, 1.0f, 1.0f};
 
         AssetID font_id = AssetMetadata::INVALID_METADATA;
+    };
+
+    struct World {
+        bool _dummy;
     };
 
     struct Sound {
@@ -350,7 +348,7 @@ namespace components {
         }
     }
 
-    template <typename Archive> void serialize(Archive& archive, UISprite& sprite) {
+    template <typename Archive> void serialize(Archive& archive, Sprite& sprite) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
             archive(
                 cereal::make_nvp("size", sprite.size),
@@ -361,18 +359,6 @@ namespace components {
             );
         } else {
             archive(sprite.size, sprite.pivot, sprite.color, sprite.uvs, sprite.texture_id);
-        }
-    }
-
-    template <typename Archive> void serialize(Archive& archive, Sprite& sprite) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("size", sprite.size),
-                cereal::make_nvp("anchor", sprite.pivot),
-                cereal::make_nvp("uvs", sprite.uvs)
-            );
-        } else {
-            archive(sprite.size, sprite.pivot, sprite.uvs);
         }
     }
 
@@ -427,6 +413,9 @@ namespace components {
         } else {
             archive(particle.effect_id, particle.active, particle.emitter_configs);
         }
+    }
+
+    template <typename Archive> void serialize(Archive& archive, World& world) {
     }
 
 } // namespace components

@@ -5700,17 +5700,17 @@ void Renderer::render_frame(float delta_time) {
 
     // 3D in-world sprites
     {
-        auto view = world->scene.entity_registry.view<components::Transform, components::Material, components::Sprite>(
+        auto view = world->scene.entity_registry.view<components::Transform, components::Sprite, components::World>(
             entt::exclude<components::ParticleEffect>
         );
-        for (auto [e, t, m, s] : view.each()) {
-            if (m.id == AssetMetadata::INVALID_METADATA) {
+        for (auto [e, t, s, _] : view.each()) {
+            if (s.texture_id == AssetMetadata::INVALID_METADATA) {
                 continue;
             }
 
-            int mat_index = world->load_material(m.id);
+            int tex_index = world->load_texture(s.texture_id);
 
-            if (mat_index == -1) {
+            if (tex_index == -1) {
                 continue;
             }
 
@@ -5722,11 +5722,7 @@ void Renderer::render_frame(float delta_time) {
                     .pivot      = s.pivot,
                     .uvs        = s.uvs,
                     .color      = {1.0f, 1.0f, 1.0f, 1.0},
-                    .data_index = static_cast<int>(
-                        m.dedicated_material_index == -1
-                            ? mat_index
-                            : world->resources.materials.size() + m.dedicated_material_index
-                    ),
+                    .data_index = tex_index,
                 }
             );
         }
@@ -5737,8 +5733,8 @@ void Renderer::render_frame(float delta_time) {
     {
         auto view =
             world->scene.entity_registry
-                .view<components::Transform, components::Material, components::Sprite, components::ParticleEffect>();
-        for (auto [e, t, m, s, p] : view.each()) {
+                .view<components::Transform, components::Sprite, components::ParticleEffect, components::World>();
+        for (auto [e, t, s, p, _] : view.each()) {
             if (!p.effect.has_value() || p.dirty) {
                 if (p.effect_id == AssetMetadata::INVALID_METADATA) {
                     continue;
@@ -5771,13 +5767,13 @@ void Renderer::render_frame(float delta_time) {
                 continue;
             }
 
-            if (m.id == AssetMetadata::INVALID_METADATA) {
+            if (s.texture_id == AssetMetadata::INVALID_METADATA) {
                 continue;
             }
 
-            int mat_index = world->load_material(m.id);
+            int tex_index = world->load_texture(s.texture_id);
 
-            if (mat_index == -1) {
+            if (tex_index == -1) {
                 continue;
             }
 
@@ -5808,11 +5804,7 @@ void Renderer::render_frame(float delta_time) {
                             .pivot      = s.pivot,
                             .uvs        = s.uvs,
                             .color      = pt.color,
-                            .data_index = static_cast<int>(
-                                m.dedicated_material_index == -1
-                                    ? mat_index
-                                    : world->resources.materials.size() + m.dedicated_material_index
-                            ),
+                            .data_index = tex_index,
                         }
                     );
                 }
@@ -5823,8 +5815,8 @@ void Renderer::render_frame(float delta_time) {
 
     // UI sprites
     {
-        auto view = world->scene.entity_registry.view<components::Transform, components::UISprite>(
-            entt::exclude<components::ParticleEffect>
+        auto view = world->scene.entity_registry.view<components::Transform, components::Sprite>(
+            entt::exclude<components::ParticleEffect, components::World>
         );
         for (auto [e, t, s] : view.each()) {
             if (s.texture_id == AssetMetadata::INVALID_METADATA) {
@@ -5857,8 +5849,10 @@ void Renderer::render_frame(float delta_time) {
 
     // UI Particle effects
     {
-        auto ui_particle_view = world->scene.entity_registry
-                                    .view<components::Transform, components::UISprite, components::ParticleEffect>();
+        auto ui_particle_view =
+            world->scene.entity_registry.view<components::Transform, components::Sprite, components::ParticleEffect>(
+                entt::exclude<components::World>
+            );
         for (auto [e, t, s, p] : ui_particle_view.each()) {
             if (!p.effect.has_value() || p.dirty) {
                 if (p.effect_id == AssetMetadata::INVALID_METADATA) {
@@ -5944,7 +5938,9 @@ void Renderer::render_frame(float delta_time) {
 
     // UI Text
     {
-        auto text_sprite_view = world->scene.entity_registry.view<components::Transform, components::Text>();
+        auto text_sprite_view = world->scene.entity_registry.view<components::Transform, components::Text>(
+            entt::exclude<components::World>
+        );
         for (auto [e, t, tx] : text_sprite_view.each()) {
             if (tx.font_id == AssetMetadata::INVALID_METADATA) {
                 continue;
