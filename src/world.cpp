@@ -81,7 +81,7 @@ int World::load_texture(AssetID id) {
             header.height,
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT,
-            header.mip_levels > 0,
+            header.mip_levels > 1,
             renderer.vma_allocator,
             renderer.device
         );
@@ -116,7 +116,7 @@ int World::load_texture(AssetID id) {
             header.height,
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT,
-            header.mip_levels > 0,
+            header.mip_levels > 1,
             renderer.vma_allocator,
             renderer.device
         );
