@@ -404,17 +404,12 @@ void Renderer::cleanup() {
     framegraph->destroy(device);
     delete framegraph;
 
-    destroy_buffer(world_sprite_batcher->drawcall_buffer, device, vma_allocator);
-    destroy_buffer(world_sprite_batcher->geometry_buffer, device, vma_allocator);
-    destroy_pipeline(device, world_sprite_batcher->geometry_build_pipline);
-    destroy_pipeline(device, world_sprite_pipeline);
-    delete world_sprite_batcher;
-
-    destroy_buffer(ui_sprite_batcher->drawcall_buffer, device, vma_allocator);
-    destroy_buffer(ui_sprite_batcher->geometry_buffer, device, vma_allocator);
-    destroy_pipeline(device, ui_sprite_batcher->geometry_build_pipline);
+    destroy_buffer(sprite_batcher->drawcall_buffer, device, vma_allocator);
+    destroy_buffer(sprite_batcher->geometry_buffer, device, vma_allocator);
+    destroy_pipeline(device, sprite_batcher->geometry_build_pipline);
     destroy_pipeline(device, ui_sprite_pipeline);
-    delete ui_sprite_batcher;
+    destroy_pipeline(device, world_sprite_pipeline);
+    delete sprite_batcher;
 
     destroy_buffer(staging_buffer, device, vma_allocator);
     destroy_buffer(global_index_buffer, device, vma_allocator);
@@ -661,21 +656,14 @@ void Renderer::setup_framegraph() {
             });
 
     auto sprite_build_pass =
-        framegraph->add_pass("sprite batch build")
-            .reads_buffer_dynamic(
-                world_sprite_batcher->drawcall_buffer,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_SHADER_READ_BIT,
-                world_sprite_batcher->drawcall_buffer.size / FRAMES_IN_FLIGHT
-            )
+        framegraph
+            ->add_pass("sprite batch build")
+
             .writes_buffer(
-                world_sprite_batcher->geometry_buffer,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_SHADER_WRITE_BIT
+                sprite_batcher->geometry_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                world_sprite_batcher->build_geometry_buffer(vma_allocator, command_buffer, frame_index);
-                ui_sprite_batcher->build_geometry_buffer(vma_allocator, command_buffer, frame_index);
+                sprite_batcher->build_geometry_buffer(vma_allocator, command_buffer, frame_index);
             });
 
     auto gbuffer_pass =
@@ -720,9 +708,7 @@ void Renderer::setup_framegraph() {
                 material_buffer.size / FRAMES_IN_FLIGHT
             )
             .reads_buffer(
-                world_sprite_batcher->geometry_buffer,
-                VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-                VK_ACCESS_2_SHADER_READ_BIT
+                sprite_batcher->geometry_buffer, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 vkCmdBeginQuery(command_buffer, statistics_pools[frame_index], 0, 0);
@@ -838,11 +824,8 @@ void Renderer::setup_framegraph() {
                     vkCmdPushConstants(
                         command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, sizeof(glm::mat4), &push
                     );
-                    VkDeviceSize offset = 0;
-                    vkCmdBindVertexBuffers(
-                        command_buffer, 0, 1, &world_sprite_batcher->geometry_buffer.handle, &offset
-                    );
-                    vkCmdDraw(command_buffer, world_sprite_batcher->drawcall_count * 6, 1, 0, 0);
+
+                    sprite_batcher->render_batch(world_sprite_batch, command_buffer);
                 }
 
                 vkCmdBindPipeline(command_buffer, gpass_pipeline.bind_point, gpass_pipeline.pipeline_handle);
@@ -3480,12 +3463,10 @@ void Renderer::setup_framegraph() {
                     vkCmdPushConstants(
                         command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, sizeof(glm::mat4), &push
                     );
-                    VkDeviceSize offset = 0;
-                    vkCmdBindVertexBuffers(command_buffer, 0, 1, &ui_sprite_batcher->geometry_buffer.handle, &offset);
-                    vkCmdDraw(command_buffer, ui_sprite_batcher->drawcall_batches[0] * 6, 1, 0, 0);
+                    sprite_batcher->render_batch(ui_sprite_batch, command_buffer);
                 }
 
-                if (ui_sprite_batcher->drawcall_batches.size() > 1) {
+                {
                     auto& pipeline = ui_sprite_text_pipeline;
 
                     vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -3502,9 +3483,7 @@ void Renderer::setup_framegraph() {
                     vkCmdPushConstants(
                         command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, sizeof(glm::mat4), &push
                     );
-                    VkDeviceSize offset = ui_sprite_batcher->drawcall_batches[0] * sizeof(float) * 13 * 6;
-                    vkCmdBindVertexBuffers(command_buffer, 0, 1, &ui_sprite_batcher->geometry_buffer.handle, &offset);
-                    vkCmdDraw(command_buffer, ui_sprite_batcher->drawcall_batches[1] * 6, 1, 0, 0);
+                    sprite_batcher->render_batch(ui_text_sprite_batch, command_buffer);
                 }
 
                 vkCmdEndRendering(command_buffer);
@@ -5382,8 +5361,7 @@ void Renderer::initialize(
 
     dynamic_offsets.resize(static_cast<uint32_t>(DynamicOffset::COUNT));
 
-    world_sprite_batcher = new SpriteBatcher(this, 10000);
-    ui_sprite_batcher    = new SpriteBatcher(this, 10000);
+    sprite_batcher = new SpriteBatcher(this, 100000);
 
     setup_framegraph();
 }
@@ -5494,311 +5472,327 @@ void Renderer::render_frame(float delta_time) {
 
     scene_ubo.last_frame_view_proj = last_frame_view_proj;
 
-    world_sprite_batcher->reset();
-    auto sprite_view =
-        world->scene.entity_registry.view<components::Transform, components::Material, components::Sprite>(
+    sprite_batcher->reset();
+
+    // 3D in-world sprites
+    {
+        auto view = world->scene.entity_registry.view<components::Transform, components::Material, components::Sprite>(
             entt::exclude<components::ParticleEffect>
         );
-    for (auto [e, t, m, s] : sprite_view.each()) {
-        if (m.id == AssetMetadata::INVALID_METADATA) {
-            continue;
-        }
-
-        int mat_index = world->load_material(m.id);
-
-        if (mat_index == -1) {
-            continue;
-        }
-
-        world_sprite_batcher->draw(
-            SpriteBatcher::Drawcall{
-                .position   = t.world_position,
-                .rotation   = t.world_rotation,
-                .size       = s.size * t.world_scale,
-                .pivot      = s.pivot,
-                .uvs        = s.uvs,
-                .color      = {1.0f, 1.0f, 1.0f, 1.0},
-                .data_index = static_cast<int>(
-                    m.dedicated_material_index == -1 ? mat_index
-                                                     : world->resources.materials.size() + m.dedicated_material_index
-                ),
-            }
-        );
-    }
-
-    auto sprite_particle_view =
-        world->scene.entity_registry
-            .view<components::Transform, components::Material, components::Sprite, components::ParticleEffect>();
-    for (auto [e, t, m, s, p] : sprite_particle_view.each()) {
-        if (!p.effect.has_value() || p.dirty) {
-            if (p.effect_id == AssetMetadata::INVALID_METADATA) {
+        for (auto [e, t, m, s] : view.each()) {
+            if (m.id == AssetMetadata::INVALID_METADATA) {
                 continue;
             }
 
-            int effect_index = world->load_particle_effect(p.effect_id);
-            if (effect_index == -1) {
+            int mat_index = world->load_material(m.id);
+
+            if (mat_index == -1) {
                 continue;
             }
 
-            p.effect = world->resources.particle_effects[effect_index];
-            p.emitter_configs.resize(p.effect->emitters.size());
-
-            for (size_t i = 0; i < p.effect->emitters.size(); i++) {
-                auto& emitter = p.effect->emitters[i];
-                auto& cfg     = p.emitter_configs[i];
-
-                emitter.resize(cfg.max_particles);
-                emitter.emission_rate    = cfg.emission_rate;
-                emitter.emitter_lifetime = cfg.emitter_lifetime;
-                emitter.loop             = cfg.loop;
-            }
-
-            p.dirty = false;
-        }
-
-        if (!p.active) {
-            continue;
-        }
-
-        if (m.id == AssetMetadata::INVALID_METADATA) {
-            continue;
-        }
-
-        int mat_index = world->load_material(m.id);
-
-        if (mat_index == -1) {
-            continue;
-        }
-
-        SimParams params = {
-            .delta_time  = delta_time,
-            .time        = world->time,
-            .particle_id = 0,
-        };
-
-        for (auto& emitter : p.effect->emitters) {
-            emitter.simulate(params);
-
-            for (uint32_t i = 0; i < emitter.live_count; ++i) {
-                const Particle& pt = emitter.particles[i];
-
-                world_sprite_batcher->draw(
-                    SpriteBatcher::Drawcall{
-                        .position   = t.world_position + glm::vec3(pt.position),
-                        .rotation   = t.world_rotation,
-                        .size       = t.scale * pt.size,
-                        .pivot      = s.pivot,
-                        .uvs        = s.uvs,
-                        .color      = pt.color,
-                        .data_index = static_cast<int>(
-                            m.dedicated_material_index == -1
-                                ? mat_index
-                                : world->resources.materials.size() + m.dedicated_material_index
-                        ),
-                    }
-                );
-            }
-        }
-    }
-
-    ui_sprite_batcher->reset();
-    auto ui_sprite_view = world->scene.entity_registry.view<components::Transform, components::UISprite>(
-        entt::exclude<components::ParticleEffect>
-    );
-    for (auto [e, t, s] : ui_sprite_view.each()) {
-        if (s.texture_id == AssetMetadata::INVALID_METADATA) {
-            continue;
-        }
-
-        int tex_index = world->load_texture(s.texture_id);
-
-        if (tex_index == -1) {
-            continue;
-        }
-
-        float     rotation    = glm::eulerAngles(t.world_rotation).z;
-        glm::quat ui_rotation = glm::angleAxis(rotation, glm::vec3(0, 0, 1));
-
-        ui_sprite_batcher->draw(
-            SpriteBatcher::Drawcall{
-                .position   = glm::vec3(glm::vec2(t.world_position), 0.0f),
-                .rotation   = ui_rotation,
-                .size       = t.scale * s.size,
-                .pivot      = s.pivot,
-                .uvs        = s.uvs,
-                .color      = s.color,
-                .data_index = tex_index,
-            }
-        );
-    }
-
-    auto ui_particle_view =
-        world->scene.entity_registry.view<components::Transform, components::UISprite, components::ParticleEffect>();
-    for (auto [e, t, s, p] : ui_particle_view.each()) {
-        if (!p.effect.has_value() || p.dirty) {
-            if (p.effect_id == AssetMetadata::INVALID_METADATA) {
-                continue;
-            }
-
-            int effect_index = world->load_particle_effect(p.effect_id);
-            if (effect_index == -1) {
-                continue;
-            }
-
-            p.effect = world->resources.particle_effects[effect_index];
-            p.emitter_configs.resize(p.effect->emitters.size());
-
-            for (size_t i = 0; i < p.effect->emitters.size(); i++) {
-                auto& emitter = p.effect->emitters[i];
-                auto& cfg     = p.emitter_configs[i];
-
-                emitter.resize(cfg.max_particles);
-                emitter.emission_rate    = cfg.emission_rate;
-                emitter.emitter_lifetime = cfg.emitter_lifetime;
-                emitter.loop             = cfg.loop;
-            }
-
-            p.dirty = false;
-        }
-
-        if (!p.active) {
-            continue;
-        }
-
-        if (s.texture_id == AssetMetadata::INVALID_METADATA) {
-            continue;
-        }
-
-        int tex_index = world->load_texture(s.texture_id);
-
-        if (tex_index == -1) {
-            continue;
-        }
-
-        SimParams params = {
-            .delta_time  = delta_time,
-            .time        = world->time,
-            .particle_id = 0,
-        };
-
-        float     rotation    = glm::eulerAngles(t.world_rotation).z;
-        glm::quat ui_rotation = glm::angleAxis(rotation, glm::vec3(0, 0, 1));
-
-        for (auto& emitter : p.effect->emitters) {
-            emitter.simulate(params);
-
-            glm::vec2 emitter_pos = glm::vec2(t.world_position);
-
-            for (uint32_t i = 0; i < emitter.live_count; ++i) {
-                const Particle& pt = emitter.particles[i];
-
-                ui_sprite_batcher->draw(
-                    SpriteBatcher::Drawcall{
-                        .position   = glm::vec3(emitter_pos + glm::vec2(pt.position), 0.0f),
-                        .rotation   = ui_rotation,
-                        .size       = t.scale * pt.size,
-                        .pivot      = s.pivot,
-                        .uvs        = s.uvs,
-                        .color      = pt.color,
-                        .data_index = tex_index,
-                    }
-                );
-            }
-        }
-    }
-
-    ui_sprite_batcher->end_batch();
-    auto text_sprite_view = world->scene.entity_registry.view<components::Transform, components::Text>();
-    for (auto [e, t, tx] : text_sprite_view.each()) {
-        if (tx.font_id == AssetMetadata::INVALID_METADATA) {
-            continue;
-        }
-
-        int font_index = world->load_font(tx.font_id);
-        if (font_index == -1) {
-            continue;
-        }
-
-        Font& font = world->resources.fonts[font_index];
-
-        int tex_index = world->load_texture(font.atlas_texture_id);
-        if (tex_index == -1) {
-            continue;
-        }
-
-        float total_width = 0.0f;
-        float min_y       = 0.0f;
-        float max_y       = 0.0f;
-
-        float cursor_x = 0.0f;
-        for (char c : tx.text) {
-            auto it = font.glyphs.find((uint32_t)c);
-            if (it == font.glyphs.end()) {
-                continue;
-            }
-
-            const auto& glyph = it->second;
-
-            float top_y    = -glyph.bearing_y * t.world_scale;
-            float bottom_y = top_y - glyph.height * t.world_scale;
-
-            min_y = std::min(min_y, bottom_y);
-            max_y = std::max(max_y, top_y);
-
-            cursor_x += glyph.advance_x * t.world_scale;
-        }
-        total_width        = cursor_x;
-        float total_height = max_y - min_y;
-
-        glm::vec3 pivot_offset = glm::vec3(-total_width * tx.pivot.x, -(min_y + total_height * tx.pivot.y), 0.0f);
-
-        float local_cursor_x = 0.0f;
-        float local_cursor_y = 0.0f;
-
-        float     rotation    = glm::eulerAngles(t.world_rotation).z;
-        glm::quat ui_rotation = glm::angleAxis(rotation, glm::vec3(0, 0, 1));
-
-        for (char c : tx.text) {
-            auto it = font.glyphs.find((uint32_t)c);
-            if (it == font.glyphs.end()) {
-                continue;
-            }
-
-            const auto& glyph = it->second;
-
-            if (glyph.width == 0 || glyph.height == 0) {
-                local_cursor_x += glyph.advance_x * t.world_scale;
-                continue;
-            }
-
-            float w = glyph.width * t.world_scale;
-            float h = glyph.height * t.world_scale;
-
-            float top_left_x = local_cursor_x + glyph.bearing_x * t.world_scale;
-            float top_left_y = local_cursor_y - glyph.bearing_y * t.world_scale;
-
-            float local_x = top_left_x + w * 0.5f;
-            float local_y = top_left_y - h;
-
-            glm::vec3 local_pos = glm::vec3(local_x, local_y, 0.0f) + pivot_offset;
-            glm::vec3 world_pos = t.world_position + (ui_rotation * local_pos);
-
-            ui_sprite_batcher->draw(
+            sprite_batcher->draw(
                 SpriteBatcher::Drawcall{
-                    .position   = glm::vec3(glm::vec2(world_pos), 0.0f),
+                    .position   = t.world_position,
+                    .rotation   = t.world_rotation,
+                    .size       = s.size * t.world_scale,
+                    .pivot      = s.pivot,
+                    .uvs        = s.uvs,
+                    .color      = {1.0f, 1.0f, 1.0f, 1.0},
+                    .data_index = static_cast<int>(
+                        m.dedicated_material_index == -1
+                            ? mat_index
+                            : world->resources.materials.size() + m.dedicated_material_index
+                    ),
+                }
+            );
+        }
+    }
+
+    // 3D in-world particles
+    {
+        auto view =
+            world->scene.entity_registry
+                .view<components::Transform, components::Material, components::Sprite, components::ParticleEffect>();
+        for (auto [e, t, m, s, p] : view.each()) {
+            if (!p.effect.has_value() || p.dirty) {
+                if (p.effect_id == AssetMetadata::INVALID_METADATA) {
+                    continue;
+                }
+
+                int effect_index = world->load_particle_effect(p.effect_id);
+                if (effect_index == -1) {
+                    continue;
+                }
+
+                p.effect = world->resources.particle_effects[effect_index];
+                p.emitter_configs.resize(p.effect->emitters.size());
+
+                for (size_t i = 0; i < p.effect->emitters.size(); i++) {
+                    auto& emitter = p.effect->emitters[i];
+                    auto& cfg     = p.emitter_configs[i];
+
+                    emitter.resize(cfg.max_particles);
+                    emitter.emission_rate    = cfg.emission_rate;
+                    emitter.emitter_lifetime = cfg.emitter_lifetime;
+                    emitter.loop             = cfg.loop;
+                }
+
+                p.dirty = false;
+            }
+
+            if (!p.active) {
+                continue;
+            }
+
+            if (m.id == AssetMetadata::INVALID_METADATA) {
+                continue;
+            }
+
+            int mat_index = world->load_material(m.id);
+
+            if (mat_index == -1) {
+                continue;
+            }
+
+            SimParams params = {
+                .delta_time  = delta_time,
+                .time        = world->time,
+                .particle_id = 0,
+            };
+
+            for (auto& emitter : p.effect->emitters) {
+                emitter.simulate(params);
+
+                for (uint32_t i = 0; i < emitter.live_count; ++i) {
+                    const Particle& pt = emitter.particles[i];
+
+                    sprite_batcher->draw(
+                        SpriteBatcher::Drawcall{
+                            .position   = t.world_position + glm::vec3(pt.position),
+                            .rotation   = t.world_rotation,
+                            .size       = t.scale * pt.size,
+                            .pivot      = s.pivot,
+                            .uvs        = s.uvs,
+                            .color      = pt.color,
+                            .data_index = static_cast<int>(
+                                m.dedicated_material_index == -1
+                                    ? mat_index
+                                    : world->resources.materials.size() + m.dedicated_material_index
+                            ),
+                        }
+                    );
+                }
+            }
+        }
+    }
+    world_sprite_batch = sprite_batcher->end_batch();
+
+    // UI sprites
+    {
+        auto view = world->scene.entity_registry.view<components::Transform, components::UISprite>(
+            entt::exclude<components::ParticleEffect>
+        );
+        for (auto [e, t, s] : view.each()) {
+            if (s.texture_id == AssetMetadata::INVALID_METADATA) {
+                continue;
+            }
+
+            int tex_index = world->load_texture(s.texture_id);
+
+            if (tex_index == -1) {
+                continue;
+            }
+
+            float     rotation    = glm::eulerAngles(t.world_rotation).z;
+            glm::quat ui_rotation = glm::angleAxis(rotation, glm::vec3(0, 0, 1));
+
+            sprite_batcher->draw(
+                SpriteBatcher::Drawcall{
+                    .position   = glm::vec3(glm::vec2(t.world_position), 0.0f),
                     .rotation   = ui_rotation,
-                    .size       = glm::vec2(w, h),
-                    .pivot      = {0.5f, 0.0f},
-                    .uvs        = glyph.uvs,
-                    .color      = tx.color,
+                    .size       = t.scale * s.size,
+                    .pivot      = s.pivot,
+                    .uvs        = s.uvs,
+                    .color      = s.color,
                     .data_index = tex_index,
                 }
             );
-
-            local_cursor_x += glyph.advance_x * t.world_scale;
         }
     }
-    ui_sprite_batcher->end_batch();
+
+    // UI Particle effects
+    {
+        auto ui_particle_view = world->scene.entity_registry
+                                    .view<components::Transform, components::UISprite, components::ParticleEffect>();
+        for (auto [e, t, s, p] : ui_particle_view.each()) {
+            if (!p.effect.has_value() || p.dirty) {
+                if (p.effect_id == AssetMetadata::INVALID_METADATA) {
+                    continue;
+                }
+
+                int effect_index = world->load_particle_effect(p.effect_id);
+                if (effect_index == -1) {
+                    continue;
+                }
+
+                p.effect = world->resources.particle_effects[effect_index];
+                p.emitter_configs.resize(p.effect->emitters.size());
+
+                for (size_t i = 0; i < p.effect->emitters.size(); i++) {
+                    auto& emitter = p.effect->emitters[i];
+                    auto& cfg     = p.emitter_configs[i];
+
+                    emitter.resize(cfg.max_particles);
+                    emitter.emission_rate    = cfg.emission_rate;
+                    emitter.emitter_lifetime = cfg.emitter_lifetime;
+                    emitter.loop             = cfg.loop;
+                }
+
+                p.dirty = false;
+            }
+
+            if (!p.active) {
+                continue;
+            }
+
+            if (s.texture_id == AssetMetadata::INVALID_METADATA) {
+                continue;
+            }
+
+            int tex_index = world->load_texture(s.texture_id);
+
+            if (tex_index == -1) {
+                continue;
+            }
+
+            SimParams params = {
+                .delta_time  = delta_time,
+                .time        = world->time,
+                .particle_id = 0,
+            };
+
+            float     rotation    = glm::eulerAngles(t.world_rotation).z;
+            glm::quat ui_rotation = glm::angleAxis(rotation, glm::vec3(0, 0, 1));
+
+            for (auto& emitter : p.effect->emitters) {
+                emitter.simulate(params);
+
+                glm::vec2 emitter_pos = glm::vec2(t.world_position);
+
+                for (uint32_t i = 0; i < emitter.live_count; ++i) {
+                    const Particle& pt = emitter.particles[i];
+
+                    sprite_batcher->draw(
+                        SpriteBatcher::Drawcall{
+                            .position   = glm::vec3(emitter_pos + glm::vec2(pt.position), 0.0f),
+                            .rotation   = ui_rotation,
+                            .size       = t.scale * pt.size,
+                            .pivot      = s.pivot,
+                            .uvs        = s.uvs,
+                            .color      = pt.color,
+                            .data_index = tex_index,
+                        }
+                    );
+                }
+            }
+        }
+    }
+    ui_sprite_batch = sprite_batcher->end_batch();
+
+    // UI Text
+    {
+        auto text_sprite_view = world->scene.entity_registry.view<components::Transform, components::Text>();
+        for (auto [e, t, tx] : text_sprite_view.each()) {
+            if (tx.font_id == AssetMetadata::INVALID_METADATA) {
+                continue;
+            }
+
+            int font_index = world->load_font(tx.font_id);
+            if (font_index == -1) {
+                continue;
+            }
+
+            Font& font = world->resources.fonts[font_index];
+
+            int tex_index = world->load_texture(font.atlas_texture_id);
+            if (tex_index == -1) {
+                continue;
+            }
+
+            float total_width = 0.0f;
+            float min_y       = 0.0f;
+            float max_y       = 0.0f;
+
+            float cursor_x = 0.0f;
+            for (char c : tx.text) {
+                auto it = font.glyphs.find((uint32_t)c);
+                if (it == font.glyphs.end()) {
+                    continue;
+                }
+
+                const auto& glyph = it->second;
+
+                float top_y    = -glyph.bearing_y * t.world_scale;
+                float bottom_y = top_y - glyph.height * t.world_scale;
+
+                min_y = std::min(min_y, bottom_y);
+                max_y = std::max(max_y, top_y);
+
+                cursor_x += glyph.advance_x * t.world_scale;
+            }
+            total_width        = cursor_x;
+            float total_height = max_y - min_y;
+
+            glm::vec3 pivot_offset = glm::vec3(-total_width * tx.pivot.x, -(min_y + total_height * tx.pivot.y), 0.0f);
+
+            float local_cursor_x = 0.0f;
+            float local_cursor_y = 0.0f;
+
+            float     rotation    = glm::eulerAngles(t.world_rotation).z;
+            glm::quat ui_rotation = glm::angleAxis(rotation, glm::vec3(0, 0, 1));
+
+            for (char c : tx.text) {
+                auto it = font.glyphs.find((uint32_t)c);
+                if (it == font.glyphs.end()) {
+                    continue;
+                }
+
+                const auto& glyph = it->second;
+
+                if (glyph.width == 0 || glyph.height == 0) {
+                    local_cursor_x += glyph.advance_x * t.world_scale;
+                    continue;
+                }
+
+                float w = glyph.width * t.world_scale;
+                float h = glyph.height * t.world_scale;
+
+                float top_left_x = local_cursor_x + glyph.bearing_x * t.world_scale;
+                float top_left_y = local_cursor_y - glyph.bearing_y * t.world_scale;
+
+                float local_x = top_left_x + w * 0.5f;
+                float local_y = top_left_y - h;
+
+                glm::vec3 local_pos = glm::vec3(local_x, local_y, 0.0f) + pivot_offset;
+                glm::vec3 world_pos = t.world_position + (ui_rotation * local_pos);
+
+                sprite_batcher->draw(
+                    SpriteBatcher::Drawcall{
+                        .position   = glm::vec3(glm::vec2(world_pos), 0.0f),
+                        .rotation   = ui_rotation,
+                        .size       = glm::vec2(w, h),
+                        .pivot      = {0.5f, 0.0f},
+                        .uvs        = glyph.uvs,
+                        .color      = tx.color,
+                        .data_index = tex_index,
+                    }
+                );
+
+                local_cursor_x += glyph.advance_x * t.world_scale;
+            }
+        }
+    }
+    ui_text_sprite_batch = sprite_batcher->end_batch();
 
     {
         void*  scene_ubo_ptr  = nullptr;
@@ -6089,8 +6083,27 @@ void SpriteBatcher::build_geometry_buffer(
     vkCmdDispatch(command_buffer, drawcall_count, 1, 1);
 }
 
-void SpriteBatcher::end_batch() {
-    drawcall_batches.push_back(
-        drawcall_count - (drawcall_batches.size() == 0 ? 0 : drawcall_batches[drawcall_batches.size() - 1])
-    );
+SpriteBatcher::Batch SpriteBatcher::end_batch() {
+    auto last_batch = drawcall_batches.size() == 0 ? Batch() : drawcall_batches[drawcall_batches.size() - 1];
+
+    uint32_t drawcalls = drawcall_count - last_batch.global_drawcall_mark;
+
+    drawcall_batches.push_back({
+        .geometry_offset      = last_batch.drawcall_count * sizeof(SpriteVertex) * 6,
+        .drawcall_count       = drawcalls,
+        .global_drawcall_mark = drawcall_count,
+    });
+
+    return drawcall_batches.back();
+}
+
+void SpriteBatcher::render_batch(const Batch& batch, VkCommandBuffer command_buffer) {
+    if (batch.drawcall_count == 0) {
+        return;
+    }
+
+    VkDeviceSize offset = batch.geometry_offset;
+
+    vkCmdBindVertexBuffers(command_buffer, 0, 1, &geometry_buffer.handle, &offset);
+    vkCmdDraw(command_buffer, batch.drawcall_count * 6, 1, 0, 0);
 }

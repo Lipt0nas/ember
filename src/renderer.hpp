@@ -33,6 +33,12 @@ public:
         int       data_index;
     };
 
+    struct Batch {
+        VkDeviceSize geometry_offset      = 0;
+        uint32_t     drawcall_count       = 0;
+        uint32_t     global_drawcall_mark = 0;
+    };
+
     Buffer drawcall_buffer;
     Buffer geometry_buffer;
 
@@ -41,15 +47,16 @@ public:
 
     SpriteBatcher(class Renderer* renderer, uint32_t max_drawcalls);
 
-    void reset();
-    void draw(const Drawcall& drawcall);
-    void build_geometry_buffer(VmaAllocator vma_allocator, VkCommandBuffer command_buffer, uint32_t frame_index);
-    void end_batch();
+    void  reset();
+    void  draw(const Drawcall& drawcall);
+    void  build_geometry_buffer(VmaAllocator vma_allocator, VkCommandBuffer command_buffer, uint32_t frame_index);
+    void  render_batch(const Batch& batch, VkCommandBuffer command_buffer);
+    Batch end_batch();
 
     void destroy();
 
-    uint32_t              drawcall_count = 0;
-    std::vector<uint32_t> drawcall_batches;
+    uint32_t           drawcall_count = 0;
+    std::vector<Batch> drawcall_batches;
 
 private:
     uint32_t frames_in_flight = 0;
@@ -205,8 +212,10 @@ private:
 
     VkCommandBuffer command_buffers[FRAMES_IN_FLIGHT];
 
-    SpriteBatcher* world_sprite_batcher = nullptr;
-    SpriteBatcher* ui_sprite_batcher    = nullptr;
+    SpriteBatcher*       sprite_batcher = nullptr;
+    SpriteBatcher::Batch world_sprite_batch;
+    SpriteBatcher::Batch ui_sprite_batch;
+    SpriteBatcher::Batch ui_text_sprite_batch;
 
     std::vector<VkDescriptorPoolSize> descriptor_pool_sizes;
 
