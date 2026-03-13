@@ -1796,31 +1796,11 @@ void ScriptSystem::initialize(class World* world) {
     }
 
     {
-        engine->RegisterObjectType("UISprite", 0, asOBJ_REF | asOBJ_NOCOUNT);
-        engine->RegisterObjectProperty("UISprite", "vec4 color", asOFFSET(components::UISprite, color));
-        engine->RegisterObjectProperty("UISprite", "vec2 pivot", asOFFSET(components::UISprite, pivot));
-        engine->RegisterObjectProperty("UISprite", "vec2 size", asOFFSET(components::UISprite, size));
-        engine->RegisterObjectProperty("UISprite", "vec4 uvs", asOFFSET(components::UISprite, uvs));
-
-        auto type = engine->GetTypeInfoByName("UISprite");
-        if (!type) {
-            spdlog::error("Failed to get type info for UISprite component");
-            return;
-        }
-
-        component_retrieve_map.insert({
-            type->GetTypeId(),
-            [](Scene& scene, Entity e) {
-                return scene.get_component<components::UISprite>(e);
-            },
-        });
-    }
-
-    {
         engine->RegisterObjectType("Sprite", 0, asOBJ_REF | asOBJ_NOCOUNT);
-        engine->RegisterObjectProperty("Sprite", "vec2 pivot", asOFFSET(components::UISprite, pivot));
-        engine->RegisterObjectProperty("Sprite", "vec2 size", asOFFSET(components::UISprite, size));
-        engine->RegisterObjectProperty("Sprite", "vec4 uvs", asOFFSET(components::UISprite, uvs));
+        engine->RegisterObjectProperty("Sprite", "vec4 color", asOFFSET(components::Sprite, color));
+        engine->RegisterObjectProperty("Sprite", "vec2 pivot", asOFFSET(components::Sprite, pivot));
+        engine->RegisterObjectProperty("Sprite", "vec2 size", asOFFSET(components::Sprite, size));
+        engine->RegisterObjectProperty("Sprite", "vec4 uvs", asOFFSET(components::Sprite, uvs));
 
         auto type = engine->GetTypeInfoByName("Sprite");
         if (!type) {

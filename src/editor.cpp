@@ -592,10 +592,10 @@ template <> bool Editor::render_component_ui<components::Material>(Entity e) {
     return edited;
 }
 
-template <> bool Editor::render_component_ui<components::UISprite>(Entity e) {
+template <> bool Editor::render_component_ui<components::Sprite>(Entity e) {
     bool edited = false;
 
-    auto* s = world->scene.get_component<components::UISprite>(e);
+    auto* s = world->scene.get_component<components::Sprite>(e);
 
     auto metadata = world->asset_registry.get_metadata<TextureMetadata>(s->texture_id);
     ImGui::Text(ICON_FA_IMAGE "  Texture: ");
@@ -629,24 +629,7 @@ template <> bool Editor::render_component_ui<components::UISprite>(Entity e) {
     ImGui::DragFloat4("UV's", &s->uvs.x, 0.01f);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::ColorEdit4("Tint", &s->color.x, 0.01f);
-    edited |= ImGui::IsItemDeactivatedAfterEdit();
-
-    return edited;
-}
-
-template <> bool Editor::render_component_ui<components::Sprite>(Entity e) {
-    bool edited = false;
-
-    auto* s = world->scene.get_component<components::Sprite>(e);
-
-    ImGui::DragFloat2("Size", &s->size.x, 0.01f);
-    edited |= ImGui::IsItemDeactivatedAfterEdit();
-
-    ImGui::DragFloat2("Pivot", &s->pivot.x, 0.01f);
-    edited |= ImGui::IsItemDeactivatedAfterEdit();
-
-    ImGui::DragFloat4("UV's", &s->uvs.x, 0.01f);
+    ImGui::ColorEdit4("Tint", &s->color.x);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     return edited;
