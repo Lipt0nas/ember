@@ -39,9 +39,11 @@ struct ParticleEmitterConfig {
     float    emission_rate    = 10.0f;
     float    emitter_lifetime = -1.0f;
     bool     loop             = true;
+    bool     additive         = true;
+    bool     attached         = false;
 
     template <class Archive> void serialize(Archive& ar) {
-        ar(max_particles, emission_rate, emitter_lifetime, loop);
+        ar(max_particles, emission_rate, emitter_lifetime, loop, additive, attached);
     }
 };
 
@@ -119,6 +121,8 @@ struct SimParams {
     float    delta_time  = 0.0f;
     float    time        = 0.0f;
     uint32_t particle_id = 0;
+
+    glm::vec3 emitter_pos = {};
 };
 
 struct ParticleEmitter {
@@ -143,6 +147,8 @@ struct ParticleEmitter {
     float    emission_rate        = 1.0f;
     float    emitter_lifetime     = -1.0f;
     bool     loop                 = true;
+    bool     additive             = true;
+    bool     attached             = false;
 
     ParticleEmitter() = default;
     ParticleEmitter(const std::string& name, uint32_t count, InstructionSet spawn, InstructionSet update);

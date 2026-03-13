@@ -2,6 +2,16 @@
 
 #include "ember.hpp"
 
+struct BlendingConfig {
+    bool enable_blending = false;
+
+    VkBlendFactor src_color_blend_factor = VK_BLEND_FACTOR_ONE;
+    VkBlendFactor dst_color_blend_factor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+
+    VkBlendFactor src_alpha_blend_factor = VK_BLEND_FACTOR_ONE;
+    VkBlendFactor dst_alpha_blend_factor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+};
+
 struct Shader {
     VkShaderModule        module = VK_NULL_HANDLE;
     VkShaderStageFlagBits stage;
@@ -95,7 +105,7 @@ Pipeline create_graphics_pipeline(
     const std::vector<VkFormat>&           color_attachment_formats,
     VkPipelineVertexInputStateCreateInfo   vertex_input_state,
     VkPipelineInputAssemblyStateCreateInfo input_assembly_state,
-    bool                                   enable_blending,
+    BlendingConfig                         blending_config     = {},
     VkFormat                               depth_format        = VK_FORMAT_UNDEFINED,
     bool                                   depth_test_enabled  = false,
     bool                                   depth_write_enabled = false,

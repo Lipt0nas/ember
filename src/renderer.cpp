@@ -345,7 +345,7 @@ Renderer::DebugRenderer Renderer::create_debug_renderer(
         {VK_FORMAT_R8G8B8A8_UNORM},
         vertex_input_state,
         input_assembly_state,
-        false,
+        {},
         depth_format,
         true,
         true,
@@ -408,6 +408,7 @@ void Renderer::cleanup() {
     destroy_buffer(sprite_batcher->geometry_buffer, device, vma_allocator);
     destroy_pipeline(device, sprite_batcher->geometry_build_pipline);
     destroy_pipeline(device, ui_sprite_pipeline);
+    destroy_pipeline(device, ui_particles_pipeline);
     destroy_pipeline(device, world_sprite_pipeline);
     delete sprite_batcher;
 
@@ -3467,6 +3468,26 @@ void Renderer::setup_framegraph() {
                 }
 
                 {
+                    auto& pipeline = ui_particles_pipeline;
+
+                    vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                    vkCmdBindDescriptorSets(
+                        command_buffer,
+                        pipeline.bind_point,
+                        pipeline.pipeline_layout,
+                        0,
+                        1,
+                        &global_texture_descriptor_set,
+                        0,
+                        nullptr
+                    );
+                    vkCmdPushConstants(
+                        command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, sizeof(glm::mat4), &push
+                    );
+                    sprite_batcher->render_batch(ui_particle_batch, command_buffer);
+                }
+
+                {
                     auto& pipeline = ui_sprite_text_pipeline;
 
                     vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -4922,7 +4943,7 @@ void Renderer::initialize(
             .topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
             .primitiveRestartEnable = VK_FALSE,
         },
-        false,
+        {},
         depth_buffer.format,
         true,
         true,
@@ -5010,7 +5031,7 @@ void Renderer::initialize(
         },
         vertex_input_state,
         input_assembly_state,
-        false,
+        {},
         depth_buffer.format,
         true,
         true,
@@ -5029,7 +5050,9 @@ void Renderer::initialize(
         {ui_buffer.format},
         vertex_input_state,
         input_assembly_state,
-        true,
+        {
+            .enable_blending = true,
+        },
         VK_FORMAT_UNDEFINED,
         false,
         false,
@@ -5048,7 +5071,34 @@ void Renderer::initialize(
         {ui_buffer.format},
         vertex_input_state,
         input_assembly_state,
-        true,
+        {
+            .enable_blending = true,
+        },
+        VK_FORMAT_UNDEFINED,
+        false,
+        false,
+        sizeof(glm::mat4),
+        global_texture_descriptor_layout
+
+    );
+
+    ui_particles_pipeline = create_graphics_pipeline(
+        device,
+        {
+            shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/sprite_draw.vert.spv"),
+            shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/sprite_draw_ui.frag.spv"),
+        },
+        {},
+        {ui_buffer.format},
+        vertex_input_state,
+        input_assembly_state,
+        {
+            .enable_blending        = true,
+            .src_color_blend_factor = VK_BLEND_FACTOR_ONE,
+            .dst_color_blend_factor = VK_BLEND_FACTOR_ONE,
+            .src_alpha_blend_factor = VK_BLEND_FACTOR_ONE,
+            .dst_alpha_blend_factor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        },
         VK_FORMAT_UNDEFINED,
         false,
         false,
@@ -5535,6 +5585,8 @@ void Renderer::render_frame(float delta_time) {
                     emitter.emission_rate    = cfg.emission_rate;
                     emitter.emitter_lifetime = cfg.emitter_lifetime;
                     emitter.loop             = cfg.loop;
+                    emitter.additive         = cfg.additive;
+                    emitter.attached         = cfg.attached;
                 }
 
                 p.dirty = false;
@@ -5554,21 +5606,28 @@ void Renderer::render_frame(float delta_time) {
                 continue;
             }
 
-            SimParams params = {
-                .delta_time  = delta_time,
-                .time        = world->time,
-                .particle_id = 0,
-            };
-
             for (auto& emitter : p.effect->emitters) {
+                glm::vec3 emitter_pos = t.world_position;
+                SimParams params      = {
+                         .delta_time  = delta_time,
+                         .time        = world->time,
+                         .particle_id = 0,
+                         .emitter_pos = emitter_pos,
+                };
+
                 emitter.simulate(params);
 
                 for (uint32_t i = 0; i < emitter.live_count; ++i) {
                     const Particle& pt = emitter.particles[i];
 
+                    glm::vec3 particle_position = pt.position;
+                    if (emitter.attached) {
+                        particle_position += emitter_pos;
+                    }
+
                     sprite_batcher->draw(
                         SpriteBatcher::Drawcall{
-                            .position   = t.world_position + glm::vec3(pt.position),
+                            .position   = particle_position,
                             .rotation   = t.world_rotation,
                             .size       = t.scale * pt.size,
                             .pivot      = s.pivot,
@@ -5619,6 +5678,7 @@ void Renderer::render_frame(float delta_time) {
             );
         }
     }
+    ui_sprite_batch = sprite_batcher->end_batch();
 
     // UI Particle effects
     {
@@ -5646,6 +5706,8 @@ void Renderer::render_frame(float delta_time) {
                     emitter.emission_rate    = cfg.emission_rate;
                     emitter.emitter_lifetime = cfg.emitter_lifetime;
                     emitter.loop             = cfg.loop;
+                    emitter.additive         = cfg.additive;
+                    emitter.attached         = cfg.attached;
                 }
 
                 p.dirty = false;
@@ -5665,26 +5727,32 @@ void Renderer::render_frame(float delta_time) {
                 continue;
             }
 
-            SimParams params = {
-                .delta_time  = delta_time,
-                .time        = world->time,
-                .particle_id = 0,
-            };
-
             float     rotation    = glm::eulerAngles(t.world_rotation).z;
             glm::quat ui_rotation = glm::angleAxis(rotation, glm::vec3(0, 0, 1));
 
             for (auto& emitter : p.effect->emitters) {
-                emitter.simulate(params);
-
                 glm::vec2 emitter_pos = glm::vec2(t.world_position);
+
+                SimParams params = {
+                    .delta_time  = delta_time,
+                    .time        = world->time,
+                    .particle_id = 0,
+                    .emitter_pos = glm::vec3(emitter_pos, 0.0f),
+                };
+
+                emitter.simulate(params);
 
                 for (uint32_t i = 0; i < emitter.live_count; ++i) {
                     const Particle& pt = emitter.particles[i];
 
+                    glm::vec3 particle_position = glm::vec3(glm::vec2(pt.position), 0.0f);
+                    if (emitter.attached) {
+                        particle_position += glm::vec3(emitter_pos, 0.0f);
+                    }
+
                     sprite_batcher->draw(
                         SpriteBatcher::Drawcall{
-                            .position   = glm::vec3(emitter_pos + glm::vec2(pt.position), 0.0f),
+                            .position   = particle_position,
                             .rotation   = ui_rotation,
                             .size       = t.scale * pt.size,
                             .pivot      = s.pivot,
@@ -5697,7 +5765,7 @@ void Renderer::render_frame(float delta_time) {
             }
         }
     }
-    ui_sprite_batch = sprite_batcher->end_batch();
+    ui_particle_batch = sprite_batcher->end_batch();
 
     // UI Text
     {
@@ -6089,7 +6157,7 @@ SpriteBatcher::Batch SpriteBatcher::end_batch() {
     uint32_t drawcalls = drawcall_count - last_batch.global_drawcall_mark;
 
     drawcall_batches.push_back({
-        .geometry_offset      = last_batch.drawcall_count * sizeof(SpriteVertex) * 6,
+        .geometry_offset      = last_batch.global_drawcall_mark * sizeof(SpriteVertex) * 6,
         .drawcall_count       = drawcalls,
         .global_drawcall_mark = drawcall_count,
     });
