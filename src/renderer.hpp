@@ -31,6 +31,7 @@ public:
         glm::vec2 uv;
         glm::vec4 color;
         int       data_index;
+        uint32_t  drawcall_index;
     };
 
     struct Batch {
@@ -214,6 +215,7 @@ private:
 
     SpriteBatcher*       sprite_batcher = nullptr;
     SpriteBatcher::Batch world_sprite_batch;
+    SpriteBatcher::Batch world_sprite_particle_batch;
     SpriteBatcher::Batch ui_sprite_batch;
     SpriteBatcher::Batch ui_particle_batch;
     SpriteBatcher::Batch ui_text_sprite_batch;
@@ -527,6 +529,9 @@ private:
 
     Pipeline                     world_sprite_pipeline;
     std::vector<VkDescriptorSet> world_sprite_pipeline_descriptor_sets;
+
+    Pipeline                     world_sprite_particle_pipeline;
+    std::vector<VkDescriptorSet> world_sprite_particle_pipeline_descriptor_sets;
 
     Pipeline ui_sprite_pipeline;
     Pipeline ui_particles_pipeline;
