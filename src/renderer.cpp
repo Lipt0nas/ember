@@ -434,8 +434,6 @@ void Renderer::cleanup() {
     destroy_buffer(luminance_buffer, device, vma_allocator);
     destroy_buffer(indirect_dispatch_tile_copy_buffer, device, vma_allocator);
     destroy_buffer(indirect_dispatch_tile_process_buffer, device, vma_allocator);
-    destroy_buffer(particle_position_buffer, device, vma_allocator);
-    destroy_buffer(particle_velocity_buffer, device, vma_allocator);
 
     destroy_image(ui_buffer, device, vma_allocator);
     destroy_image(depth_buffer, device, vma_allocator);
@@ -499,8 +497,6 @@ void Renderer::cleanup() {
     destroy_pipeline(device, smaa_weights_pipeline);
     destroy_pipeline(device, luminance_histogram_pipeline);
     destroy_pipeline(device, luminance_average_pipeline);
-    destroy_pipeline(device, particle_render_pipeline);
-    destroy_pipeline(device, particle_update_pipeline);
 
     if (this->hardware_rt_enabled) {
         destroy_rt_scene(rt_scene, device, vma_allocator);
@@ -2632,189 +2628,6 @@ void Renderer::setup_framegraph() {
                 vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
             });
 
-    particle_update_pipeline = create_compute_pipeline(
-        device,
-        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/particle_update.comp.spv"),
-        {
-            DescriptorLayout{
-                .bindings = {
-                    DescriptorBinding{
-                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                        .write_info = DescriptorInfo(particle_position_buffer.handle)
-                    },
-                    DescriptorBinding{
-                        .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                        .write_info = DescriptorInfo(particle_velocity_buffer.handle)
-                    },
-                },
-            },
-        }
-    );
-    particle_update_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, particle_update_pipeline);
-
-    auto& particle_update_pass =
-        framegraph->add_pass("particle update")
-            .writes_buffer(
-                particle_velocity_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
-            )
-            .reads_buffer(
-                particle_position_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT
-            )
-            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                if (!enable_particles) {
-                    return;
-                }
-
-                const Pipeline& pipeline = particle_update_pipeline;
-
-                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
-                vkCmdBindDescriptorSets(
-                    command_buffer,
-                    VK_PIPELINE_BIND_POINT_COMPUTE,
-                    pipeline.pipeline_layout,
-                    0,
-                    particle_update_descriptor_sets.size(),
-                    particle_update_descriptor_sets.data(),
-                    0,
-                    nullptr
-                );
-
-                vkCmdDispatch(command_buffer, (particle_count + 255) / 256, 1, 1);
-            });
-
-    particle_render_pipeline = create_graphics_pipeline(
-        device,
-        {
-            shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/particle_render.vert.spv"),
-            shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/particle_render.frag.spv"),
-        },
-        {
-            scene_data_layout,
-            DescriptorLayout{
-                .bindings =
-                    {
-                        DescriptorBinding{
-                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                            .write_info = DescriptorInfo(particle_position_buffer.handle)
-                        },
-                    }
-            },
-
-        },
-        {
-            lightpass_output.format,
-        },
-        {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-        },
-        {
-            .sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            .pNext                  = nullptr,
-            .flags                  = 0,
-            .topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            .primitiveRestartEnable = VK_FALSE,
-        },
-        true,
-        depth_buffer.format,
-        true,
-        true
-    );
-    particle_render_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, particle_render_pipeline);
-
-    auto& particle_render_pass =
-        framegraph->add_pass("particle render")
-            .writes_color_attachment(lightpass_output)
-            .reads_image(
-                depth_buffer,
-                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-                VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL
-            )
-            .reads_buffer_dynamic(
-                scene_ubo_buffer,
-                VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
-                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-                VK_ACCESS_2_UNIFORM_READ_BIT,
-                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
-            )
-            .reads_buffer(
-                particle_position_buffer,
-                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-                VK_ACCESS_2_SHADER_READ_BIT
-            )
-            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                if (!enable_particles) {
-                    return;
-                }
-
-                std::array<uint32_t, 1> offsets = {dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)]};
-
-                auto& pipeline = particle_render_pipeline;
-
-                VkRenderingAttachmentInfo color_attachment = {
-                    .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                    .pNext              = nullptr,
-                    .imageView          = lightpass_output.view,
-                    .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    .resolveMode        = VK_RESOLVE_MODE_NONE,
-                    .resolveImageView   = VK_NULL_HANDLE,
-                    .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                    .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
-                    .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-                    .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
-                };
-
-                VkRenderingAttachmentInfo depth_attachment = {
-                    .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                    .pNext              = nullptr,
-                    .imageView          = depth_buffer.view,
-                    .imageLayout        = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                    .resolveMode        = VK_RESOLVE_MODE_NONE,
-                    .resolveImageView   = VK_NULL_HANDLE,
-                    .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                    .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
-                    .storeOp            = VK_ATTACHMENT_STORE_OP_NONE,
-                    .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
-                };
-
-                VkRenderingInfo rendering_info = {
-                    .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                    .pNext = nullptr,
-                    .flags = 0,
-                    .renderArea =
-                        {
-                            .offset = {.x = 0, .y = 0},
-                            .extent = {.width = swapchain.width, .height = swapchain.height},
-                        },
-                    .layerCount           = 1,
-                    .viewMask             = 0,
-                    .colorAttachmentCount = 1,
-                    .pColorAttachments    = &color_attachment,
-                    .pDepthAttachment     = &depth_attachment,
-                    .pStencilAttachment   = nullptr
-                };
-
-                vkCmdBeginRendering(command_buffer, &rendering_info);
-
-                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
-                vkCmdBindDescriptorSets(
-                    command_buffer,
-                    pipeline.bind_point,
-                    pipeline.pipeline_layout,
-                    0,
-                    particle_render_descriptor_sets.size(),
-                    particle_render_descriptor_sets.data(),
-                    offsets.size(),
-                    offsets.data()
-                );
-
-                vkCmdDraw(command_buffer, particle_count * 6, 1, 0, 0);
-
-                vkCmdEndRendering(command_buffer);
-            });
-
     luminance_histogram_pipeline = create_compute_pipeline(
         device,
         shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/luminance_histogram.comp.spv"),
@@ -4231,17 +4044,6 @@ void Renderer::initialize(
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
 
-    particle_position_buffer = create_buffer(
-        sizeof(glm::vec3) * particle_count,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        vma_allocator
-    );
-    particle_velocity_buffer = create_buffer(
-        sizeof(glm::vec3) * particle_count,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        vma_allocator
-    );
-
     depth_buffer = create_image(
         VK_FORMAT_D32_SFLOAT,
         swapchain.width,
@@ -4913,37 +4715,6 @@ void Renderer::initialize(
         VK_CHECK(vkDeviceWaitIdle(device));
 
         destroy_pipeline(device, brdf_lut_pipeline);
-    }
-
-    {
-        std::vector<glm::vec3> positions(particle_count);
-        std::vector<glm::vec3> velocities(particle_count);
-        for (int i = 0; i < positions.size(); i++) {
-            positions[i]  = glm::ballRand(20.0f);
-            velocities[i] = glm::ballRand(20.0f);
-        }
-
-        copy_to_buffer(staging_buffer, vma_allocator, positions.data(), sizeof(glm::vec3) * positions.size());
-        copy_buffer(
-            staging_buffer,
-            particle_position_buffer,
-            command_buffers[0],
-            graphics_queue,
-            device,
-            sizeof(glm::vec3) * positions.size(),
-            0
-        );
-
-        copy_to_buffer(staging_buffer, vma_allocator, velocities.data(), sizeof(glm::vec3) * velocities.size());
-        copy_buffer(
-            staging_buffer,
-            particle_velocity_buffer,
-            command_buffers[0],
-            graphics_queue,
-            device,
-            sizeof(glm::vec3) * velocities.size(),
-            0
-        );
     }
 
     debug_renderer_constants = {};

@@ -91,7 +91,6 @@ public:
     uint32_t graphics_family_index;
     VkQueue  graphics_queue = VK_NULL_HANDLE;
 
-    bool enable_particles           = false;
     bool meshlets_enabled           = false;
     bool hardware_rt_enabled        = false;
     bool supports_timestamp_queries = true;
@@ -234,10 +233,6 @@ private:
 
     Buffer scene_ubo_buffer;
     Buffer lighting_ubo_buffer;
-
-    Buffer particle_buffer;
-    Buffer particle_position_buffer;
-    Buffer particle_velocity_buffer;
 
     Buffer luminance_buffer;
 
@@ -504,14 +499,6 @@ private:
 
     Pipeline                     reflection_tile_copy_pipeline;
     std::vector<VkDescriptorSet> reflection_tile_copy_descriptor_sets;
-
-    static constexpr int particle_count = 10000;
-
-    Pipeline                     particle_update_pipeline;
-    std::vector<VkDescriptorSet> particle_update_descriptor_sets;
-
-    Pipeline                     particle_render_pipeline;
-    std::vector<VkDescriptorSet> particle_render_descriptor_sets;
 
     Pipeline                     luminance_histogram_pipeline;
     std::vector<VkDescriptorSet> luminance_histogram_descriptor_sets;
