@@ -361,7 +361,6 @@ ParticleEditor::CompileResult ParticleEditor::compile(EmitterGraph& emitter, Nod
         for (auto& p : node->inputs) {
             assign(p.id);
         }
-
         for (auto& p : node->outputs) {
             assign(p.id);
         }
@@ -388,10 +387,22 @@ ParticleEditor::CompileResult ParticleEditor::compile(EmitterGraph& emitter, Nod
         }
     }
 
+    for (const auto& pin : root->inputs) {
+        if (pin.connected_to < 0) {
+            result.constants[reg.at(pin.id)] = pin.constant;
+        }
+    }
+
     auto src = [&](const Node* node, int i) -> uint16_t {
         const Pin& p = node->inputs[i];
 
-        return reg.at(p.connected_to >= 0 ? p.connected_to : p.id);
+        int  key = p.connected_to >= 0 ? p.connected_to : p.id;
+        auto it  = reg.find(key);
+        if (it == reg.end()) {
+            result.errors.push_back({"pin not assigned a register", node->id});
+            return 0;
+        }
+        return it->second;
     };
 
     for (Node* node : order) {

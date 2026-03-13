@@ -554,9 +554,9 @@ int World::load_particle_effect(AssetID id) {
         return -1;
     }
 
-    std::ifstream asset_file(metadata->asset_path);
+    std::ifstream asset_file(metadata->asset_path, std::ios::binary);
     if (!asset_file.is_open()) {
-        spdlog::error("Failed to open material {} for reading", metadata->asset_path);
+        spdlog::error("Failed to open particle effect file {} for reading", metadata->asset_path);
         return -1;
     }
 
@@ -583,7 +583,7 @@ int World::load_particle_effect(AssetID id) {
         emitter.spawn_instructions.resize(spawn_instruction_count);
 
         emitter.update_register_state.resize(header.update_register_count);
-        emitter.update_instructions.resize(spawn_instruction_count);
+        emitter.update_instructions.resize(update_instruction_count);
 
         archive.loadBinary(emitter.spawn_register_state.data(), header.spawn_register_count * sizeof(glm::vec4));
         archive.loadBinary(emitter.spawn_instructions.data(), header.spawn_instruction_size);
