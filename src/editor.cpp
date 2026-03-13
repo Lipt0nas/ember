@@ -789,6 +789,14 @@ template <> bool Editor::render_component_ui<components::ParticleEffect>(Entity 
         return edited;
     }
 
+    if (ImGui::Checkbox("Active", &p->active)) {
+        edited |= true;
+    }
+
+    if (ImGui::Button("Reload")) {
+        p->dirty = true;
+    }
+
     for (int i = 0; i < p->effect->emitters.size(); i++) {
         ImGui::PushID(i);
 
@@ -809,19 +817,19 @@ template <> bool Editor::render_component_ui<components::ParticleEffect>(Entity 
             edited |= true;
         }
 
+        if (ImGui::Checkbox("Additive", &cfg.additive)) {
+            edited |= true;
+        }
+
+        if (ImGui::Checkbox("Attached", &cfg.attached)) {
+            edited |= true;
+        }
+
         if (edited) {
             p->dirty = true;
         }
 
         ImGui::PopID();
-    }
-
-    if (ImGui::Checkbox("Active", &p->active)) {
-        edited |= true;
-    }
-
-    if (ImGui::Button("Reload")) {
-        p->dirty = true;
     }
 
     return edited;

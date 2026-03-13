@@ -18,5 +18,6 @@ void main() {
     vec4 color = texture(textures[nonuniformEXT(in_data_index)], in_uv);
     color.rgb *= color.a;
 
-    out_color = color * in_color;
+    out_color.rgb = color.rgb * in_color.rgb * in_color.a;
+    out_color.a = color.a * in_color.a;
 }

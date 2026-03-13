@@ -258,7 +258,7 @@ Pipeline create_graphics_pipeline(
     const std::vector<VkFormat>&           color_attachment_formats,
     VkPipelineVertexInputStateCreateInfo   vertex_input_state,
     VkPipelineInputAssemblyStateCreateInfo input_assembly_state,
-    bool                                   enable_blending,
+    BlendingConfig                         blending_config,
     VkFormat                               depth_format,
     bool                                   depth_test_enabled,
     bool                                   depth_write_enabled,
@@ -360,12 +360,12 @@ Pipeline create_graphics_pipeline(
     std::vector<VkPipelineColorBlendAttachmentState> color_blend_attachment_states;
     for (VkFormat format : color_attachment_formats) {
         color_blend_attachment_states.push_back({
-            .blendEnable         = enable_blending,
-            .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
-            .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .blendEnable         = blending_config.enable_blending,
+            .srcColorBlendFactor = blending_config.src_color_blend_factor,
+            .dstColorBlendFactor = blending_config.dst_color_blend_factor,
             .colorBlendOp        = VK_BLEND_OP_ADD,
-            .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-            .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .srcAlphaBlendFactor = blending_config.src_alpha_blend_factor,
+            .dstAlphaBlendFactor = blending_config.dst_alpha_blend_factor,
             .alphaBlendOp        = VK_BLEND_OP_ADD,
             .colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
                               VK_COLOR_COMPONENT_A_BIT,

@@ -215,6 +215,7 @@ private:
     SpriteBatcher*       sprite_batcher = nullptr;
     SpriteBatcher::Batch world_sprite_batch;
     SpriteBatcher::Batch ui_sprite_batch;
+    SpriteBatcher::Batch ui_particle_batch;
     SpriteBatcher::Batch ui_text_sprite_batch;
 
     std::vector<VkDescriptorPoolSize> descriptor_pool_sizes;
@@ -528,6 +529,7 @@ private:
     std::vector<VkDescriptorSet> world_sprite_pipeline_descriptor_sets;
 
     Pipeline ui_sprite_pipeline;
+    Pipeline ui_particles_pipeline;
     Pipeline ui_sprite_text_pipeline;
 
     std::vector<uint32_t> dynamic_offsets;
