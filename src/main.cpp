@@ -1009,12 +1009,6 @@ int main(int argc, char* argv[]) {
         }
 
         ImGui::Begin(ICON_FA_COGS " Configuration");
-        if (ImGui::Checkbox("Enable Particles", &world.renderer.enable_particles)) {
-            char* str;
-            vmaBuildStatsString(world.renderer.vma_allocator, &str, VK_TRUE);
-            spdlog::info("{}", str);
-            vmaFreeStatsString(world.renderer.vma_allocator, str);
-        }
         ImGui::InputInt("Simulate Target FPS", &simulated_fps);
         ImGui::Checkbox("Simulate FPS", &simulate_lower_fps);
         if (ImGui::CollapsingHeader("Renderer Info", ImGuiTreeNodeFlags_DefaultOpen)) {
