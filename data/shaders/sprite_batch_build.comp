@@ -51,4 +51,5 @@ void main() {
     geometry[geometry_id].uv = uvs[vertex_id];
     geometry[geometry_id].color = drawcall.color;
     geometry[geometry_id].data_index = drawcall.data_index;
+    geometry[geometry_id].drawcall_index = drawcall_id;
 }

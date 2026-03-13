@@ -19,12 +19,23 @@ layout(location = 2) out vec2 out_uv;
 layout(location = 3) out vec4 out_color;
 layout(location = 4) flat out int out_data_index;
 
+layout(scalar, set = 1, binding = 0) readonly buffer SpriteBuffer {
+    SpriteDraw draw_calls[];
+};
+
 layout(push_constant, std430) uniform pc {
     mat4 combined_matrix;
+    mat4 view_matrix;
 } push;
 
 void main() {
-    gl_Position = push.combined_matrix * vec4(in_position, 1.0);
+    vec3 cam_right = -vec3(push.view_matrix[0][0], push.view_matrix[1][0], push.view_matrix[2][0]);
+    vec3 cam_up = vec3(push.view_matrix[0][1], push.view_matrix[1][1], push.view_matrix[2][1]);
+
+    vec3 offset = in_position - draw_calls[in_drawcall_index].position;
+    vec3 pos = draw_calls[in_drawcall_index].position + cam_right * offset.x + cam_up * offset.y;
+
+    gl_Position = push.combined_matrix * vec4(pos, 1.0);
 
     out_pos = in_position;
     out_normal = in_normal;

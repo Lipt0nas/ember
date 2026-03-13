@@ -61,6 +61,7 @@ struct SpriteVertex {
     vec2 uv;
     vec4 color;
     int data_index;
+    uint drawcall_index;
 };
 
 struct IndirectDispatchCommand {

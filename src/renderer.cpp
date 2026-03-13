@@ -409,7 +409,9 @@ void Renderer::cleanup() {
     destroy_pipeline(device, sprite_batcher->geometry_build_pipline);
     destroy_pipeline(device, ui_sprite_pipeline);
     destroy_pipeline(device, ui_particles_pipeline);
+    destroy_pipeline(device, ui_sprite_text_pipeline);
     destroy_pipeline(device, world_sprite_pipeline);
+    destroy_pipeline(device, world_sprite_particle_pipeline);
     delete sprite_batcher;
 
     destroy_buffer(staging_buffer, device, vma_allocator);
@@ -2610,6 +2612,133 @@ void Renderer::setup_framegraph() {
                 );
 
                 vkCmdDispatch(command_buffer, (swapchain.width + 7) / 8, (swapchain.height + 7) / 8, 1);
+            });
+
+    auto& particle_pass =
+        framegraph->add_pass("World Particles (CPU)")
+            .reads_buffer_dynamic(
+                sprite_batcher->drawcall_buffer,
+                VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                sprite_batcher->drawcall_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                scene_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                lighting_ubo_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_UNIFORM_READ_BIT,
+                lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer(
+                ddgi_probe_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+            )
+            .reads_image(
+                depth_buffer,
+                VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL
+            )
+            .samples_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .samples_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+            .writes_color_attachment(lightpass_output)
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                uint32_t batch_offset = (sprite_batcher->drawcall_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+
+                std::array<uint32_t, 5> offsets = {
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
+                    batch_offset
+                };
+
+                auto&                          pipeline    = world_sprite_particle_pipeline;
+                std::array<VkDescriptorSet, 3> descriptors = {
+                    world_sprite_particle_pipeline_descriptor_sets[0],
+                    world_sprite_particle_pipeline_descriptor_sets[1],
+                    global_texture_descriptor_set
+                };
+
+                std::vector<VkRenderingAttachmentInfo> color_attachments = {
+                    {
+                        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                        .pNext              = nullptr,
+                        .imageView          = lightpass_output.view,
+                        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .resolveMode        = VK_RESOLVE_MODE_NONE,
+                        .resolveImageView   = VK_NULL_HANDLE,
+                        .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
+                        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                        .clearValue         = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+                    },
+                };
+
+                VkRenderingAttachmentInfo depth_attachment_info = {
+                    .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                    .pNext              = nullptr,
+                    .imageView          = depth_buffer.view,
+                    .imageLayout        = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                    .resolveMode        = VK_RESOLVE_MODE_NONE,
+                    .resolveImageView   = VK_NULL_HANDLE,
+                    .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
+                    .storeOp            = VK_ATTACHMENT_STORE_OP_NONE,
+                    .clearValue         = {.depthStencil = {.depth = 0.0f, .stencil = 0}}
+                };
+
+                VkRenderingInfo rendering_info = {
+                    .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .renderArea =
+                        {
+                            .offset = {.x = 0, .y = 0},
+                            .extent = {.width = swapchain.width, .height = swapchain.height},
+                        },
+                    .layerCount           = 1,
+                    .viewMask             = 0,
+                    .colorAttachmentCount = static_cast<uint32_t>(color_attachments.size()),
+                    .pColorAttachments    = color_attachments.data(),
+                    .pDepthAttachment     = &depth_attachment_info,
+                    .pStencilAttachment   = nullptr
+                };
+
+                vkCmdBeginRendering(command_buffer, &rendering_info);
+
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    pipeline.bind_point,
+                    pipeline.pipeline_layout,
+                    0,
+                    descriptors.size(),
+                    descriptors.data(),
+                    offsets.size(),
+                    offsets.data()
+                );
+
+                struct {
+                    glm::mat4 combined;
+                    glm::mat4 view;
+                } push;
+
+                push.combined = camera->combined_matrix;
+                push.view     = camera->view_matrix;
+
+                vkCmdPushConstants(
+                    command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, sizeof(glm::mat4) * 2, &push
+                );
+
+                sprite_batcher->render_batch(world_sprite_particle_batch, command_buffer);
+
+                vkCmdEndRendering(command_buffer);
             });
 
     luminance_histogram_pipeline = create_compute_pipeline(
@@ -4957,13 +5086,15 @@ void Renderer::initialize(
          .disable_small_triangle_cull = false,
     };
 
+    sprite_batcher = new SpriteBatcher(this, 100000);
+
     VkVertexInputBindingDescription vertex_binding_description = {
         .binding   = 0,
-        .stride    = sizeof(float) * 13,
+        .stride    = sizeof(SpriteBatcher::SpriteVertex),
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
 
-    std::array<VkVertexInputAttributeDescription, 5> attribute_desriptions = {
+    std::array<VkVertexInputAttributeDescription, 6> attribute_desriptions = {
         VkVertexInputAttributeDescription{
             .location = 0,
             .binding  = 0,
@@ -4995,6 +5126,12 @@ void Renderer::initialize(
             .binding  = 0,
             .format   = VK_FORMAT_R32_SINT,
             .offset   = sizeof(float) * 12,
+        },
+        VkVertexInputAttributeDescription{
+            .location = 5,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32_UINT,
+            .offset   = sizeof(float) * 13,
         },
     };
 
@@ -5039,6 +5176,45 @@ void Renderer::initialize(
         global_texture_descriptor_layout
     );
     world_sprite_pipeline_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, world_sprite_pipeline);
+
+    world_sprite_particle_pipeline = create_graphics_pipeline(
+        device,
+        {
+            shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/sprite_draw_world_billboard.vert.spv"),
+            shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/sprite_draw_particles_world.frag.spv"),
+        },
+        {draw_data_layout,
+         DescriptorLayout{
+             .bindings =
+                 {
+                     DescriptorBinding{
+                         .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                         .write_info = DescriptorInfo(
+                             sprite_batcher->drawcall_buffer.handle,
+                             0,
+                             sprite_batcher->drawcall_buffer.size / FRAMES_IN_FLIGHT
+                         )
+                     },
+                 }
+         }},
+        {lightpass_output.format},
+        vertex_input_state,
+        input_assembly_state,
+        {
+            .enable_blending        = true,
+            .src_color_blend_factor = VK_BLEND_FACTOR_ONE,
+            .dst_color_blend_factor = VK_BLEND_FACTOR_ONE,
+            .src_alpha_blend_factor = VK_BLEND_FACTOR_ONE,
+            .dst_alpha_blend_factor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        },
+        depth_buffer.format,
+        true,
+        false,
+        sizeof(glm::mat4) * 2,
+        global_texture_descriptor_layout
+    );
+    world_sprite_particle_pipeline_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, world_sprite_particle_pipeline);
 
     ui_sprite_pipeline = create_graphics_pipeline(
         device,
@@ -5411,8 +5587,6 @@ void Renderer::initialize(
 
     dynamic_offsets.resize(static_cast<uint32_t>(DynamicOffset::COUNT));
 
-    sprite_batcher = new SpriteBatcher(this, 100000);
-
     setup_framegraph();
 }
 
@@ -5557,6 +5731,7 @@ void Renderer::render_frame(float delta_time) {
             );
         }
     }
+    world_sprite_batch = sprite_batcher->end_batch();
 
     // 3D in-world particles
     {
@@ -5644,7 +5819,7 @@ void Renderer::render_frame(float delta_time) {
             }
         }
     }
-    world_sprite_batch = sprite_batcher->end_batch();
+    world_sprite_particle_batch = sprite_batcher->end_batch();
 
     // UI sprites
     {
