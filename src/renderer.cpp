@@ -411,6 +411,7 @@ void Renderer::cleanup() {
     destroy_pipeline(device, ui_particles_pipeline);
     destroy_pipeline(device, ui_sprite_text_pipeline);
     destroy_pipeline(device, world_sprite_pipeline);
+    destroy_pipeline(device, world_sprite_text_pipeline);
     destroy_pipeline(device, world_sprite_particle_pipeline);
     delete sprite_batcher;
 
@@ -829,6 +830,39 @@ void Renderer::setup_framegraph() {
                     );
 
                     sprite_batcher->render_batch(world_sprite_batch, command_buffer);
+                }
+
+                {
+                    auto&     pipeline = world_sprite_text_pipeline;
+                    glm::mat4 push     = camera->combined_matrix;
+
+                    std::array<VkDescriptorSet, 2> descriptors = {
+                        world_sprite_text_pipeline_descriptor_sets[0], global_texture_descriptor_set
+                    };
+
+                    std::array<uint32_t, 4> offsets = {
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
+                    };
+
+                    vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                    vkCmdBindDescriptorSets(
+                        command_buffer,
+                        pipeline.bind_point,
+                        pipeline.pipeline_layout,
+                        0,
+                        descriptors.size(),
+                        descriptors.data(),
+                        offsets.size(),
+                        offsets.data()
+                    );
+                    vkCmdPushConstants(
+                        command_buffer, pipeline.pipeline_layout, pipeline.stage_flags, 0, sizeof(glm::mat4), &push
+                    );
+
+                    sprite_batcher->render_batch(world_sprite_text_batch, command_buffer);
                 }
 
                 vkCmdBindPipeline(command_buffer, gpass_pipeline.bind_point, gpass_pipeline.pipeline_handle);
@@ -5177,6 +5211,31 @@ void Renderer::initialize(
     );
     world_sprite_pipeline_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, world_sprite_pipeline);
 
+    world_sprite_text_pipeline = create_graphics_pipeline(
+        device,
+        {
+            shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/sprite_draw.vert.spv"),
+            shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/sprite_draw_world_text.frag.spv"),
+        },
+        {draw_data_layout},
+        {
+            gbuffer_albedo.format,
+            gbuffer_normals.format,
+            gbuffer_emissive.format,
+            gbuffer_id.format,
+        },
+        vertex_input_state,
+        input_assembly_state,
+        {},
+        depth_buffer.format,
+        true,
+        true,
+        sizeof(glm::mat4),
+        global_texture_descriptor_layout
+    );
+    world_sprite_text_pipeline_descriptor_sets =
+        allocate_descriptor_sets(device, descriptor_pool, world_sprite_text_pipeline);
+
     world_sprite_particle_pipeline = create_graphics_pipeline(
         device,
         {
@@ -5813,6 +5872,98 @@ void Renderer::render_frame(float delta_time) {
         }
     }
     world_sprite_particle_batch = sprite_batcher->end_batch();
+
+    // 3D in-world text
+    {
+        auto view = world->scene.entity_registry.view<components::Transform, components::Text, components::World>();
+        for (auto [e, t, tx, _] : view.each()) {
+            if (tx.font_id == AssetMetadata::INVALID_METADATA) {
+                continue;
+            }
+
+            int font_index = world->load_font(tx.font_id);
+            if (font_index == -1) {
+                continue;
+            }
+
+            Font& font = world->resources.fonts[font_index];
+
+            int tex_index = world->load_texture(font.atlas_texture_id);
+            if (tex_index == -1) {
+                continue;
+            }
+
+            float total_width = 0.0f;
+            float min_y       = 0.0f;
+            float max_y       = 0.0f;
+
+            float cursor_x = 0.0f;
+            for (char c : tx.text) {
+                auto it = font.glyphs.find((uint32_t)c);
+                if (it == font.glyphs.end()) {
+                    continue;
+                }
+
+                const auto& glyph = it->second;
+
+                float top_y    = -glyph.bearing_y * t.world_scale;
+                float bottom_y = top_y - glyph.height * t.world_scale;
+
+                min_y = std::min(min_y, bottom_y);
+                max_y = std::max(max_y, top_y);
+
+                cursor_x += glyph.advance_x * t.world_scale;
+            }
+            total_width        = cursor_x;
+            float total_height = max_y - min_y;
+
+            glm::vec3 pivot_offset = glm::vec3(-total_width * tx.pivot.x, -(min_y + total_height * tx.pivot.y), 0.0f);
+
+            float local_cursor_x = 0.0f;
+            float local_cursor_y = 0.0f;
+
+            for (char c : tx.text) {
+                auto it = font.glyphs.find((uint32_t)c);
+                if (it == font.glyphs.end()) {
+                    continue;
+                }
+
+                const auto& glyph = it->second;
+
+                if (glyph.width == 0 || glyph.height == 0) {
+                    local_cursor_x += glyph.advance_x * t.world_scale;
+                    continue;
+                }
+
+                float w = glyph.width * t.world_scale;
+                float h = glyph.height * t.world_scale;
+
+                float top_left_x = local_cursor_x + glyph.bearing_x * t.world_scale;
+                float top_left_y = local_cursor_y - glyph.bearing_y * t.world_scale;
+
+                float local_x = top_left_x + w * 0.5f;
+                float local_y = top_left_y - h;
+
+                glm::vec3 local_pos = glm::vec3(local_x, local_y, 0.0f) + pivot_offset;
+                glm::vec3 world_pos = t.world_position + (t.world_rotation * local_pos);
+
+                sprite_batcher->draw(
+                    SpriteBatcher::Drawcall{
+                        .position   = world_pos,
+                        .rotation   = t.world_rotation,
+                        .size       = glm::vec2(w, h),
+                        .pivot      = {0.5f, 0.0f},
+                        .uvs        = glyph.uvs,
+                        .color      = tx.color,
+                        .data_index = tex_index,
+                    }
+                );
+
+                local_cursor_x += glyph.advance_x * t.world_scale;
+            }
+        }
+    }
+    world_sprite_text_batch = sprite_batcher->end_batch();
 
     // UI sprites
     {

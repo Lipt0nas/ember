@@ -16,7 +16,7 @@ layout(set = 0, binding = 0) uniform sampler2D textures[];
 
 void main() {
     float distance = texture(textures[nonuniformEXT(in_data_index)], in_uv).r;
-    float alpha = smoothstep(0.5 - 0.1, 0.5 + 0.1, distance);
+    float alpha = smoothstep(0.5 - 0.05, 0.5 + 0.05, distance);
 
     out_color = vec4(in_color * alpha);
 }
