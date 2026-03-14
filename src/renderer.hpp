@@ -216,6 +216,7 @@ private:
     SpriteBatcher*       sprite_batcher = nullptr;
     SpriteBatcher::Batch world_sprite_batch;
     SpriteBatcher::Batch world_sprite_particle_batch;
+    SpriteBatcher::Batch world_sprite_text_batch;
     SpriteBatcher::Batch ui_sprite_batch;
     SpriteBatcher::Batch ui_particle_batch;
     SpriteBatcher::Batch ui_text_sprite_batch;
@@ -529,6 +530,9 @@ private:
 
     Pipeline                     world_sprite_pipeline;
     std::vector<VkDescriptorSet> world_sprite_pipeline_descriptor_sets;
+
+    Pipeline                     world_sprite_text_pipeline;
+    std::vector<VkDescriptorSet> world_sprite_text_pipeline_descriptor_sets;
 
     Pipeline                     world_sprite_particle_pipeline;
     std::vector<VkDescriptorSet> world_sprite_particle_pipeline_descriptor_sets;

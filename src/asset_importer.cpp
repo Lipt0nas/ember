@@ -1116,15 +1116,11 @@ AssetImporter::import_font(const std::filesystem::path& path, const FontMetadata
             continue;
         }
 
-        spdlog::info("Char '{}' ({}): bearing_y={}, height={}", (char)i, i, bitmap.bearing_y, bitmap.height);
-
         bitmap.bitmap.assign(sdf_bitmap, sdf_bitmap + bitmap.width * bitmap.height);
         stbtt_FreeSDF(sdf_bitmap, nullptr);
 
         glyph_bitmaps.push_back(bitmap);
     }
-
-    spdlog::info("packing bitmap");
 
     int                  atlas_width  = 1024;
     int                  atlas_height = 1024;
