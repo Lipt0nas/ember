@@ -150,6 +150,9 @@ struct ParticleEmitter {
     bool     additive             = true;
     bool     attached             = false;
 
+    float current_lifetime = 0.0f;
+    bool  finished         = false;
+
     ParticleEmitter() = default;
     ParticleEmitter(const std::string& name, uint32_t count, InstructionSet spawn, InstructionSet update);
 

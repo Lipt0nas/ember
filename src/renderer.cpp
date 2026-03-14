@@ -5755,6 +5755,7 @@ void Renderer::render_frame(float delta_time) {
                     emitter.resize(cfg.max_particles);
                     emitter.emission_rate    = cfg.emission_rate;
                     emitter.emitter_lifetime = cfg.emitter_lifetime;
+                    emitter.current_lifetime = cfg.emitter_lifetime;
                     emitter.loop             = cfg.loop;
                     emitter.additive         = cfg.additive;
                     emitter.attached         = cfg.attached;
@@ -5874,6 +5875,7 @@ void Renderer::render_frame(float delta_time) {
                     emitter.resize(cfg.max_particles);
                     emitter.emission_rate    = cfg.emission_rate;
                     emitter.emitter_lifetime = cfg.emitter_lifetime;
+                    emitter.current_lifetime = cfg.emitter_lifetime;
                     emitter.loop             = cfg.loop;
                     emitter.additive         = cfg.additive;
                     emitter.attached         = cfg.attached;
