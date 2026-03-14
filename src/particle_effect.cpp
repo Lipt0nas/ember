@@ -178,7 +178,7 @@ void ParticleEmitter::execute_instruction(
 }
 
 void ParticleEmitter::simulate(SimParams params) {
-    if (emission_rate > 0.0f) {
+    if (emission_rate > 0.0f && !finished) {
         emission_accumulator += params.delta_time;
         const float interval = 1.0f / emission_rate;
 
@@ -222,13 +222,15 @@ void ParticleEmitter::simulate(SimParams params) {
         i++;
     }
 
-    if (emitter_lifetime >= 0.0f) {
-        emitter_lifetime -= params.delta_time;
+    if (current_lifetime >= 0.0f && emitter_lifetime != -1.0f) {
+        current_lifetime -= params.delta_time;
 
-        if (emitter_lifetime <= 0.0f) {
+        if (current_lifetime <= 0.0f) {
             if (loop) {
-                emitter_lifetime     = 0.0f;
+                current_lifetime     = emitter_lifetime;
                 emission_accumulator = 0.0f;
+            } else {
+                finished = true;
             }
         }
     }
