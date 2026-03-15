@@ -1179,7 +1179,12 @@ bool Editor::render_scene_node_property_window() {
 bool Editor::render_performance_window(const std::vector<std::pair<std::string, PassTiming>>& passes) {
     ImGui::SetNextWindowSize(ImVec2(200, 100), ImGuiCond_FirstUseEver);
     ImGui::Begin(ICON_FA_CLOCK " Performance");
-    if (ImGui::BeginTable("PassStats", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Sortable)) {
+    if (ImGui::BeginTable(
+            "PassStats",
+            3,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Sortable |
+                ImGuiTableFlags_SizingStretchProp
+        )) {
         ImGui::TableSetupColumn("Pass");
         ImGui::TableSetupColumn("Avg (ms)");
         ImGui::TableSetupColumn("% of Frame");
@@ -1223,7 +1228,7 @@ bool Editor::render_performance_window(const std::vector<std::pair<std::string, 
         ImGui::TableNextColumn();
         ImGui::TextColored(ImVec4(1, 1, 0, 1), "%.3f", total_avg);
         ImGui::TableNextColumn();
-        ImGui::TextColored(ImVec4(1, 1, 0, 1), "%.2f GPU Time FPS", 1000.0f / total_avg);
+        ImGui::TextColored(ImVec4(1, 1, 0, 1), "%.2f FPS", 1000.0f / total_avg);
         ImGui::EndTable();
 
         ImGui::SeparatorText("Percentage:");
