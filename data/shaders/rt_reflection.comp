@@ -217,11 +217,13 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
         vec3 diffuse = albedo.rgb * D_Oren_Nayar(NoV, NdotL, a, L, V);
         vec3 Lo = (kD * diffuse + specular) * direct_radiance * NdotL * shadow;
 
-        vec3 indirect = sample_ddgi(lighting, hit_pos, world_normal, V, ddgi_atlas, ddgi_depth);
+        DDGIWeights ddgi_weights = compute_ddgi_weights(lighting, hit_pos, world_normal, V, ddgi_depth);
+
+        vec3 indirect = sample_ddgi(ddgi_weights, lighting, world_normal, ddgi_atlas);
         vec3 diffuse_ibl = kD_ibl * indirect * albedo.rgb / PI;
 
         vec2 brdf = texture(brdf_lut, vec2(NoV, roughness)).rg;
-        vec3 ddgi_specular = sample_ddgi(lighting, hit_pos, R, V, ddgi_atlas, ddgi_depth) / PI;
+        vec3 ddgi_specular = sample_ddgi(ddgi_weights, lighting, R, ddgi_atlas) / PI;
         float norm = (1.0 - a);
         vec3 specular_ibl = ddgi_specular * (F_ibl * brdf.x + brdf.y) * norm;
 

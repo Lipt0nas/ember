@@ -170,7 +170,11 @@ void main() {
         vec3 V = ray_dir;
         vec3 pos = world_pos;
 
-        vec3 indirect = sample_ddgi(lighting, pos, world_normal, -V, ddgi_atlas, ddgi_depth);
+        DDGIWeights ddgi_weights = compute_ddgi_weights(
+                lighting, pos, world_normal, -V, ddgi_depth
+            );
+
+        vec3 indirect = sample_ddgi(ddgi_weights, lighting, world_normal, ddgi_atlas);
         indirect *= (min(albedo.rgb, vec3(0.90f)) / PI);
 
         vec3 kD = (1.0 - metallic) * albedo.rgb;

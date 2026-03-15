@@ -118,7 +118,11 @@ void main() {
         vec3 kS_ibl = F_ibl;
         vec3 kD_ibl = (vec3(1.0) - kS_ibl) * (1.0 - metallic);
 
-        vec3 irradiance = sample_ddgi(lighting, world_pos, bent_normal, V, ddgi_atlas, ddgi_depth);
+        DDGIWeights ddgi_weights = compute_ddgi_weights(
+                lighting, world_pos, normal, V, ddgi_depth
+            );
+
+        vec3 irradiance = sample_ddgi(ddgi_weights, lighting, bent_normal, ddgi_atlas);
         vec3 diffuse_ibl = kD_ibl * irradiance * albedo / PI;
 
         vec3 R = reflect(-V, normal);
@@ -133,7 +137,7 @@ void main() {
             );
 
         vec3 rt_specular = textureLod(rt_reflection_buffer, uv, 0).rgb;
-        vec3 ddgi_specular = sample_ddgi(lighting, world_pos, R, V, ddgi_atlas, ddgi_depth) / PI;
+        vec3 ddgi_specular = sample_ddgi(ddgi_weights, lighting, R, ddgi_atlas) / PI;
         vec3 prefilteredColor = mix(rt_specular, ddgi_specular, blend_to_ddgi);
         vec2 brdf = texture(brdf_lut, vec2(NoV, roughness)).rg;
 
