@@ -249,6 +249,8 @@ private:
 
     Buffer luminance_buffer;
 
+    Buffer light_buffer;
+
     std::vector<VkImageView>                   depth_mip_views;
     std::vector<VkImageView>                   bloom_mip_views;
     std::vector<std::reference_wrapper<Image>> gbuffer_images;
@@ -271,8 +273,9 @@ private:
         MESH_BUFFER,
         MATERIAL_BUFFER,
         DRAWCALL_BUFFER,
+        LIGHT_BUFFER,
 
-        COUNT = DRAWCALL_BUFFER + 1
+        COUNT = LIGHT_BUFFER + 1
     };
 
     struct MeshIndirectDrawCommand {
@@ -444,6 +447,15 @@ private:
         uint32_t                     instance_count;
         std::vector<glm::vec4>       instances;
         std::vector<VkDescriptorSet> descriptor_sets;
+
+        struct {
+            Buffer   vertex_buffer;
+            uint32_t vertex_count;
+
+            Pipeline pipeline;
+
+            std::vector<DebugLineVertex> vertices;
+        } line_renderer;
     };
 
     DebugRenderer debug_renderer;
@@ -547,8 +559,28 @@ private:
 
     void debug_renderer_start_frame(DebugRenderer& renderer, uint32_t frame_index);
     void debug_renderer_upload_data(DebugRenderer& renderer, VmaAllocator vma_allocator, uint32_t frame_index);
+    void debug_renderer_draw_ddgi_sphere(DebugRenderer& r, glm::vec3 center, float radius, glm::vec4 color);
+    void debug_renderer_draw_tube_light(
+        DebugRenderer& r, glm::vec3 start, glm::vec3 end, float radius, glm::vec3 color, int segments = 16
+    );
+    void debug_renderer_draw_line(DebugRenderer& r, glm::vec3 p1, glm::vec3 p2, glm::vec3 color);
+    void debug_renderer_draw_box(DebugRenderer& r, const glm::vec3 min, glm::vec3 max, glm::vec3 color);
+    void debug_renderer_draw_bone(DebugRenderer& r, glm::vec3 parent, glm::vec3 child, glm::vec3 color);
+    void debug_renderer_draw_frustum(DebugRenderer& r, Camera& camera, glm::vec3 color);
     void
-    debug_renderer_draw_sphere(DebugRenderer& renderer, const glm::vec3& center, float radius, const glm::vec4& color);
+    debug_renderer_draw_sphere(DebugRenderer& r, glm::vec3 center, float radius, glm::vec3 color, int segments = 16);
+    void debug_renderer_draw_cone(
+        DebugRenderer& r,
+        glm::vec3      pos,
+        glm::vec3      dir,
+        float          range,
+        float          outer_angle_cos,
+        float          inner_angle_cos,
+        glm::vec3      color
+    );
+    void debug_renderer_draw_obb(
+        DebugRenderer& r, glm::vec3 center, glm::vec3 half_extents, glm::mat3 orientation, glm::vec3 color
+    );
     DebugRenderer create_debug_renderer(
         const Buffer&    lighting_ubo,
         const VkSampler& sampler,
@@ -575,4 +607,7 @@ public:
     CompositePushConstants composite_push_constants;
     GlossyRTConstants      glossy_rt_constants;
     ShadowBlurConstants    shadow_blur_constants;
+
+    constexpr static int          MAX_LIGHTS = 1000;
+    std::array<Light, MAX_LIGHTS> lights;
 };

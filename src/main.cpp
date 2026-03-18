@@ -1223,6 +1223,7 @@ int main(int argc, char* argv[]) {
 
         if (editor.get_selected_entity() != entt::null) {
             auto t = world.scene.get_component<components::Transform>(editor.get_selected_entity());
+            auto p = world.scene.get_component<components::Parent>(editor.get_selected_entity());
 
             glm::mat4 transform = glm::translate(glm::mat4(1.0f), t->world_position);
             transform           = transform * glm::mat4_cast(t->world_rotation);
@@ -1259,16 +1260,22 @@ int main(int argc, char* argv[]) {
                 ImGuizmo::DecomposeMatrixToComponents(&delta_mat[0].x, &position.x, &rotation.x, &scale.x);
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
-                    t->position += position;
+                    t->position +=
+                        position * (p ? world.scene.get_component<components::Transform>(p->parent)->world_rotation
+                                      : glm::quat(0, 0, 0, 1));
                 }
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
-                    t->rotation =
-                        glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.x), glm::vec3(1, 0, 0)) * t->rotation;
-                    t->rotation =
-                        glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.y), glm::vec3(0, 1, 0)) * t->rotation;
-                    t->rotation =
-                        glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.z), glm::vec3(0, 0, 1)) * t->rotation;
+                    glm::quat parent_world_rot =
+                        p ? world.scene.get_component<components::Transform>(p->parent)->world_rotation
+                          : glm::quat(0, 0, 0, 1);
+                    glm::quat parent_inv = glm::inverse(parent_world_rot);
+
+                    glm::quat delta = glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.x), glm::vec3(1, 0, 0)) *
+                                      glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.y), glm::vec3(0, 1, 0)) *
+                                      glm::rotate(glm::quat(0, 0, 0, 1), glm::radians(rotation.z), glm::vec3(0, 0, 1));
+
+                    t->rotation = parent_inv * delta * parent_world_rot * t->rotation;
                 }
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {

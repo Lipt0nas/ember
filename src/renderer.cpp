@@ -199,8 +199,10 @@ void Renderer::destroy_debug_renderer(const DebugRenderer& renderer, VkDevice de
     destroy_buffer(renderer.vertex_buffer, device, vma_allocator);
     destroy_buffer(renderer.index_buffer, device, vma_allocator);
     destroy_buffer(renderer.instance_buffer, device, vma_allocator);
+    destroy_buffer(renderer.line_renderer.vertex_buffer, device, vma_allocator);
 
     destroy_pipeline(device, renderer.pipeline);
+    destroy_pipeline(device, renderer.line_renderer.pipeline);
 }
 
 Renderer::DebugRenderer Renderer::create_debug_renderer(
@@ -357,6 +359,72 @@ Renderer::DebugRenderer Renderer::create_debug_renderer(
     std::vector<glm::vec4> instances;
     instances.resize(max_instances);
 
+    std::vector<DebugLineVertex> line_vertices;
+    line_vertices.resize((1 << 16));
+
+    Buffer line_vertex_buffer = create_buffer(
+        sizeof(DebugLineVertex) * line_vertices.size() * frames_in_flight,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+
+    vertex_binding_description = {
+        .binding   = 0,
+        .stride    = sizeof(DebugLineVertex),
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+
+    std::array<VkVertexInputAttributeDescription, 2> attributes = {{
+        {
+            .location = 0,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset   = 0,
+        },
+        {
+            .location = 1,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset   = sizeof(glm::vec3),
+        },
+    }};
+
+    vertex_input_state = {
+        .sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .pNext                           = nullptr,
+        .flags                           = 0,
+        .vertexBindingDescriptionCount   = 1,
+        .pVertexBindingDescriptions      = &vertex_binding_description,
+        .vertexAttributeDescriptionCount = attributes.size(),
+        .pVertexAttributeDescriptions    = attributes.data()
+    };
+
+    input_assembly_state = {
+        .sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .pNext                  = nullptr,
+        .flags                  = 0,
+        .topology               = VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+        .primitiveRestartEnable = VK_FALSE,
+    };
+
+    Pipeline line_pipeline = create_graphics_pipeline(
+        device,
+        {
+            shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/debug_line.vert.spv"),
+            shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/debug_line.frag.spv"),
+        },
+        {},
+        {VK_FORMAT_R8G8B8A8_UNORM},
+        vertex_input_state,
+        input_assembly_state,
+        {},
+        depth_format,
+        true,
+        false,
+        sizeof(glm::mat4)
+    );
+
     return DebugRenderer{
         .vertex_buffer    = vertex_buffer,
         .index_buffer     = index_buffer,
@@ -366,33 +434,285 @@ Renderer::DebugRenderer Renderer::create_debug_renderer(
         .index_count      = static_cast<uint32_t>(indices.size()),
         .instance_count   = 0,
         .instances        = instances,
-        .descriptor_sets  = descriptor_sets
+        .descriptor_sets  = descriptor_sets,
+        .line_renderer    = {
+               .vertex_buffer = line_vertex_buffer,
+               .vertex_count  = 0,
+               .pipeline      = line_pipeline,
+               .vertices      = std::move(line_vertices),
+        },
     };
 }
 
-void Renderer::debug_renderer_draw_sphere(
-    DebugRenderer& renderer, const glm::vec3& center, float radius, const glm::vec4& color
+void Renderer::debug_renderer_draw_line(DebugRenderer& r, glm::vec3 p1, glm::vec3 p2, glm::vec3 color) {
+    r.line_renderer.vertices[r.line_renderer.vertex_count++] = {p1, color};
+    r.line_renderer.vertices[r.line_renderer.vertex_count++] = {p2, color};
+}
+
+void Renderer::debug_renderer_draw_tube_light(
+    DebugRenderer& r, glm::vec3 start, glm::vec3 end, float radius, glm::vec3 color, int segments
 ) {
-    renderer.instances[renderer.instance_count++] = glm::vec4(center, radius);
+    glm::vec3 dir    = end - start;
+    float     length = glm::length(dir);
+    if (length < 1e-6f) {
+        return;
+    }
+
+    glm::vec3 fwd   = dir / length;
+    glm::vec3 up    = glm::abs(glm::dot(fwd, glm::vec3(0, 1, 0))) < 0.99f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
+    glm::vec3 right = glm::normalize(glm::cross(fwd, up));
+    up              = glm::cross(right, fwd);
+
+    for (int i = 0; i < segments; i++) {
+        float a0 = (i / (float)segments) * glm::two_pi<float>();
+        float a1 = ((i + 1) / (float)segments) * glm::two_pi<float>();
+
+        glm::vec3 p0 = (glm::cos(a0) * right + glm::sin(a0) * up) * radius;
+        glm::vec3 p1 = (glm::cos(a1) * right + glm::sin(a1) * up) * radius;
+
+        debug_renderer_draw_line(r, start + p0, start + p1, color);
+        debug_renderer_draw_line(r, end + p0, end + p1, color);
+
+        if (i % (segments / 4) == 0) {
+            debug_renderer_draw_line(r, start + p0, end + p0, color);
+        }
+    }
+
+    debug_renderer_draw_line(r, start, end, color);
+}
+
+void Renderer::debug_renderer_draw_bone(DebugRenderer& r, glm::vec3 parent, glm::vec3 child, glm::vec3 color) {
+    glm::vec3 dir    = child - parent;
+    float     length = glm::length(dir);
+    if (length < 1e-6f) {
+        return;
+    }
+
+    glm::vec3 fwd = dir / length;
+
+    glm::vec3 up    = glm::abs(glm::dot(fwd, glm::vec3(0, 1, 0))) < 0.99f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
+    glm::vec3 right = glm::normalize(glm::cross(fwd, up));
+    up              = glm::cross(right, fwd);
+
+    float     knob_size = length * 0.1f;
+    glm::vec3 knob      = parent + fwd * knob_size * 2.0f;
+
+    glm::vec3 corners[4] = {
+        knob + right * knob_size,
+        knob - right * knob_size,
+        knob + up * knob_size,
+        knob - up * knob_size,
+    };
+
+    for (auto& c : corners) {
+        debug_renderer_draw_line(r, parent, c, color);
+    }
+
+    for (auto& c : corners) {
+        debug_renderer_draw_line(r, c, child, color);
+    }
+
+    debug_renderer_draw_line(r, corners[0], corners[2], color);
+    debug_renderer_draw_line(r, corners[2], corners[1], color);
+    debug_renderer_draw_line(r, corners[1], corners[3], color);
+    debug_renderer_draw_line(r, corners[3], corners[0], color);
+}
+
+void Renderer::debug_renderer_draw_frustum(DebugRenderer& r, Camera& camera, glm::vec3 color) {
+    glm::mat4 inv = glm::inverse(camera.combined_matrix);
+
+    glm::vec4 ndc[4] = {
+        {-1, -1, 1, 1},
+        {1, -1, 1, 1},
+        {1, 1, 1, 1},
+        {-1, 1, 1, 1},
+    };
+
+    glm::vec3 near_corners[4];
+    for (int i = 0; i < 4; i++) {
+        glm::vec4 p     = inv * ndc[i];
+        near_corners[i] = glm::vec3(p) / p.w;
+    }
+
+    glm::mat4 inv_view = glm::inverse(camera.view_matrix);
+    glm::vec3 pos      = glm::vec3(inv_view[3]);
+
+    glm::vec3 forward = glm::normalize(glm::vec3(inv_view[2]));
+
+    glm::vec3 far_corners[4];
+    for (int i = 0; i < 4; i++) {
+        glm::vec3 ray  = glm::normalize(near_corners[i] - pos);
+        float     t    = camera.far_plane / glm::dot(ray, forward);
+        far_corners[i] = pos + ray * t;
+    }
+
+    for (int i = 0; i < 4; i++) {
+        debug_renderer_draw_line(r, near_corners[i], near_corners[(i + 1) % 4], color);
+    }
+
+    for (int i = 0; i < 4; i++) {
+        debug_renderer_draw_line(r, far_corners[i], far_corners[(i + 1) % 4], color);
+    }
+
+    for (int i = 0; i < 4; i++) {
+        debug_renderer_draw_line(r, near_corners[i], far_corners[i], color);
+    }
+}
+
+void Renderer::debug_renderer_draw_cone(
+    DebugRenderer& r,
+    glm::vec3      pos,
+    glm::vec3      dir,
+    float          range,
+    float          outer_angle_cos,
+    float          inner_angle_cos,
+    glm::vec3      color
+) {
+    float outer_angle = glm::acos(outer_angle_cos);
+    float base_radius = glm::tan(outer_angle) * range;
+
+    float inner_angle  = glm::acos(inner_angle_cos);
+    float inner_radius = glm::tan(inner_angle) * range;
+
+    glm::vec3 center = pos + dir * range;
+    glm::vec3 right  = glm::normalize(
+        glm::cross(dir, glm::abs(glm::dot(dir, glm::vec3(0, 1, 0))) < 0.99f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0))
+    );
+    glm::vec3 up = glm::cross(right, dir);
+
+    int segments = 16;
+    for (int i = 0; i < segments; i++) {
+        float a0 = (i / (float)segments) * glm::two_pi<float>();
+        float a1 = ((i + 1) / (float)segments) * glm::two_pi<float>();
+
+        {
+            glm::vec3 p0 = center + (glm::cos(a0) * right + glm::sin(a0) * up) * base_radius;
+            glm::vec3 p1 = center + (glm::cos(a1) * right + glm::sin(a1) * up) * base_radius;
+
+            debug_renderer_draw_line(r, p0, p1, color);
+            debug_renderer_draw_line(r, pos, p0, color);
+        }
+
+        {
+
+            glm::vec3 p0 = center + (glm::cos(a0) * right + glm::sin(a0) * up) * inner_radius;
+            glm::vec3 p1 = center + (glm::cos(a1) * right + glm::sin(a1) * up) * inner_radius;
+
+            debug_renderer_draw_line(r, p0, p1, color * 0.5f);
+        }
+    }
+}
+
+void Renderer::debug_renderer_draw_sphere(
+    DebugRenderer& r, glm::vec3 center, float radius, glm::vec3 color, int segments
+) {
+    for (int axis = 0; axis < 3; axis++) {
+        for (int i = 0; i < segments; i++) {
+            float a0 = (i / (float)segments) * glm::two_pi<float>();
+            float a1 = ((i + 1) / (float)segments) * glm::two_pi<float>();
+
+            glm::vec3 p0(0), p1(0);
+            p0[(axis + 1) % 3] = cos(a0) * radius;
+            p0[(axis + 2) % 3] = sin(a0) * radius;
+            p1[(axis + 1) % 3] = cos(a1) * radius;
+            p1[(axis + 2) % 3] = sin(a1) * radius;
+
+            debug_renderer_draw_line(r, center + p0, center + p1, color);
+        }
+    }
+}
+
+void Renderer::debug_renderer_draw_obb(
+    DebugRenderer& r, glm::vec3 center, glm::vec3 half_extents, glm::mat3 orientation, glm::vec3 color
+) {
+    glm::vec3 c[8] = {
+        {-1, -1, -1},
+        {1, -1, -1},
+        {1, 1, -1},
+        {-1, 1, -1},
+        {-1, -1, 1},
+        {1, -1, 1},
+        {1, 1, 1},
+        {-1, 1, 1},
+    };
+    for (auto& v : c) {
+        v = center + orientation * (v * half_extents);
+    }
+
+    for (int i = 0; i < 4; i++) {
+        debug_renderer_draw_line(r, c[i], c[(i + 1) % 4], color);
+        debug_renderer_draw_line(r, c[i + 4], c[(i + 1) % 4 + 4], color);
+    }
+
+    for (int i = 0; i < 4; i++) {
+        debug_renderer_draw_line(r, c[i], c[i + 4], color);
+    }
+}
+
+void Renderer::debug_renderer_draw_box(DebugRenderer& r, const glm::vec3 min, glm::vec3 max, glm::vec3 color) {
+    glm::vec3 c[8] = {
+        {min.x, min.y, min.z},
+        {max.x, min.y, min.z},
+        {max.x, max.y, min.z},
+        {min.x, max.y, min.z},
+        {min.x, min.y, max.z},
+        {max.x, min.y, max.z},
+        {max.x, max.y, max.z},
+        {min.x, max.y, max.z},
+    };
+
+    for (int i = 0; i < 4; i++) {
+        debug_renderer_draw_line(r, c[i], c[(i + 1) % 4], color);
+        debug_renderer_draw_line(r, c[i + 4], c[(i + 1) % 4 + 4], color);
+    }
+
+    for (int i = 0; i < 4; i++) {
+        debug_renderer_draw_line(r, c[i], c[i + 4], color);
+    }
+}
+
+void Renderer::debug_renderer_draw_ddgi_sphere(DebugRenderer& r, glm::vec3 center, float radius, glm::vec4 color) {
+    r.instances[r.instance_count++] = glm::vec4(center, radius);
 }
 
 void Renderer::debug_renderer_upload_data(DebugRenderer& renderer, VmaAllocator vma_allocator, uint32_t frame_index) {
-    void*  ptr        = nullptr;
-    size_t ptr_offset = (renderer.instance_buffer.size / renderer.frames_in_flight) * frame_index;
-    VK_CHECK(vmaMapMemory(vma_allocator, renderer.instance_buffer.allocation, &ptr));
-    memcpy(
-        reinterpret_cast<char*>(ptr) + ptr_offset,
-        renderer.instances.data(),
-        sizeof(glm::vec4) * renderer.instance_count
-    );
-    vmaUnmapMemory(vma_allocator, renderer.instance_buffer.allocation);
-    VK_CHECK(vmaFlushAllocation(
-        vma_allocator, renderer.instance_buffer.allocation, ptr_offset, renderer.instance_buffer.size
-    ));
+    {
+        void*  ptr        = nullptr;
+        size_t ptr_offset = (renderer.instance_buffer.size / renderer.frames_in_flight) * frame_index;
+        VK_CHECK(vmaMapMemory(vma_allocator, renderer.instance_buffer.allocation, &ptr));
+        memcpy(
+            reinterpret_cast<char*>(ptr) + ptr_offset,
+            renderer.instances.data(),
+            sizeof(glm::vec4) * renderer.instance_count
+        );
+        vmaUnmapMemory(vma_allocator, renderer.instance_buffer.allocation);
+        VK_CHECK(vmaFlushAllocation(
+            vma_allocator, renderer.instance_buffer.allocation, ptr_offset, renderer.instance_buffer.size
+        ));
+    }
+
+    {
+        void*  ptr        = nullptr;
+        size_t ptr_offset = (renderer.line_renderer.vertex_buffer.size / renderer.frames_in_flight) * frame_index;
+        VK_CHECK(vmaMapMemory(vma_allocator, renderer.line_renderer.vertex_buffer.allocation, &ptr));
+        memcpy(
+            reinterpret_cast<char*>(ptr) + ptr_offset,
+            renderer.line_renderer.vertices.data(),
+            sizeof(DebugLineVertex) * renderer.line_renderer.vertex_count
+        );
+        vmaUnmapMemory(vma_allocator, renderer.line_renderer.vertex_buffer.allocation);
+        VK_CHECK(vmaFlushAllocation(
+            vma_allocator,
+            renderer.line_renderer.vertex_buffer.allocation,
+            ptr_offset,
+            renderer.line_renderer.vertex_buffer.size
+        ));
+    }
 }
 
 void Renderer::debug_renderer_start_frame(DebugRenderer& renderer, uint32_t frame_index) {
-    renderer.instance_count = 0;
+    renderer.instance_count             = 0;
+    renderer.line_renderer.vertex_count = 0;
 }
 
 Renderer::Renderer() {
@@ -425,6 +745,7 @@ void Renderer::cleanup() {
     destroy_buffer(meshlet_buffer, device, vma_allocator);
     destroy_buffer(scene_ubo_buffer, device, vma_allocator);
     destroy_buffer(lighting_ubo_buffer, device, vma_allocator);
+    destroy_buffer(light_buffer, device, vma_allocator);
     destroy_buffer(ddgi_ray_buffer, device, vma_allocator);
     destroy_buffer(ddgi_probe_buffer, device, vma_allocator);
     destroy_buffer(material_buffer, device, vma_allocator);
@@ -1262,6 +1583,11 @@ void Renderer::setup_framegraph() {
                                 .write_info = DescriptorInfo(ddgi_probe_buffer.handle)
                             },
                             DescriptorBinding{
+                                .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                                .write_info =
+                                    DescriptorInfo(light_buffer.handle, 0, light_buffer.size / FRAMES_IN_FLIGHT)
+                            },
+                            DescriptorBinding{
                                 .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                 .write_info = DescriptorInfo(
                                     linear_sampler_clamped,
@@ -1298,6 +1624,12 @@ void Renderer::setup_framegraph() {
                 .writes_buffer(
                     ddgi_ray_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
                 )
+                .reads_buffer(
+                    light_buffer,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                    light_buffer.size / FRAMES_IN_FLIGHT
+                )
                 .reads_buffer(ddgi_probe_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT)
                 .reads_buffer_dynamic(
                     drawcall_buffer,
@@ -1331,8 +1663,9 @@ void Renderer::setup_framegraph() {
                         global_texture_descriptor_set,
                     };
 
-                    std::array<uint32_t, 5> offsets = {
+                    std::array<uint32_t, 6> offsets = {
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHT_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
@@ -1949,6 +2282,11 @@ void Renderer::setup_framegraph() {
                                 .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                 .write_info = DescriptorInfo(indirect_dispatch_tile_copy_buffer.handle)
                             },
+                            DescriptorBinding{
+                                .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                                .write_info =
+                                    DescriptorInfo(light_buffer.handle, 0, light_buffer.size / FRAMES_IN_FLIGHT)
+                            },
                         }
                 },
                 scene_data_layout,
@@ -1973,6 +2311,12 @@ void Renderer::setup_framegraph() {
                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                     VK_ACCESS_2_UNIFORM_READ_BIT,
                     lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+                )
+                .reads_buffer(
+                    light_buffer,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                    light_buffer.size / FRAMES_IN_FLIGHT
                 )
                 .reads_buffer_dynamic(
                     drawcall_buffer,
@@ -2022,8 +2366,9 @@ void Renderer::setup_framegraph() {
                         global_texture_descriptor_set,
                     };
 
-                    std::array<uint32_t, 6> offsets = {
+                    std::array<uint32_t, 7> offsets = {
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHT_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
@@ -2615,6 +2960,12 @@ void Renderer::setup_framegraph() {
                 lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
             )
             .reads_buffer(
+                light_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                light_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer(
                 ddgi_probe_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT
             )
             .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
@@ -2628,8 +2979,9 @@ void Renderer::setup_framegraph() {
             .samples_image(rt_reflection_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .writes_storage_image(lightpass_output, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                std::array<uint32_t, 2> offsets = {
+                std::array<uint32_t, 3> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHT_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)]
                 };
 
@@ -3304,12 +3656,7 @@ void Renderer::setup_framegraph() {
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
             )
-            .reads_image(
-                depth_buffer,
-                VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-                VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL
-            )
+            .writes_depth_attachment(depth_buffer)
             .reads_buffer_dynamic(
                 debug_renderer.instance_buffer,
                 VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
@@ -3328,7 +3675,7 @@ void Renderer::setup_framegraph() {
                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT
             )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                if (debug_renderer.instance_count == 0) {
+                if (debug_renderer.instance_count == 0 && debug_renderer.line_renderer.vertex_count == 0) {
                     return;
                 }
 
@@ -3381,43 +3728,70 @@ void Renderer::setup_framegraph() {
 
                 vkCmdBeginRendering(command_buffer, &rendering_info);
 
-                vkCmdBindPipeline(
-                    command_buffer, debug_renderer.pipeline.bind_point, debug_renderer.pipeline.pipeline_handle
-                );
+                if (debug_renderer.instance_count > 0) {
+                    vkCmdBindPipeline(
+                        command_buffer, debug_renderer.pipeline.bind_point, debug_renderer.pipeline.pipeline_handle
+                    );
 
-                uint32_t instance_offset =
-                    (debug_renderer.instance_buffer.size / debug_renderer.frames_in_flight) * frame_index;
-                std::array<uint32_t, 2> offsets = {
-                    instance_offset,
-                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
-                };
+                    uint32_t instance_offset =
+                        (debug_renderer.instance_buffer.size / debug_renderer.frames_in_flight) * frame_index;
+                    std::array<uint32_t, 2> offsets = {
+                        instance_offset,
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
+                    };
 
-                vkCmdBindDescriptorSets(
-                    command_buffer,
-                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    debug_renderer.pipeline.pipeline_layout,
-                    0,
-                    debug_renderer.descriptor_sets.size(),
-                    debug_renderer.descriptor_sets.data(),
-                    offsets.size(),
-                    offsets.data()
-                );
+                    vkCmdBindDescriptorSets(
+                        command_buffer,
+                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        debug_renderer.pipeline.pipeline_layout,
+                        0,
+                        debug_renderer.descriptor_sets.size(),
+                        debug_renderer.descriptor_sets.data(),
+                        offsets.size(),
+                        offsets.data()
+                    );
 
-                debug_renderer_constants.camera_pos = camera->position;
-                vkCmdPushConstants(
-                    command_buffer,
-                    debug_renderer.pipeline.pipeline_layout,
-                    debug_renderer.pipeline.stage_flags,
-                    0,
-                    sizeof(DebugRendererConstants),
-                    &debug_renderer_constants
-                );
+                    debug_renderer_constants.camera_pos = camera->position;
+                    vkCmdPushConstants(
+                        command_buffer,
+                        debug_renderer.pipeline.pipeline_layout,
+                        debug_renderer.pipeline.stage_flags,
+                        0,
+                        sizeof(DebugRendererConstants),
+                        &debug_renderer_constants
+                    );
 
-                VkDeviceSize offset = 0;
-                vkCmdBindVertexBuffers(command_buffer, 0, 1, &debug_renderer.vertex_buffer.handle, &offset);
-                vkCmdBindIndexBuffer(command_buffer, debug_renderer.index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
+                    VkDeviceSize offset = 0;
+                    vkCmdBindVertexBuffers(command_buffer, 0, 1, &debug_renderer.vertex_buffer.handle, &offset);
+                    vkCmdBindIndexBuffer(command_buffer, debug_renderer.index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
 
-                vkCmdDrawIndexed(command_buffer, debug_renderer.index_count, debug_renderer.instance_count, 0, 0, 0);
+                    vkCmdDrawIndexed(
+                        command_buffer, debug_renderer.index_count, debug_renderer.instance_count, 0, 0, 0
+                    );
+                }
+
+                if (debug_renderer.line_renderer.vertex_count > 0) {
+                    vkCmdBindPipeline(
+                        command_buffer,
+                        debug_renderer.line_renderer.pipeline.bind_point,
+                        debug_renderer.line_renderer.pipeline.pipeline_handle
+                    );
+
+                    vkCmdPushConstants(
+                        command_buffer,
+                        debug_renderer.line_renderer.pipeline.pipeline_layout,
+                        debug_renderer.line_renderer.pipeline.stage_flags,
+                        0,
+                        sizeof(glm::mat4),
+                        &camera->combined_matrix
+                    );
+
+                    VkDeviceSize offset = 0;
+                    vkCmdBindVertexBuffers(
+                        command_buffer, 0, 1, &debug_renderer.line_renderer.vertex_buffer.handle, &offset
+                    );
+                    vkCmdDraw(command_buffer, debug_renderer.line_renderer.vertex_count, 1, 0, 0);
+                }
 
                 vkCmdEndRendering(command_buffer);
             });
@@ -4195,6 +4569,16 @@ void Renderer::initialize(
         aligned_size(sizeof(SceneUBO), physical_device_properties.limits.minUniformBufferOffsetAlignment) *
             FRAMES_IN_FLIGHT,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+
+    light_buffer = create_buffer(
+        aligned_size(
+            sizeof(Light) * MAX_LIGHTS + sizeof(uint32_t),
+            physical_device_properties.limits.minUniformBufferOffsetAlignment
+        ) * FRAMES_IN_FLIGHT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         vma_allocator,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
@@ -5558,6 +5942,10 @@ void Renderer::initialize(
                             )
                         },
                         DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                            .write_info = DescriptorInfo(light_buffer.handle, 0, light_buffer.size / FRAMES_IN_FLIGHT)
+                        },
+                        DescriptorBinding{
                             .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                             .write_info = DescriptorInfo(ddgi_probe_buffer.handle)
                         },
@@ -6206,10 +6594,93 @@ void Renderer::render_frame(float delta_time) {
         ));
     }
 
+    int light_count = 0;
+    {
+        auto view = world->scene.entity_registry.view<components::Transform, components::Light>();
+        for (auto [e, t, l] : view.each()) {
+            Light light    = l.light;
+            light.position = t.world_position;
+            light.radius *= t.world_scale;
+            light.direction = glm::normalize(glm::mat3_cast(t.world_rotation) * glm::vec3(0, 0, -1));
+
+            if (light.type == LightType::SPOT) {
+                light.inner_cone_angle = glm::cos(glm::radians(l.light.inner_cone_angle));
+                light.outer_cone_angle = glm::cos(glm::radians(l.light.outer_cone_angle));
+            }
+
+            if (light.type == LightType::TUBE) {
+                light.area_width *= t.world_scale;
+            }
+
+            lights[light_count++] = light;
+        }
+
+        void*  ptr    = nullptr;
+        size_t offset = (light_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        VK_CHECK(vmaMapMemory(vma_allocator, light_buffer.allocation, &ptr));
+        *reinterpret_cast<uint32_t*>(reinterpret_cast<char*>(ptr) + offset) = light_count;
+        memcpy(
+            reinterpret_cast<char*>(ptr) + offset + (sizeof(uint32_t) * 4), lights.data(), sizeof(Light) * light_count
+        );
+        vmaUnmapMemory(vma_allocator, light_buffer.allocation);
+        VK_CHECK(vmaFlushAllocation(vma_allocator, light_buffer.allocation, offset, light_buffer.size));
+    }
+
     debug_renderer_constants.combined_matrix = camera->combined_matrix;
     debug_renderer_start_frame(debug_renderer, frame_index);
 
     if (visualize_probes) {
+        {
+            auto view = world->scene.entity_registry.view<components::Transform, components::Camera>();
+            for (auto [e, t, c] : view.each()) {
+                Camera camera;
+                camera.near_plane = c.near_plane;
+                camera.far_plane  = c.far_plane;
+
+                camera.viewport_width  = c.viewport_width * swapchain.width;
+                camera.viewport_height = c.viewport_height * swapchain.height;
+
+                camera.fov        = c.fov;
+                camera.ortho_size = c.ortho_size;
+
+                camera.type        = c.type;
+                camera.position    = t.world_position;
+                camera.orientation = t.world_rotation;
+                update_camera(camera);
+
+                debug_renderer_draw_frustum(debug_renderer, camera, {0.7, 1.0, 1.0});
+            }
+        }
+
+        {
+            for (int i = 0; i < light_count; i++) {
+                const Light& l = lights[i];
+                switch (l.type) {
+                case LightType::POINT:
+                    debug_renderer_draw_sphere(debug_renderer, l.position, l.radius, {1, 1, 1});
+                    break;
+                case LightType::SPOT:
+                    debug_renderer_draw_cone(
+                        debug_renderer,
+                        l.position,
+                        l.direction,
+                        l.radius,
+                        l.outer_cone_angle,
+                        l.inner_cone_angle,
+                        {1, 1, 1}
+                    );
+                    break;
+                case LightType::TUBE:
+                    glm::vec3 half_axis = l.direction * (l.area_width * 0.5f);
+                    debug_renderer_draw_tube_light(
+                        debug_renderer, l.position - half_axis, l.position + half_axis, l.radius, {1, 1, 1}
+
+                    );
+                    break;
+                }
+            }
+        }
+
         glm::vec3 grid_shift =
             glm::vec3(
                 lighting_data.probe_counts.x - 1, lighting_data.probe_counts.y - 1, lighting_data.probe_counts.z - 1
@@ -6226,8 +6697,7 @@ void Renderer::render_frame(float delta_time) {
                     );
 
                     glm::vec3 probe_pos = lighting_data.grid_origin + probe_grid_pos - grid_shift;
-
-                    debug_renderer_draw_sphere(
+                    debug_renderer_draw_ddgi_sphere(
                         debug_renderer, probe_pos, lighting_data.probe_spacing / 10.0f, {1, 1, 1, 1}
                     );
                 }
@@ -6330,6 +6800,8 @@ void Renderer::render_frame(float delta_time) {
         (material_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)] =
         (drawcall_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHT_BUFFER)] =
+        (light_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
 
     framegraph->execute(command_buffer, frame_index);
 }

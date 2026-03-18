@@ -1531,6 +1531,11 @@ void ScriptSystem::initialize(class World* world) {
     engine->RegisterEnumValue("CameraType", "PERSPECTIVE", 0);
     engine->RegisterEnumValue("CameraType", "ORTHOGRAPHIC", 1);
 
+    engine->RegisterEnum("LightType");
+    engine->RegisterEnumValue("LightType", "POINT", 0);
+    engine->RegisterEnumValue("LightType", "SPOT", 1);
+    engine->RegisterEnumValue("LightType", "TUBE", 2);
+
     engine->RegisterEnum("Key");
     for (int i = 0; i < world->input.get_key_count(); i++) {
         auto name = world->input.key_to_string(static_cast<Key>(i));
@@ -1892,6 +1897,7 @@ void ScriptSystem::initialize(class World* world) {
     register_camera_component(engine);
     register_character_controller_component(engine);
     register_sound_component(engine);
+    register_light_component(engine);
 
     engine->SetDefaultNamespace("World");
     engine->RegisterGlobalFunction(
@@ -2821,6 +2827,45 @@ void ScriptSystem::register_sound_component(class asIScriptEngine* engine) {
         type->GetTypeId(),
         [](Scene& scene, Entity e) {
             return scene.get_component<components::Sound>(e);
+        },
+    });
+}
+
+void ScriptSystem::register_light_component(class asIScriptEngine* engine) {
+    engine->RegisterObjectType("Light", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    engine->RegisterObjectProperty(
+        "Light", "float radius", asOFFSET(components::Light, light) + asOFFSET(Light, radius)
+    );
+    engine->RegisterObjectProperty("Light", "vec4 color", asOFFSET(components::Light, light) + asOFFSET(Light, color));
+    engine->RegisterObjectProperty(
+        "Light", "vec3 direction", asOFFSET(components::Light, light) + asOFFSET(Light, direction)
+    );
+    engine->RegisterObjectProperty(
+        "Light", "float inner_cone_angle", asOFFSET(components::Light, light) + asOFFSET(Light, inner_cone_angle)
+    );
+    engine->RegisterObjectProperty(
+        "Light", "float outer_cone_angle", asOFFSET(components::Light, light) + asOFFSET(Light, outer_cone_angle)
+    );
+    engine->RegisterObjectProperty(
+        "Light", "float area_width", asOFFSET(components::Light, light) + asOFFSET(Light, area_width)
+    );
+    engine->RegisterObjectProperty(
+        "Light", "LightType type", asOFFSET(components::Light, light) + asOFFSET(Light, type)
+    );
+    engine->RegisterObjectProperty(
+        "Light", "bool casts_shadow", asOFFSET(components::Light, light) + asOFFSET(Light, casts_shadow)
+    );
+
+    auto type = engine->GetTypeInfoByName("Light");
+    if (!type) {
+        spdlog::error("Failed to get type info for Light component");
+        return;
+    }
+
+    component_retrieve_map.insert({
+        type->GetTypeId(),
+        [](Scene& scene, Entity e) {
+            return scene.get_component<components::Light>(e);
         },
     });
 }

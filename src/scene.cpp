@@ -246,6 +246,12 @@ Entity Scene::clone_node_internal(Entity base, Entity cloned_parent) {
         particle_effect.dirty           = true;
     }
 
+    auto src_light = get_component<components::Light>(base);
+    if (src_light) {
+        auto& light = add_component<components::Light>(new_entity);
+        light.light = src_light->light;
+    }
+
     return new_entity;
 }
 

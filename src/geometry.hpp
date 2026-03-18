@@ -86,6 +86,11 @@ struct DebugVertex {
     glm::vec2 uv;
 };
 
+struct DebugLineVertex {
+    glm::vec3 position;
+    glm::vec3 color;
+};
+
 uint16_t pack_tangent(glm::vec3 tangent);
 
 void generate_tangents(std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
