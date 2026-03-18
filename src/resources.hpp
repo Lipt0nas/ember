@@ -351,3 +351,42 @@ struct ImageResource {
     Image image;
     int   sampler_index;
 };
+
+enum class LightType : int {
+    POINT,
+    SPOT,
+    TUBE
+};
+
+struct Light {
+    glm::vec3 position = {};
+    float     radius   = 3.0f;
+
+    glm::vec4 color = {1.0f, 1.0f, 1.0f, 1.0f};
+
+    glm::vec3 direction        = {0.0f, 0.0f, -1.0f};
+    float     inner_cone_angle = 20.0f;
+
+    float     outer_cone_angle  = 30.0f;
+    float     area_width        = 1.0f;
+    LightType type              = LightType::POINT;
+    int       ies_profile_index = -1;
+
+    int casts_shadow = false;
+    int _pad0        = 0;
+    int _pad1        = 0;
+    int _pad2        = 0;
+
+    template <class Archive> void serialize(Archive& ar) {
+        ar(CEREAL_NVP(position),
+           CEREAL_NVP(radius),
+           CEREAL_NVP(color),
+           CEREAL_NVP(direction),
+           CEREAL_NVP(outer_cone_angle),
+           CEREAL_NVP(inner_cone_angle),
+           CEREAL_NVP(area_width),
+           CEREAL_NVP(type),
+           CEREAL_NVP(ies_profile_index),
+           CEREAL_NVP(casts_shadow));
+    }
+};

@@ -20,7 +20,16 @@ layout(set = 0, binding = 11, std430) readonly uniform LightingData {
     LightingUBO lighting;
 };
 
-layout(set = 0, binding = 12, std430) readonly buffer ProbeBuffer {
+layout(set = 0, binding = 12, std430) readonly buffer LightData {
+    uint light_count;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+
+    Light lights[];
+};
+
+layout(set = 0, binding = 13, std430) readonly buffer ProbeBuffer {
     DDGIProbe probes[];
 };
 
@@ -112,6 +121,10 @@ void main() {
 
         vec3 diffuse = albedo * D_Oren_Nayar(NoV, NdotL, a, L, V);
         vec3 Lo = (kD * diffuse + specular) * radiance * NdotL;
+
+        for (int i = 0; i < light_count; i++) {
+            Lo += evaluate_point_light(lights[i], world_pos, normal, V, albedo, roughness, metallic, F0);
+        }
 
         #if defined(RT_ENABLED)
         vec3 F_ibl = F_Schlick_Roughness(NoV, F0, roughness);

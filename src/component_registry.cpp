@@ -192,6 +192,18 @@ void ComponentRegistry::register_components(Editor* editor) {
             .save_snapshot         = true,
         }
     );
+
+    ComponentRegistry::register_component<components::Light>(
+        editor,
+        "Light",
+        {
+            .removable             = true,
+            .show_in_editor        = true,
+            .accessible_in_scripts = true,
+            .save_to_disk          = true,
+            .save_snapshot         = true,
+        }
+    );
 }
 
 void ComponentRegistry::save_node(World& world, Entity e, cereal::JSONOutputArchive& archive) {

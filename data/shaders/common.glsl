@@ -45,6 +45,30 @@
 
 #define XE_GTAO_OCCLUSION_TERM_SCALE                    1.5
 
+#define LIGHT_TYPE_POINT 0
+#define LIGHT_TYPE_SPOT  1
+#define LIGHT_TYPE_TUBE  2
+
+struct Light {
+    vec3 position;
+    float radius;
+
+    vec4 color;
+
+    vec3 direction;
+    float inner_cone_angle;
+
+    float outer_cone_angle;
+    float area_width;
+    int type;
+    int ies_profile_index;
+
+    int casts_shadow;
+    int _pad0;
+    int _pad1;
+    int _pad2;
+};
+
 struct SpriteDraw {
     vec3 position;
     vec4 rotation;
@@ -538,6 +562,147 @@ float unpack_tangent_sign(uint packed) {
 
 vec3 unpack_tangent(uint packed) {
     return oct_decode(vec2((packed & 255) / 127.0 - 1.0, ((packed >> 8) & 255) / 127.0 - 1.0));
+}
+
+vec3 closest_point_on_segment(vec3 a, vec3 b, vec3 p) {
+    vec3 ab = b - a;
+    float t = clamp(dot(p - a, ab) / dot(ab, ab), 0.0, 1.0);
+    return a + t * ab;
+}
+
+vec3 tube_specular_representative_point(vec3 a, vec3 b, vec3 world_pos, vec3 R) {
+    vec3 L0 = a - world_pos;
+    vec3 L1 = b - world_pos;
+
+    float dL0 = dot(R, L0);
+    float dL1 = dot(R, L1);
+
+    float t = (dL0 - dL1) == 0.0 ? 0.5 : clamp(dL0 / (dL0 - dL1), 0.0, 1.0);
+
+    return a + t * (L1 - L0) + world_pos;
+}
+
+float tube_specular_normalization(float roughness, float tube_length, float dist) {
+    float a = roughness * roughness;
+    float sphere_angle = clamp(tube_length / (2.0 * dist), 0.0, 1.0);
+    float a_prime = clamp(a + sphere_angle * 0.5, 0.0, 1.0);
+    return (a * a) / max(a_prime * a_prime, 1e-5);
+}
+
+float light_attenuation(float dist, float radius) {
+    float d_sqr = dist * dist;
+    float radius_sqr = radius * radius;
+
+    return pow(clamp(1.0 - pow(d_sqr / radius_sqr, 2.0), 0.0, 1.0), 2.0)
+        / max(d_sqr, 0.0001);
+}
+
+float spot_attenuation(vec3 L, vec3 light_dir, float inner, float outer) {
+    float cos_angle = dot(-L, normalize(light_dir));
+
+    return smoothstep(outer, inner, cos_angle);
+}
+
+float light_angular_attenuation(Light light, vec3 L) {
+    if (light.type == LIGHT_TYPE_SPOT) {
+        return spot_attenuation(L, light.direction, light.inner_cone_angle, light.outer_cone_angle);
+    }
+
+    return 1.0;
+}
+
+vec3 evaluate_point_light(Light light, vec3 world_pos, vec3 normal, vec3 V,
+    vec3 albedo, float roughness, float metallic, vec3 F0) {
+    float a = roughness * roughness;
+
+    vec3 L;
+    vec3 specular_L;
+    float dist;
+    float spec_norm = 1.0;
+
+    if (light.type == LIGHT_TYPE_TUBE) {
+        vec3 tube_a = light.position - light.direction * light.area_width * 0.5;
+        vec3 tube_b = light.position + light.direction * light.area_width * 0.5;
+
+        vec3 closest = closest_point_on_segment(tube_a, tube_b, world_pos);
+        L = normalize(closest - world_pos);
+        dist = length(closest - world_pos);
+
+        vec3 R = reflect(-V, normal);
+        vec3 rep_point = tube_specular_representative_point(tube_a, tube_b, world_pos, R);
+        specular_L = normalize(rep_point - world_pos);
+
+        float spec_dist = length(rep_point - world_pos);
+        spec_norm = tube_specular_normalization(roughness, light.area_width, spec_dist);
+
+        vec3 L0 = tube_a - world_pos;
+        vec3 L1 = tube_b - world_pos;
+        float dL0 = dot(R, L0);
+        float dL1 = dot(R, L1);
+        float t_unclamped = (dL0 - dL1 == 0.0) ? 0.5 : dL0 / (dL0 - dL1);
+        float endpoint_fade = 1.0 - smoothstep(0.0, 1.0, abs(t_unclamped - clamp(t_unclamped, 0.0, 1.0)) * light.area_width);
+        spec_norm *= endpoint_fade;
+    } else {
+        L = normalize(light.position - world_pos);
+        specular_L = L;
+        dist = length(light.position - world_pos);
+    }
+
+    float falloff = light_attenuation(dist, light.radius);
+    float angular = light_angular_attenuation(light, L);
+
+    if (angular <= 0.0 || falloff <= 0.0) return vec3(0.0);
+
+    float NoL = clamp(dot(normal, L), 0.0, 1.0);
+    if (NoL <= 0.0) return vec3(0.0);
+
+    float NoV = max(dot(normal, V), 1e-5);
+    float NoL_diff = clamp(dot(normal, L), 0.0, 1.0);
+
+    vec3 H_spec = normalize(V + specular_L);
+    float NoH = clamp(dot(normal, H_spec), 0.0, 1.0);
+    float LoH = clamp(dot(specular_L, H_spec), 0.0, 1.0);
+    float NoL_spec = clamp(dot(normal, specular_L), 0.0, 1.0);
+
+    float D = D_GGX(NoH, a) * spec_norm;
+    vec3 F = F_Schlick(LoH, F0);
+    float Vis = V_Smith_GGX_Correlated(NoV, NoL_spec, a);
+
+    vec3 specular = (D * Vis) * F;
+    vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
+    vec3 diffuse = albedo * D_Oren_Nayar(NoV, NoL_diff, a, L, V);
+
+    vec3 radiance = light.color.rgb * light.color.a * falloff * angular;
+    return (kD * diffuse + specular) * radiance * NoL;
+}
+
+vec3 evaluate_point_light_diffuse(Light light, vec3 world_pos, vec3 normal,
+    vec3 albedo, float metallic) {
+    vec3 L;
+    float dist;
+
+    if (light.type == LIGHT_TYPE_TUBE) {
+        vec3 tube_a = light.position - light.direction * light.area_width * 0.5;
+        vec3 tube_b = light.position + light.direction * light.area_width * 0.5;
+        vec3 closest = closest_point_on_segment(tube_a, tube_b, world_pos);
+        L = normalize(closest - world_pos);
+        dist = length(closest - world_pos);
+    } else {
+        L = normalize(light.position - world_pos);
+        dist = length(light.position - world_pos);
+    }
+
+    float falloff = light_attenuation(dist, light.radius);
+    float angular = light_angular_attenuation(light, L);
+
+    if (angular <= 0.0 || falloff <= 0.0) return vec3(0.0);
+
+    float NoL = clamp(dot(normal, L), 0.0, 1.0);
+    if (NoL <= 0.0) return vec3(0.0);
+
+    vec3 kD = (1.0 - metallic) * albedo;
+    vec3 radiance = light.color.rgb * light.color.a * falloff * angular;
+    return D_Lambert(kD) * radiance * NoL;
 }
 
 #endif

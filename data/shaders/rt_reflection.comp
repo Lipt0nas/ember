@@ -41,6 +41,15 @@ layout(set = 0, binding = 12, std430) buffer TileCopyBuffer {
     ivec2 copy_tiles[];
 };
 
+layout(set = 0, binding = 13, std430) readonly buffer LightData {
+    uint light_count;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+
+    Light lights[];
+};
+
 layout(set = 1, binding = 0) uniform UBO {
     SceneUBO scene;
 };
@@ -216,6 +225,10 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
 
         vec3 diffuse = albedo.rgb * D_Oren_Nayar(NoV, NdotL, a, L, V);
         vec3 Lo = (kD * diffuse + specular) * direct_radiance * NdotL * shadow;
+
+        for (int i = 0; i < light_count; i++) {
+            Lo += evaluate_point_light(lights[i], hit_pos, world_normal, V, albedo.rgb, roughness, metallic, F0);
+        }
 
         DDGIWeights ddgi_weights = compute_ddgi_weights(lighting, hit_pos, world_normal, V, ddgi_depth);
 

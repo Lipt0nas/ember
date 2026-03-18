@@ -818,6 +818,60 @@ template <> bool Editor::render_component_ui<components::ParticleEffect>(Entity 
     return edited;
 }
 
+template <> bool Editor::render_component_ui<components::Light>(Entity e) {
+    bool edited = false;
+
+    auto* l = world->scene.get_component<components::Light>(e);
+
+    std::vector<std::string> light_types = {
+        "Point",
+        "Cone",
+        "Tube",
+    };
+    int light_type = (int)l->light.type;
+
+    if (ImGui::BeginCombo("Light Type", light_types[light_type].c_str())) {
+        for (int i = 0; i < light_types.size(); i++) {
+            bool is_selected = (light_types[i] == light_types[light_type]);
+            if (ImGui::Selectable(light_types[i].c_str(), is_selected)) {
+                l->light.type = static_cast<LightType>(i);
+                edited |= true;
+            }
+            if (is_selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    ImGui::DragFloat("Radius", &l->light.radius, 0.1f, 0.1f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::ColorEdit3("Color", &l->light.color.x, ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::SliderFloat("Intensity", &l->light.color.w, 0.0, 100.0);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    switch (l->light.type) {
+    case LightType::POINT:
+        break;
+    case LightType::SPOT:
+        ImGui::DragFloat("Inner cone angle", &l->light.inner_cone_angle, 0.5f, 1.0f, 89.0f, "%.1f deg");
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+        ImGui::DragFloat("Outer cone angle", &l->light.outer_cone_angle, 0.5f, 1.0f, 89.0f, "%.1f deg");
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+        break;
+    case LightType::TUBE:
+        ImGui::DragFloat("Area width", &l->light.area_width, 0.1f, 0.1f);
+        edited |= ImGui::IsItemDeactivatedAfterEdit();
+        break;
+    }
+
+    return edited;
+}
+
 Editor::Editor() {
     asset_type_infos = {
         {AssetType::MATERIAL,

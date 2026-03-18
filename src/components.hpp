@@ -218,6 +218,10 @@ namespace components {
         bool                            dirty = false; // Should the effect be reloaded from the base effect
     };
 
+    struct Light {
+        ::Light light;
+    };
+
     template <typename Archive> void serialize(Archive& archive, Transform& transform) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
             archive(
@@ -416,6 +420,14 @@ namespace components {
     }
 
     template <typename Archive> void serialize(Archive& archive, World& world) {
+    }
+
+    template <typename Archive> void serialize(Archive& archive, Light& light) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("light", light.light));
+        } else {
+            archive(light.light);
+        }
     }
 
 } // namespace components
