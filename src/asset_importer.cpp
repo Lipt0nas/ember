@@ -1388,12 +1388,46 @@ bool AssetImporter::process_texture(
 
         ktxTexture_Destroy(ktxTexture(ktx_texture));
     } else {
+        std::vector<uint8_t> image_data(data, data + data_size);
+
+        if (import_options.generate_mipmaps && mip_levels > 1) {
+            int mip_width  = width;
+            int mip_height = height;
+
+            std::vector<uint8_t> prev_mip(data, data + data_size);
+
+            for (uint32_t level = 1; level < mip_levels; level++) {
+                int new_width  = std::max(1, mip_width / 2);
+                int new_height = std::max(1, mip_height / 2);
+
+                std::vector<uint8_t> mip_data(new_width * new_height * channels);
+
+                stbir_resize_uint8_linear(
+                    prev_mip.data(),
+                    mip_width,
+                    mip_height,
+                    0,
+                    mip_data.data(),
+                    new_width,
+                    new_height,
+                    0,
+                    (stbir_pixel_layout)channels
+                );
+
+                image_data.insert(image_data.end(), mip_data.begin(), mip_data.end());
+
+                prev_mip   = std::move(mip_data);
+                mip_width  = new_width;
+                mip_height = new_height;
+            }
+        }
+
         TextureAssetHeader header = {
             .format              = format,
             .width               = static_cast<uint32_t>(width),
             .height              = static_cast<uint32_t>(height),
             .mip_levels          = mip_levels,
-            .size                = data_size,
+            .size                = image_data.size(),
             .compressed          = false,
             .sampler_description = import_options.sampler_description,
         };
@@ -1401,7 +1435,7 @@ bool AssetImporter::process_texture(
         std::ofstream               asset_file(destination, std::ios::binary);
         cereal::BinaryOutputArchive archive(asset_file);
         archive(header);
-        archive.saveBinary(data, data_size);
+        archive.saveBinary(image_data.data(), image_data.size());
     }
 
     return true;
