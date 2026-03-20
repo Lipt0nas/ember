@@ -191,9 +191,13 @@ public:
 
     uint32_t swapchain_image_index = 0;
 
-    Camera*                   camera;
-    Camera                    ui_camera;
+    Camera* camera;
+    Camera  ui_camera;
+
+    uint32_t                  static_mesh_count;
+    uint32_t                  skinned_mesh_count;
     std::vector<MeshInstance> mesh_instances;
+    std::vector<entt::entity> mesh_instance_entities;
 
     Framegraph* framegraph = nullptr;
 
@@ -225,6 +229,10 @@ private:
 
     Buffer staging_buffer;
 
+    Buffer global_skin_buffer;
+    Buffer joint_matrix_buffer;
+    Buffer global_skinned_geometry_buffer;
+
     Buffer global_vertex_buffer;
     Buffer global_index_buffer;
 
@@ -240,6 +248,7 @@ private:
     Buffer indirect_dispatch_tile_process_buffer;
 
     Buffer indirect_command_buffer;
+    Buffer indirect_skinned_command_buffer;
     Buffer drawcall_buffer;
     Buffer material_buffer;
     Buffer mesh_buffer;
@@ -256,6 +265,9 @@ private:
     std::vector<std::reference_wrapper<Image>> gbuffer_images;
     std::vector<VkImageView>                   ao_depth_mip_views;
     std::vector<VkImageView>                   rt_reflection_views;
+
+    static constexpr uint32_t MAX_JOINTS_PER_SKELETON = 256;
+    static constexpr uint32_t MAX_SKINNED_INSTANCES   = 1024;
 
     constexpr static int RT_MAX_TLAS_INSTANCES = 10000;
     RTScene              rt_scene;
@@ -274,8 +286,10 @@ private:
         MATERIAL_BUFFER,
         DRAWCALL_BUFFER,
         LIGHT_BUFFER,
+        INDIRECT_SKINNED_COMMAND_BUFFER,
+        JOINT_MATRIX_BUFFER,
 
-        COUNT = LIGHT_BUFFER + 1
+        COUNT = JOINT_MATRIX_BUFFER + 1
     };
 
     struct MeshIndirectDrawCommand {
@@ -369,7 +383,9 @@ private:
     struct CullPassPushConstants {
         glm::vec2 screen_size;
 
+        uint32_t draw_offset;
         uint32_t draw_count;
+        uint32_t total_count;
 
         uint32_t disable_frustum_cull;
         uint32_t disable_depth_cull;
@@ -428,6 +444,10 @@ private:
         uint32_t disable_small_triangle_cull;
     };
 
+    struct SkinPushConstants {
+        uint32_t instance_offset;
+    };
+
     struct DebugRendererConstants {
         glm::mat4 combined_matrix;
         glm::vec3 camera_pos;
@@ -464,11 +484,20 @@ private:
     DescriptorLayout draw_data_layout;
     DescriptorLayout geometry_data_layout;
 
+    Pipeline                     skinning_pipeline;
+    std::vector<VkDescriptorSet> skinning_descriptor_sets;
+
     Pipeline                     cull_pipeline;
     std::vector<VkDescriptorSet> cull_descriptor_sets;
 
+    Pipeline                     skinned_cull_pipeline;
+    std::vector<VkDescriptorSet> skinned_cull_descriptor_sets;
+
     Pipeline                     gpass_pipeline;
     std::vector<VkDescriptorSet> gpass_descriptor_sets;
+
+    Pipeline                     gpass_skinned_pipeline;
+    std::vector<VkDescriptorSet> gpass_skinned_descriptor_sets;
 
     Pipeline hiz_pipeline;
 

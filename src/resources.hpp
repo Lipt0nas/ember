@@ -92,12 +92,15 @@ struct TextureAssetHeader {
 };
 
 struct MeshAssetHeader {
+    uint64_t version;
+
     uint64_t vertex_buffer_size;
     uint64_t index_buffer_size;
     uint64_t meshlet_buffer_size;
     uint64_t meshlet_vertex_indicies_buffer_size;
     uint64_t meshlet_primitive_buffer_size;
     uint64_t meshlet_bounds_buffer_size;
+    uint64_t skin_buffer_size;
 
     struct MeshDescription {
         glm::vec3 center;
@@ -129,13 +132,62 @@ struct MeshAssetHeader {
     } mesh;
 
     template <class Archive> void serialize(Archive& ar) {
-        ar(vertex_buffer_size,
+        ar(version,
+           vertex_buffer_size,
            index_buffer_size,
            meshlet_buffer_size,
            meshlet_vertex_indicies_buffer_size,
            meshlet_primitive_buffer_size,
            meshlet_bounds_buffer_size,
+           skin_buffer_size,
            mesh);
+    }
+};
+
+struct SkeletonAssetHeader {
+    uint64_t version = 1;
+    uint32_t joint_count;
+
+    struct JointDescription {
+        int32_t   parent_index;
+        glm::vec3 bind_translation;
+        glm::quat bind_rotation;
+        glm::vec3 bind_scale;
+        glm::mat4 inverse_bind_matrix;
+
+        template <class Archive> void serialize(Archive& ar) {
+            ar(parent_index, bind_translation, bind_rotation, bind_scale, inverse_bind_matrix);
+        }
+    };
+
+    template <class Archive> void serialize(Archive& ar) {
+        ar(version, joint_count);
+    }
+};
+
+struct AnimationAssetHeader {
+    uint64_t version = 1;
+    float    duration;
+    AssetID  skeleton_id;
+    uint32_t channel_count;
+    uint64_t time_buffer_size;
+    uint64_t vec3_buffer_size;
+    uint64_t quat_buffer_size;
+
+    struct ChannelDescriptor {
+        uint32_t joint_index;
+        uint32_t path;
+        uint32_t keyframe_count;
+        uint32_t time_offset;
+        uint32_t value_offset;
+
+        template <class Archive> void serialize(Archive& ar) {
+            ar(joint_index, path, keyframe_count, time_offset, value_offset);
+        }
+    };
+
+    template <class Archive> void serialize(Archive& ar) {
+        ar(version, duration, skeleton_id, channel_count, time_buffer_size, vec3_buffer_size, quat_buffer_size);
     }
 };
 
@@ -333,6 +385,7 @@ struct RendererBuffers {
     Buffer meshlet_vertex_indices;
     Buffer meshlet_primitive_buffer;
     Buffer meshlet_bounds_buffer;
+    Buffer skin_buffer;
 };
 
 // TODO: This should probably be merged into the buffer struct somehow, or wrapped in another struct
@@ -345,6 +398,8 @@ struct BufferOffsets {
     uint64_t meshlet_bounds_buffer    = 0;
 
     uint64_t texture_data_size = 0;
+
+    uint64_t skin_buffer_offset = 0;
 };
 
 struct ImageResource {

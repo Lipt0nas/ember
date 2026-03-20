@@ -47,7 +47,7 @@ void main() {
     vec2 local_pos = (offsets[vertex_id] - drawcall.pivot) * drawcall.size;
 
     geometry[geometry_id].position = drawcall.position + rotate_quat(vec3(local_pos, 0.0), drawcall.rotation);
-    geometry[geometry_id].normal = rotate_quat(vec3(0.01, 0.01, 1.0), drawcall.rotation);
+    geometry[geometry_id].normal = rotate_quat(vec3(0.0, 0.0, 1.0), drawcall.rotation);
     geometry[geometry_id].uv = uvs[vertex_id];
     geometry[geometry_id].color = drawcall.color;
     geometry[geometry_id].data_index = drawcall.data_index;

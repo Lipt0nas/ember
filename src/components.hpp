@@ -222,6 +222,17 @@ namespace components {
         ::Light light;
     };
 
+    struct SkeletalAnimation {
+        AssetID skeleton_id  = AssetMetadata::INVALID_METADATA;
+        AssetID animation_id = AssetMetadata::INVALID_METADATA;
+
+        bool looping = true;
+
+        float speed = 1.0f;
+
+        float time = 0.0f;
+    };
+
     template <typename Archive> void serialize(Archive& archive, Transform& transform) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
             archive(
@@ -427,6 +438,19 @@ namespace components {
             archive(cereal::make_nvp("light", light.light));
         } else {
             archive(light.light);
+        }
+    }
+
+    template <typename Archive> void serialize(Archive& archive, SkeletalAnimation& animation) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("skeleton_id", animation.skeleton_id),
+                cereal::make_nvp("animation_id", animation.animation_id),
+                cereal::make_nvp("looping", animation.looping),
+                cereal::make_nvp("speed", animation.speed)
+            );
+        } else {
+            archive(animation.skeleton_id, animation.animation_id, animation.looping, animation.speed);
         }
     }
 

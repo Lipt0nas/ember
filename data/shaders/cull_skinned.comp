@@ -14,10 +14,10 @@ layout(set = 0, binding = 0) uniform UBO {
     SceneUBO scene;
 };
 
-layout(scalar, set = 1, binding = 0) buffer MeshDrawCommands {
+layout(set = 1, binding = 0) buffer MeshDrawCommands {
     uint culled_count;
-    MeshDrawCommand cmds[];
-};
+    IndexedDrawCommand cmds[];
+} mesh_commands;
 
 layout(scalar, set = 1, binding = 1) readonly buffer MeshBuffer {
     MeshInstance draw_calls[];
@@ -25,6 +25,11 @@ layout(scalar, set = 1, binding = 1) readonly buffer MeshBuffer {
 
 layout(set = 1, binding = 2) readonly buffer Meshes {
     Mesh meshes[];
+};
+
+layout(set = 1, binding = 4) buffer SkinnedMeshDrawCommands {
+    uint culled_count;
+    IndexedDrawCommand cmds[];
 };
 
 layout(push_constant, std430) uniform pc {
@@ -63,7 +68,8 @@ void main() {
     vec3 center = rotate_quat(mesh.center, draw.rotation) * draw.scale + draw.position;
     center = (view * vec4(center, 1.0f)).xyz;
 
-    float radius = mesh.radius * draw.scale;
+    // TODO: expanding the radius by two times is the most lazy culling one can think of for animations
+    float radius = mesh.radius * draw.scale * 2.0;
 
     bool visible = true;
 
@@ -96,26 +102,15 @@ void main() {
     if (visible) {
         uint cmd_index = atomicAdd(culled_count, 1);
 
+        // NOTE: im not dealing with this right now, questionable if it's even needed
         uint lod_index = 0;
-
-        if (enable_lods == 1) {
-            float distance = max(length(center) - radius, 0);
-            float threshold = distance * scene.target_lod / draw.scale;
-
-            for (uint i = 1; i < mesh.lod_count; ++i) {
-                if (mesh.lods[i].error < threshold) {
-                    lod_index = i;
-                }
-            }
-        }
-
         MeshLOD lod = mesh.lods[lod_index];
 
-        cmds[cmd_index].group_count_x = (lod.meshlet_count + MESHLETS_PER_TASK - 1) / MESHLETS_PER_TASK;
-        cmds[cmd_index].group_count_y = 1;
-        cmds[cmd_index].group_count_z = 1;
         cmds[cmd_index].object_id = object_id;
-        cmds[cmd_index].meshlet_count = lod.meshlet_count;
-        cmds[cmd_index].meshlet_offset = lod.meshlet_offset;
+        cmds[cmd_index].index_count = lod.index_count;
+        cmds[cmd_index].instance_count = 1;
+        cmds[cmd_index].first_index = lod.index_offset;
+        cmds[cmd_index].vertex_offset = 0;
+        cmds[cmd_index].first_instance = 0;
     }
 }

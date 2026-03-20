@@ -189,6 +189,9 @@ void fill_drawcalls(
 ) {
     ZoneScopedN("Fill Drawcalls");
 
+    world.renderer.skinned_mesh_count = 0;
+    world.renderer.static_mesh_count  = 0;
+
     mesh_instances.clear();
     mesh_instance_entities.clear();
 
@@ -205,7 +208,9 @@ void fill_drawcalls(
         }
     }
 
-    auto view = world.scene.entity_registry.view<components::Mesh, components::Material>();
+    auto view = world.scene.entity_registry.view<components::Mesh, components::Material>(
+        entt::exclude<components::SkeletalAnimation>
+    );
     for (auto [e, mesh, mat] : view.each()) {
         if (mesh.id == AssetMetadata::INVALID_METADATA || mat.id == AssetMetadata::INVALID_METADATA) {
             continue;
@@ -223,6 +228,48 @@ void fill_drawcalls(
             mesh.instance.mesh_id = mesh_index;
         }
 
+        world.renderer.static_mesh_count++;
+        mesh_instances.push_back(mesh.instance);
+        mesh_instance_entities.push_back(e);
+    }
+
+    uint32_t output_offset = 0;
+    auto     anim_view =
+        world.scene.entity_registry.view<components::Mesh, components::Material, components::SkeletalAnimation>();
+    for (auto [e, mesh, mat, a] : anim_view.each()) {
+        if (a.skeleton_id == AssetMetadata::INVALID_METADATA || a.animation_id == AssetMetadata::INVALID_METADATA) {
+            continue;
+        }
+
+        if (mesh.id == AssetMetadata::INVALID_METADATA || mat.id == AssetMetadata::INVALID_METADATA) {
+            continue;
+        }
+
+        auto mat_index = world.load_material(mat.id);
+        if (mat_index != -1) {
+            mesh.instance.material_id = mat.dedicated_material_index == -1
+                                            ? mat_index
+                                            : world.resources.materials.size() + mat.dedicated_material_index;
+        }
+
+        auto mesh_index = world.load_mesh(mesh.id);
+        if (mesh_index != -1) {
+            mesh.instance.mesh_id = mesh_index;
+        }
+
+        auto skeleton_index  = world.load_skeleton(a.skeleton_id);
+        auto animation_index = world.load_animation(a.animation_id);
+
+        if (skeleton_index == -1 || animation_index == -1)
+            continue;
+
+        mesh.instance.skeleton_id             = skeleton_index;
+        mesh.instance.animation_id            = animation_index;
+        mesh.instance.animation_output_offset = output_offset;
+
+        output_offset += world.resources.meshes[mesh_index].vertex_count;
+
+        world.renderer.skinned_mesh_count++;
         mesh_instances.push_back(mesh.instance);
         mesh_instance_entities.push_back(e);
     }
@@ -321,9 +368,7 @@ int main(int argc, char* argv[]) {
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
 
-    // This is updated by a system at the beginning of a frame
-    std::vector<Entity> mesh_instance_entities;
-    fill_drawcalls(world, world.renderer.mesh_instances, mesh_instance_entities);
+    fill_drawcalls(world, world.renderer.mesh_instances, world.renderer.mesh_instance_entities);
 
     SceneHistory scene_history;
 
@@ -923,10 +968,11 @@ int main(int argc, char* argv[]) {
             void* ptr;
             VK_CHECK(vmaMapMemory(world.renderer.vma_allocator, pick_buffer.allocation, &ptr));
             uint32_t mesh_id = *reinterpret_cast<uint32_t*>(ptr);
-            if (mesh_id == UINT32_MAX || mesh_id >= mesh_instance_entities.size()) {
+
+            if (mesh_id == UINT32_MAX || mesh_id >= world.renderer.mesh_instance_entities.size()) {
                 editor.set_selected_entity(entt::null);
             } else {
-                editor.set_selected_entity(mesh_instance_entities[mesh_id]);
+                editor.set_selected_entity(world.renderer.mesh_instance_entities[mesh_id]);
             }
 
             vmaUnmapMemory(world.renderer.vma_allocator, pick_buffer.allocation);
@@ -935,7 +981,7 @@ int main(int argc, char* argv[]) {
 
         update_camera(*camera);
 
-        fill_drawcalls(world, world.renderer.mesh_instances, mesh_instance_entities);
+        fill_drawcalls(world, world.renderer.mesh_instances, world.renderer.mesh_instance_entities);
         world.renderer.editor_overlay = editor_overlay;
         world.renderer.begin_frame(camera);
 
@@ -1018,6 +1064,10 @@ int main(int argc, char* argv[]) {
             ImGui::NewLine();
 
             ImGui::Text("Meshes In Scene: %lu", world.renderer.mesh_instances.size());
+            ImGui::Text("Static Meshes: %u", world.renderer.static_mesh_count);
+            ImGui::Text("Skinned Meshes: %u", world.renderer.skinned_mesh_count);
+
+            ImGui::NewLine();
             ImGui::Text("Unique Materials: %lu", world.resources.materials.size());
             ImGui::Text("Material Overrides: %lu", world.resources.runtime_materials.size());
             ImGui::Text("Textures: %lu", world.resources.images.size());
@@ -1058,6 +1108,11 @@ int main(int argc, char* argv[]) {
                 "Meshlet Bounds Buffer Usage: %.3fMB / %3.fMB",
                 to_mb(world.renderer.buffer_offsets.meshlet_bounds_buffer),
                 to_mb(world.renderer.buffers.meshlet_bounds_buffer.size)
+            );
+            ImGui::Text(
+                "Skin Buffer Usage: %.3fMB / %3.fMB",
+                to_mb(world.renderer.buffer_offsets.skin_buffer_offset),
+                to_mb(world.renderer.buffers.skin_buffer.size)
             );
             ImGui::NewLine();
 

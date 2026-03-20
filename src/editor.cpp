@@ -545,7 +545,17 @@ template <> bool Editor::render_component_ui<components::Material>(Entity e) {
         ImGui::EndDragDropTarget();
     }
 
-    auto& base_material = world->resources.materials[world->load_material(metadata->id)];
+    if (!metadata) {
+        return edited;
+    }
+
+    auto material_index = world->load_material(metadata->id);
+
+    if (material_index == -1) {
+        return edited;
+    }
+
+    auto& base_material = world->resources.materials[material_index];
 
     edited |= edit_optional_property<float>(
         "Roughness Factor",
@@ -872,6 +882,59 @@ template <> bool Editor::render_component_ui<components::Light>(Entity e) {
     return edited;
 }
 
+template <> bool Editor::render_component_ui<components::SkeletalAnimation>(Entity e) {
+    bool edited = false;
+
+    auto* s = world->scene.get_component<components::SkeletalAnimation>(e);
+
+    auto metadata = world->asset_registry.get_metadata<AnimationMetadata>(s->animation_id);
+    ImGui::Text(ICON_FA_STAR "  Animation: ");
+    ImGui::SameLine();
+    if (metadata) {
+        ImGui::Text("%s", metadata->source_path.c_str());
+    } else {
+        ImGui::Text("Invalid");
+    }
+    ImGui::NewLine();
+
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* payload =
+            ImGui::AcceptDragDropPayload(get_asset_info(AssetType::ANIMATION).drag_drop_id.c_str());
+        if (payload) {
+            AssetID new_id = *(AssetID*)payload->Data;
+            if (s->animation_id != new_id) {
+                s->animation_id = new_id;
+
+                auto anim_meta = world->asset_registry.get_metadata<AnimationMetadata>(new_id);
+                if (anim_meta) {
+                    s->skeleton_id = anim_meta->skeleton_id;
+                }
+
+                edited = true;
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    auto skel_meta = world->asset_registry.get_metadata<SkeletonMetadata>(s->skeleton_id);
+    ImGui::Text(ICON_FA_BONE "  Skeleton: ");
+    ImGui::SameLine();
+    if (skel_meta) {
+        ImGui::Text("%s", skel_meta->source_path.c_str());
+    } else {
+        ImGui::Text("Invalid");
+    }
+
+    if (ImGui::Checkbox("Loop", &s->looping)) {
+        edited |= true;
+    }
+
+    ImGui::DragFloat("Animation Speed", &s->speed, 0.1f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    return edited;
+}
+
 Editor::Editor() {
     asset_type_infos = {
         {AssetType::MATERIAL,
@@ -927,6 +990,18 @@ Editor::Editor() {
              .icon          = ICON_FA_STAR,
              .category_name = "Particle Effects",
              .drag_drop_id  = "DRAG_DROP_PARTICLE_EFFECT",
+         }},
+        {AssetType::ANIMATION,
+         AssetTypeInfo{
+             .icon          = ICON_FA_STAR,
+             .category_name = "Skeletal Animations",
+             .drag_drop_id  = "DRAG_DROP_SKELETAL_ANIMATION",
+         }},
+        {AssetType::SKELETON,
+         AssetTypeInfo{
+             .icon          = ICON_FA_BONE,
+             .category_name = "Skeletons",
+             .drag_drop_id  = "DRAG_DROP_SKELETON",
          }},
         {AssetType::UNSUPPORTED,
          AssetTypeInfo{
@@ -1446,6 +1521,8 @@ void Editor::render_asset_importer() {
         case AssetType::SHADER:
         case AssetType::SCRIPT:
         case AssetType::PARTICLE_EFFECT:
+        case AssetType::ANIMATION:
+        case AssetType::SKELETON:
             spdlog::warn("Importer for {} is not implemented", import_asset_path.string());
             ImGui::CloseCurrentPopup();
             import_dialog_open = false;
@@ -1474,6 +1551,8 @@ void Editor::render_asset_importer() {
             case AssetType::SHADER:
             case AssetType::SCRIPT:
             case AssetType::PARTICLE_EFFECT:
+            case AssetType::ANIMATION:
+            case AssetType::SKELETON:
                 break;
             case AssetType::FONT:
                 asset_importer.import_font(import_asset_path, font_import_options);

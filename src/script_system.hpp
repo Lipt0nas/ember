@@ -110,4 +110,5 @@ private:
     void register_character_controller_component(class asIScriptEngine* engine);
     void register_sound_component(class asIScriptEngine* engine);
     void register_light_component(class asIScriptEngine* engine);
+    void register_animation_component(class asIScriptEngine* engine);
 };

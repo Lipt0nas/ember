@@ -9,6 +9,7 @@
 #include "resources.hpp"
 #include "scene.hpp"
 #include "script_system.hpp"
+#include "skeletal_animation.hpp"
 #include "sound_system.hpp"
 
 class World {
@@ -30,6 +31,8 @@ public:
         std::vector<Font>                   fonts;
         std::vector<Sound>                  sounds;
         std::vector<ParticleEffectAsset>    particle_effects;
+        std::vector<Skeleton>               skeletons;
+        std::vector<Animation>              animations;
     } resources;
 
     // True when in the "play" state
@@ -53,6 +56,12 @@ public:
 
     int load_sound(AssetID id);
     int load_sound(const std::string& path);
+
+    int load_skeleton(AssetID id);
+    int load_skeleton(const std::string& path);
+
+    int load_animation(AssetID id);
+    int load_animation(const std::string& path);
 
     int       load_material(AssetID id);
     int       load_material(const std::string& path);
@@ -80,6 +89,8 @@ public:
     std::unordered_map<AssetID, int> font_map;
     std::unordered_map<AssetID, int> sound_map;
     std::unordered_map<AssetID, int> particle_effect_map;
+    std::unordered_map<AssetID, int> skeleton_map;
+    std::unordered_map<AssetID, int> animation_map;
 
     void cleanup();
 

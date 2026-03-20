@@ -738,7 +738,11 @@ void Renderer::cleanup() {
     destroy_buffer(staging_buffer, device, vma_allocator);
     destroy_buffer(global_index_buffer, device, vma_allocator);
     destroy_buffer(global_vertex_buffer, device, vma_allocator);
+    destroy_buffer(global_skin_buffer, device, vma_allocator);
+    destroy_buffer(joint_matrix_buffer, device, vma_allocator);
+    destroy_buffer(global_skinned_geometry_buffer, device, vma_allocator);
     destroy_buffer(indirect_command_buffer, device, vma_allocator);
+    destroy_buffer(indirect_skinned_command_buffer, device, vma_allocator);
     destroy_buffer(meshlet_bounds_buffer, device, vma_allocator);
     destroy_buffer(meshlet_primitive_indices_buffer, device, vma_allocator);
     destroy_buffer(meshlet_vertex_indices_buffer, device, vma_allocator);
@@ -802,8 +806,11 @@ void Renderer::cleanup() {
         vkDestroyImageView(device, view, nullptr);
     }
 
+    destroy_pipeline(device, skinning_pipeline);
     destroy_pipeline(device, cull_pipeline);
+    destroy_pipeline(device, skinned_cull_pipeline);
     destroy_pipeline(device, gpass_pipeline);
+    destroy_pipeline(device, gpass_skinned_pipeline);
     destroy_pipeline(device, hiz_pipeline);
     destroy_pipeline(device, light_pipeline);
     destroy_pipeline(device, bloom_downsample_pipeline);
@@ -892,6 +899,65 @@ void Renderer::setup_framegraph() {
     framegraph->import_image(average_luminance_image, VK_IMAGE_LAYOUT_GENERAL, false);
     framegraph->import_image(rt_reflection_buffer, VK_IMAGE_LAYOUT_GENERAL, false);
 
+    auto skinning_pass =
+        framegraph->add_pass("skinning")
+            .reads_buffer(global_skin_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT)
+            .reads_buffer_dynamic(
+                joint_matrix_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                joint_matrix_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer(global_index_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT)
+            .reads_buffer(global_vertex_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT)
+            .writes_buffer(
+                global_skinned_geometry_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT
+            )
+            .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                if (skinned_mesh_count == 0) {
+                    return;
+                }
+
+                std::array<uint32_t, 6> offsets = {
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_SKINNED_COMMAND_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::JOINT_MATRIX_BUFFER)],
+                };
+
+                const auto& pipeline = skinning_pipeline;
+                vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                vkCmdBindDescriptorSets(
+                    command_buffer,
+                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline.pipeline_layout,
+                    0,
+                    skinning_descriptor_sets.size(),
+                    skinning_descriptor_sets.data(),
+                    offsets.size(),
+                    offsets.data()
+                );
+
+                uint32_t max_vertex_count = 0;
+                for (int i = 0; i < skinned_mesh_count; i++) {
+                    const Mesh& mesh = world->resources.meshes[mesh_instances[static_mesh_count + i].mesh_id];
+                    max_vertex_count = std::max(max_vertex_count, mesh.vertex_count);
+                }
+
+                vkCmdPushConstants(
+                    command_buffer,
+                    pipeline.pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT,
+                    0,
+                    sizeof(uint32_t),
+                    &static_mesh_count
+                );
+
+                vkCmdDispatch(command_buffer, (max_vertex_count + 63) / 64, skinned_mesh_count, 1);
+            });
+
     if (this->hardware_rt_enabled) {
         auto tlas_rebuild_pass = framegraph->add_pass("RT structure rebuild")
                                      .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
@@ -907,6 +973,16 @@ void Renderer::setup_framegraph() {
                                              world->needs_blas_rebuild = false;
                                          }
 
+                                         if (skinned_mesh_count > 0) {
+                                             rebuild_skinned_blas(
+                                                 rt_scene,
+                                                 world,
+                                                 frame_index,
+                                                 command_buffer,
+                                                 get_buffer_device_address(global_skinned_geometry_buffer, device)
+                                             );
+                                         }
+
                                          rebuild_tlas(
                                              rt_scene,
                                              device,
@@ -914,7 +990,9 @@ void Renderer::setup_framegraph() {
                                              command_buffer,
                                              frame_index,
                                              world->resources.meshes,
-                                             mesh_instances
+                                             mesh_instances,
+                                             static_mesh_count,
+                                             skinned_mesh_count
                                          );
                                      });
     }
@@ -946,44 +1024,84 @@ void Renderer::setup_framegraph() {
                 VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
                 indirect_command_buffer.size / FRAMES_IN_FLIGHT
             )
+            .writes_buffer_dynamic(
+                indirect_skinned_command_buffer,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+                indirect_skinned_command_buffer.size / FRAMES_IN_FLIGHT
+            )
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                std::array<uint32_t, 5> offsets = {
+                std::array<uint32_t, 6> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_SKINNED_COMMAND_BUFFER)],
                 };
 
-                vkCmdBindPipeline(command_buffer, cull_pipeline.bind_point, cull_pipeline.pipeline_handle);
-                vkCmdBindDescriptorSets(
-                    command_buffer,
-                    VK_PIPELINE_BIND_POINT_COMPUTE,
-                    cull_pipeline.pipeline_layout,
-                    0,
-                    cull_descriptor_sets.size(),
-                    cull_descriptor_sets.data(),
-                    offsets.size(),
-                    offsets.data()
-                );
+                uint32_t total_count            = static_cast<uint32_t>(mesh_instances.size());
+                cull_push_constants.total_count = total_count;
 
-                cull_push_constants.draw_count = static_cast<uint32_t>(mesh_instances.size());
-                vkCmdPushConstants(
-                    command_buffer,
-                    cull_pipeline.pipeline_layout,
-                    VK_SHADER_STAGE_COMPUTE_BIT,
-                    0,
-                    sizeof(CullPassPushConstants),
-                    &cull_push_constants
-                );
+                if (static_mesh_count > 0) {
+                    vkCmdBindPipeline(command_buffer, cull_pipeline.bind_point, cull_pipeline.pipeline_handle);
+                    vkCmdBindDescriptorSets(
+                        command_buffer,
+                        VK_PIPELINE_BIND_POINT_COMPUTE,
+                        cull_pipeline.pipeline_layout,
+                        0,
+                        cull_descriptor_sets.size(),
+                        cull_descriptor_sets.data(),
+                        offsets.size(),
+                        offsets.data()
+                    );
 
-                vkCmdDispatch(command_buffer, (mesh_instances.size() + 255) / 256, 1, 1);
+                    cull_push_constants.draw_count  = static_mesh_count;
+                    cull_push_constants.draw_offset = 0;
+                    vkCmdPushConstants(
+                        command_buffer,
+                        cull_pipeline.pipeline_layout,
+                        VK_SHADER_STAGE_COMPUTE_BIT,
+                        0,
+                        sizeof(CullPassPushConstants),
+                        &cull_push_constants
+                    );
+
+                    vkCmdDispatch(command_buffer, (static_mesh_count + 255) / 256, 1, 1);
+                }
+
+                if (skinned_mesh_count > 0) {
+                    vkCmdBindPipeline(
+                        command_buffer, skinned_cull_pipeline.bind_point, skinned_cull_pipeline.pipeline_handle
+                    );
+                    vkCmdBindDescriptorSets(
+                        command_buffer,
+                        VK_PIPELINE_BIND_POINT_COMPUTE,
+                        skinned_cull_pipeline.pipeline_layout,
+                        0,
+                        skinned_cull_descriptor_sets.size(),
+                        skinned_cull_descriptor_sets.data(),
+                        offsets.size(),
+                        offsets.data()
+                    );
+
+                    cull_push_constants.draw_count  = skinned_mesh_count;
+                    cull_push_constants.draw_offset = static_mesh_count;
+                    vkCmdPushConstants(
+                        command_buffer,
+                        skinned_cull_pipeline.pipeline_layout,
+                        VK_SHADER_STAGE_COMPUTE_BIT,
+                        0,
+                        sizeof(CullPassPushConstants),
+                        &cull_push_constants
+                    );
+
+                    vkCmdDispatch(command_buffer, (skinned_mesh_count + 255) / 256, 1, 1);
+                }
             });
 
     auto sprite_build_pass =
-        framegraph
-            ->add_pass("sprite batch build")
-
+        framegraph->add_pass("sprite batch build")
             .writes_buffer(
                 sprite_batcher->geometry_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT
             )
@@ -1003,6 +1121,12 @@ void Renderer::setup_framegraph() {
                 VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
                 VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
                 indirect_command_buffer.size / FRAMES_IN_FLIGHT
+            )
+            .reads_buffer_dynamic(
+                indirect_skinned_command_buffer,
+                VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+                indirect_skinned_command_buffer.size / FRAMES_IN_FLIGHT
             )
             .reads_buffer_dynamic(
                 scene_ubo_buffer,
@@ -1128,11 +1252,12 @@ void Renderer::setup_framegraph() {
                         world_sprite_pipeline_descriptor_sets[0], global_texture_descriptor_set
                     };
 
-                    std::array<uint32_t, 4> offsets = {
+                    std::array<uint32_t, 5> offsets = {
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_SKINNED_COMMAND_BUFFER)],
                     };
 
                     vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -1161,11 +1286,12 @@ void Renderer::setup_framegraph() {
                         world_sprite_text_pipeline_descriptor_sets[0], global_texture_descriptor_set
                     };
 
-                    std::array<uint32_t, 4> offsets = {
+                    std::array<uint32_t, 5> offsets = {
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_SKINNED_COMMAND_BUFFER)],
                     };
 
                     vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -1205,12 +1331,13 @@ void Renderer::setup_framegraph() {
                     global_texture_descriptor_set,
                 };
 
-                std::array<uint32_t, 5> offsets = {
+                std::array<uint32_t, 6> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_SKINNED_COMMAND_BUFFER)],
                 };
 
                 vkCmdBindDescriptorSets(
@@ -1231,7 +1358,7 @@ void Renderer::setup_framegraph() {
                         offsets[1] + sizeof(uint32_t),
                         indirect_command_buffer.handle,
                         offsets[1],
-                        mesh_instances.size(),
+                        static_mesh_count,
                         sizeof(MeshIndirectDrawCommand)
                     );
                 } else {
@@ -1243,7 +1370,52 @@ void Renderer::setup_framegraph() {
                         offsets[1] + sizeof(uint32_t),
                         indirect_command_buffer.handle,
                         offsets[1],
-                        mesh_instances.size(),
+                        static_mesh_count,
+                        sizeof(VkDrawIndexedIndirectCommand) + sizeof(uint32_t)
+                    );
+                }
+
+                if (skinned_mesh_count > 0) {
+                    vkCmdBindPipeline(
+                        command_buffer, gpass_skinned_pipeline.bind_point, gpass_skinned_pipeline.pipeline_handle
+                    );
+                    vkCmdPushConstants(
+                        command_buffer,
+                        gpass_skinned_pipeline.pipeline_layout,
+                        gpass_skinned_pipeline.stage_flags,
+                        0,
+                        sizeof(GeometryPushConstants),
+                        &gpass_push_constants
+                    );
+
+                    std::array<VkDescriptorSet, 5> sets = {
+                        gpass_skinned_descriptor_sets[0],
+                        gpass_skinned_descriptor_sets[1],
+                        gpass_skinned_descriptor_sets[2],
+                        gpass_skinned_descriptor_sets[3],
+                        global_texture_descriptor_set,
+                    };
+
+                    vkCmdBindDescriptorSets(
+                        command_buffer,
+                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        gpass_skinned_pipeline.pipeline_layout,
+                        0,
+                        sets.size(),
+                        sets.data(),
+                        offsets.size(),
+                        offsets.data()
+                    );
+
+                    vkCmdBindIndexBuffer(command_buffer, global_index_buffer.handle, 0, VK_INDEX_TYPE_UINT32);
+
+                    vkCmdDrawIndexedIndirectCount(
+                        command_buffer,
+                        indirect_skinned_command_buffer.handle,
+                        offsets[5] + sizeof(uint32_t),
+                        indirect_skinned_command_buffer.handle,
+                        offsets[5],
+                        skinned_mesh_count,
                         sizeof(VkDrawIndexedIndirectCommand) + sizeof(uint32_t)
                     );
                 }
@@ -1663,13 +1835,14 @@ void Renderer::setup_framegraph() {
                         global_texture_descriptor_set,
                     };
 
-                    std::array<uint32_t, 6> offsets = {
+                    std::array<uint32_t, 7> offsets = {
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHT_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_SKINNED_COMMAND_BUFFER)],
                     };
 
                     vkCmdBindDescriptorSets(
@@ -2366,7 +2539,7 @@ void Renderer::setup_framegraph() {
                         global_texture_descriptor_set,
                     };
 
-                    std::array<uint32_t, 7> offsets = {
+                    std::array<uint32_t, 8> offsets = {
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHT_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
@@ -2374,6 +2547,7 @@ void Renderer::setup_framegraph() {
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
                         dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_SKINNED_COMMAND_BUFFER)],
                     };
 
                     vkCmdBindDescriptorSets(
@@ -2677,80 +2851,82 @@ void Renderer::setup_framegraph() {
         );
         shadow_pass_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, shadow_pipeline);
 
-        auto& shadow_pass = framegraph->add_pass("RT Shadows")
-                                .reads_buffer_dynamic(
-                                    scene_ubo_buffer,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_UNIFORM_READ_BIT,
-                                    scene_ubo_buffer.size / FRAMES_IN_FLIGHT
-                                )
-                                .reads_buffer_dynamic(
-                                    lighting_ubo_buffer,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_UNIFORM_READ_BIT,
-                                    lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
-                                )
-                                .reads_buffer_dynamic(
-                                    drawcall_buffer,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_READ_BIT,
-                                    drawcall_buffer.size / FRAMES_IN_FLIGHT
-                                )
-                                .reads_buffer_dynamic(
-                                    mesh_buffer,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_READ_BIT,
-                                    mesh_buffer.size / FRAMES_IN_FLIGHT
-                                )
-                                .reads_buffer_dynamic(
-                                    material_buffer,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_READ_BIT,
-                                    material_buffer.size / FRAMES_IN_FLIGHT
-                                )
-                                .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                                .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                                .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
-                                .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
-                                    const Pipeline& pipeline = shadow_pipeline;
+        auto& shadow_pass =
+            framegraph->add_pass("RT Shadows")
+                .reads_buffer_dynamic(
+                    scene_ubo_buffer,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_UNIFORM_READ_BIT,
+                    scene_ubo_buffer.size / FRAMES_IN_FLIGHT
+                )
+                .reads_buffer_dynamic(
+                    lighting_ubo_buffer,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_UNIFORM_READ_BIT,
+                    lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
+                )
+                .reads_buffer_dynamic(
+                    drawcall_buffer,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_READ_BIT,
+                    drawcall_buffer.size / FRAMES_IN_FLIGHT
+                )
+                .reads_buffer_dynamic(
+                    mesh_buffer,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_READ_BIT,
+                    mesh_buffer.size / FRAMES_IN_FLIGHT
+                )
+                .reads_buffer_dynamic(
+                    material_buffer,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_READ_BIT,
+                    material_buffer.size / FRAMES_IN_FLIGHT
+                )
+                .samples_image(depth_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+                .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                    const Pipeline& pipeline = shadow_pipeline;
 
-                                    vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
+                    vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
 
-                                    std::array<VkDescriptorSet, 5> sets = {
-                                        shadow_pass_descriptor_sets[0],
-                                        shadow_pass_descriptor_sets[1],
-                                        shadow_pass_descriptor_sets[2],
-                                        shadow_pass_descriptor_sets[3],
-                                        global_texture_descriptor_set,
-                                    };
+                    std::array<VkDescriptorSet, 5> sets = {
+                        shadow_pass_descriptor_sets[0],
+                        shadow_pass_descriptor_sets[1],
+                        shadow_pass_descriptor_sets[2],
+                        shadow_pass_descriptor_sets[3],
+                        global_texture_descriptor_set,
+                    };
 
-                                    std::array<uint32_t, 6> offsets = {
-                                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
-                                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
-                                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
-                                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
-                                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
-                                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
-                                    };
+                    std::array<uint32_t, 7> offsets = {
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHTING_UBO)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
+                        dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_SKINNED_COMMAND_BUFFER)],
+                    };
 
-                                    vkCmdBindDescriptorSets(
-                                        command_buffer,
-                                        VK_PIPELINE_BIND_POINT_COMPUTE,
-                                        pipeline.pipeline_layout,
-                                        0,
-                                        sets.size(),
-                                        sets.data(),
-                                        offsets.size(),
-                                        offsets.data()
-                                    );
+                    vkCmdBindDescriptorSets(
+                        command_buffer,
+                        VK_PIPELINE_BIND_POINT_COMPUTE,
+                        pipeline.pipeline_layout,
+                        0,
+                        sets.size(),
+                        sets.data(),
+                        offsets.size(),
+                        offsets.data()
+                    );
 
-                                    vkCmdDispatch(
-                                        command_buffer,
-                                        (((directional_shadow_buffer.width + 1) / 2) + 7) / 8,
-                                        (directional_shadow_buffer.height + 7) / 8,
-                                        1
-                                    );
-                                });
+                    vkCmdDispatch(
+                        command_buffer,
+                        (((directional_shadow_buffer.width + 1) / 2) + 7) / 8,
+                        (directional_shadow_buffer.height + 7) / 8,
+                        1
+                    );
+                });
 
         shadow_fill_pipeline = create_compute_pipeline(
             device,
@@ -3036,11 +3212,12 @@ void Renderer::setup_framegraph() {
             .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
                 uint32_t batch_offset = (sprite_batcher->drawcall_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
 
-                std::array<uint32_t, 5> offsets = {
+                std::array<uint32_t, 6> offsets = {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_COMMAND_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::DRAWCALL_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MESH_BUFFER)],
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::MATERIAL_BUFFER)],
+                    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_SKINNED_COMMAND_BUFFER)],
                     batch_offset
                 };
 
@@ -4467,6 +4644,29 @@ void Renderer::initialize(
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
     );
 
+    global_skin_buffer = create_buffer(
+        1024 * 1024 * 24,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        vma_allocator
+    );
+
+    joint_matrix_buffer = create_buffer(
+        1024 * 1024 * 24 * FRAMES_IN_FLIGHT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
+
+    global_skinned_geometry_buffer = create_buffer(
+        1024 * 1024 * 64,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+            (this->hardware_rt_enabled ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+                                       : 0),
+        vma_allocator
+    );
+
     global_vertex_buffer = create_buffer(
         1024 * 1024 * 128,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
@@ -4540,6 +4740,12 @@ void Renderer::initialize(
 
     indirect_command_buffer = create_buffer(
         1024 * 1024 * 12 * FRAMES_IN_FLIGHT,
+        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        vma_allocator
+    );
+
+    indirect_skinned_command_buffer = create_buffer(
+        1024 * 1024 * 6 * FRAMES_IN_FLIGHT,
         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         vma_allocator
     );
@@ -5311,7 +5517,8 @@ void Renderer::initialize(
         .meshlet_buffer           = meshlet_buffer,
         .meshlet_vertex_indices   = meshlet_vertex_indices_buffer,
         .meshlet_primitive_buffer = meshlet_primitive_indices_buffer,
-        .meshlet_bounds_buffer    = meshlet_bounds_buffer
+        .meshlet_bounds_buffer    = meshlet_bounds_buffer,
+        .skin_buffer              = global_skin_buffer,
     };
     buffer_offsets = {};
 
@@ -5377,6 +5584,12 @@ void Renderer::initialize(
                 .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
                 .write_info = DescriptorInfo(material_buffer.handle, 0, material_buffer.size / FRAMES_IN_FLIGHT)
             },
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                .write_info = DescriptorInfo(
+                    indirect_skinned_command_buffer.handle, 0, indirect_skinned_command_buffer.size / FRAMES_IN_FLIGHT
+                )
+            },
         },
     };
 
@@ -5406,8 +5619,47 @@ void Renderer::initialize(
                 .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .write_info = DescriptorInfo(meshlet_primitive_indices_buffer.handle),
             },
+            DescriptorBinding{
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .write_info = DescriptorInfo(global_skinned_geometry_buffer.handle),
+            },
         },
     };
+
+    skinning_pipeline = create_compute_pipeline(
+        device,
+        {
+            shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/skin.comp.spv"),
+        },
+        {
+            draw_data_layout,
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(global_vertex_buffer.handle),
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(global_skin_buffer.handle)
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                            .write_info = DescriptorInfo(
+                                joint_matrix_buffer.handle, 0, joint_matrix_buffer.size / FRAMES_IN_FLIGHT
+                            )
+                        },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(global_skinned_geometry_buffer.handle)
+                        },
+                    }
+            },
+        },
+        sizeof(SkinPushConstants)
+    );
+    skinning_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, skinning_pipeline);
 
     cull_pipeline = create_compute_pipeline(
         device,
@@ -5430,9 +5682,31 @@ void Renderer::initialize(
         sizeof(CullPassPushConstants)
     );
     cull_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, cull_pipeline);
-    cull_push_constants  = {
-         .screen_size = {depth_pyramid_width, depth_pyramid_height},
-         .draw_count  = 0,
+
+    skinned_cull_pipeline = create_compute_pipeline(
+        device,
+        shader_from_file(device, VK_SHADER_STAGE_COMPUTE_BIT, "data/shaders/cull_skinned.comp.spv"),
+        {
+            scene_data_layout,
+            draw_data_layout,
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .write_info = DescriptorInfo(depth_sampler, depth_hiz.view, VK_IMAGE_LAYOUT_GENERAL)
+                        },
+                    }
+            },
+        },
+        sizeof(CullPassPushConstants)
+    );
+    skinned_cull_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, skinned_cull_pipeline);
+
+    cull_push_constants = {
+        .screen_size = {depth_pyramid_width, depth_pyramid_height},
+        .draw_offset = 0,
+        .draw_count  = 0,
     };
     cull_push_constants.enable_lods = true;
 
@@ -5498,10 +5772,60 @@ void Renderer::initialize(
         global_texture_descriptor_layout
     );
     gpass_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, gpass_pipeline);
-    gpass_push_constants  = {
-         .screen_size                 = {swapchain.width, swapchain.height},
-         .disable_cone_cull           = false,
-         .disable_small_triangle_cull = false,
+
+    gpass_skinned_pipeline = create_graphics_pipeline(
+        device,
+        {
+            shader_from_file(device, VK_SHADER_STAGE_FRAGMENT_BIT, "data/shaders/bindless.frag.spv"),
+            shader_from_file(device, VK_SHADER_STAGE_VERTEX_BIT, "data/shaders/skinned_bindless.vert.spv"),
+        },
+        {
+            scene_data_layout,
+            draw_data_layout,
+            geometry_data_layout,
+            DescriptorLayout{
+                .bindings =
+                    {
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(global_skinned_geometry_buffer.handle)
+                        },
+                    }
+            },
+
+        },
+        {
+            gbuffer_albedo.format,
+            gbuffer_normals.format,
+            gbuffer_emissive.format,
+            gbuffer_id.format,
+        },
+
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+        },
+        {
+            .sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .pNext                  = nullptr,
+            .flags                  = 0,
+            .topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            .primitiveRestartEnable = VK_FALSE,
+        },
+        {},
+        depth_buffer.format,
+        true,
+        true,
+        sizeof(GeometryPushConstants),
+        global_texture_descriptor_layout
+    );
+    gpass_skinned_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, gpass_skinned_pipeline);
+
+    gpass_push_constants = {
+        .screen_size                 = {swapchain.width, swapchain.height},
+        .disable_cone_cull           = false,
+        .disable_small_triangle_cull = false,
     };
 
     sprite_batcher = new SpriteBatcher(this, 100000);
@@ -6228,10 +6552,12 @@ void Renderer::render_frame(float delta_time) {
             for (auto& emitter : p.effect->emitters) {
                 glm::vec3 emitter_pos = t.world_position;
                 SimParams params      = {
-                         .delta_time  = delta_time,
-                         .time        = world->time,
-                         .particle_id = 0,
-                         .emitter_pos = emitter_pos,
+                         .delta_time       = delta_time,
+                         .time             = world->time,
+                         .particle_id      = 0,
+                         .emitter_pos      = emitter_pos,
+                         .emitter_scale    = t.world_scale,
+                         .emitter_rotation = t.world_rotation,
                 };
 
                 emitter.simulate(params);
@@ -6444,10 +6770,12 @@ void Renderer::render_frame(float delta_time) {
                 glm::vec2 emitter_pos = glm::vec2(t.world_position);
 
                 SimParams params = {
-                    .delta_time  = delta_time,
-                    .time        = world->time,
-                    .particle_id = 0,
-                    .emitter_pos = glm::vec3(emitter_pos, 0.0f),
+                    .delta_time       = delta_time,
+                    .time             = world->time,
+                    .particle_id      = 0,
+                    .emitter_pos      = glm::vec3(emitter_pos, 0.0f),
+                    .emitter_scale    = t.world_scale,
+                    .emitter_rotation = ui_rotation,
                 };
 
                 emitter.simulate(params);
@@ -6751,6 +7079,52 @@ void Renderer::render_frame(float delta_time) {
         VK_CHECK(vmaFlushAllocation(vma_allocator, material_buffer.allocation, frame_offset, material_buffer.size));
     }
 
+    {
+        void*  ptr          = nullptr;
+        size_t frame_offset = (joint_matrix_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        VK_CHECK(vmaMapMemory(vma_allocator, joint_matrix_buffer.allocation, &ptr));
+
+        for (int i = 0; i < skinned_mesh_count; i++) {
+            const MeshInstance& instance = mesh_instances[static_mesh_count + i];
+            const Animation&    anim     = world->resources.animations[instance.animation_id];
+            const Skeleton&     skeleton = world->resources.skeletons[instance.skeleton_id];
+
+            Entity e = mesh_instance_entities[static_mesh_count + i];
+            auto*  a = world->scene.get_component<components::SkeletalAnimation>(e);
+            // TODO: seems problematic?
+            if (!a) {
+                continue;
+            }
+
+            a->time += delta_time * a->speed;
+            if (a->looping) {
+                if (a->time < 0.0f) {
+                    a->time += anim.duration;
+                }
+
+                a->time = fmod(a->time, anim.duration);
+            } else {
+                a->time = glm::clamp(a->time, 0.0f, anim.duration);
+            }
+
+            SkeletonPose pose = sample_animation(anim, skeleton, a->time);
+
+            std::vector<glm::mat4> transforms;
+            compute_global_transforms(skeleton, pose, transforms);
+
+            for (int m = 0; m < (int)skeleton.joints.size(); m++) {
+                glm::mat4 skin_mat = transforms[m] * skeleton.joints[m].inverse_bind_matrix;
+
+                size_t instance_offset =
+                    frame_offset + i * MAX_JOINTS_PER_SKELETON * sizeof(glm::mat4) + m * sizeof(glm::mat4);
+                memcpy(reinterpret_cast<char*>(ptr) + instance_offset, &skin_mat, sizeof(glm::mat4));
+            }
+        }
+
+        vmaUnmapMemory(vma_allocator, joint_matrix_buffer.allocation);
+        VK_CHECK(vmaFlushAllocation(vma_allocator, joint_matrix_buffer.allocation, 0, joint_matrix_buffer.size));
+    }
+
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .pNext = nullptr, .flags = 0, .pInheritanceInfo = nullptr
     };
@@ -6774,19 +7148,39 @@ void Renderer::render_frame(float delta_time) {
     vkCmdSetViewport(command_buffer, 0, 1, &viewport);
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
-    size_t command_ptr_frame_offset = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
-    vkCmdFillBuffer(command_buffer, indirect_command_buffer.handle, command_ptr_frame_offset, sizeof(uint32_t), 0);
+    {
+        size_t command_ptr_frame_offset = (indirect_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        vkCmdFillBuffer(command_buffer, indirect_command_buffer.handle, command_ptr_frame_offset, sizeof(uint32_t), 0);
 
-    buffer_pipeline_barrier(
-        indirect_command_buffer,
-        command_buffer,
-        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-        command_ptr_frame_offset,
-        indirect_command_buffer.size / FRAMES_IN_FLIGHT
-    );
+        buffer_pipeline_barrier(
+            indirect_command_buffer,
+            command_buffer,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+            command_ptr_frame_offset,
+            indirect_command_buffer.size / FRAMES_IN_FLIGHT
+        );
+    }
+
+    {
+        size_t command_ptr_frame_offset = (indirect_skinned_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+        vkCmdFillBuffer(
+            command_buffer, indirect_skinned_command_buffer.handle, command_ptr_frame_offset, sizeof(uint32_t), 0
+        );
+
+        buffer_pipeline_barrier(
+            indirect_skinned_command_buffer,
+            command_buffer,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+            command_ptr_frame_offset,
+            indirect_skinned_command_buffer.size / FRAMES_IN_FLIGHT
+        );
+    }
 
     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)] =
         (scene_ubo_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
@@ -6802,6 +7196,10 @@ void Renderer::render_frame(float delta_time) {
         (drawcall_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::LIGHT_BUFFER)] =
         (light_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::INDIRECT_SKINNED_COMMAND_BUFFER)] =
+        (indirect_skinned_command_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
+    dynamic_offsets[static_cast<uint32_t>(DynamicOffset::JOINT_MATRIX_BUFFER)] =
+        (joint_matrix_buffer.size / FRAMES_IN_FLIGHT) * frame_index;
 
     framegraph->execute(command_buffer, frame_index);
 }
@@ -6921,6 +7319,10 @@ void SpriteBatcher::draw(const Drawcall& drawcall) {
 void SpriteBatcher::build_geometry_buffer(
     VmaAllocator vma_allocator, VkCommandBuffer command_buffer, uint32_t frame_index
 ) {
+    if (drawcall_count == 0) {
+        return;
+    }
+
     auto& pipeline = geometry_build_pipline;
 
     uint32_t dynamic_offset = (drawcall_buffer.size / frames_in_flight) * frame_index;

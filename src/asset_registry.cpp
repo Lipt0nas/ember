@@ -22,6 +22,10 @@ AssetRegistry::AssetRegistry() {
         {".flac", AssetType::SOUND},
 
         {".pfx", AssetType::PARTICLE_EFFECT},
+
+        {".skel", AssetType::SKELETON},
+
+        {".anim", AssetType::ANIMATION},
     };
 }
 
@@ -97,6 +101,18 @@ void AssetRegistry::load(const std::filesystem::path& path) {
                 auto particle_effect_metadata = std::make_unique<ParticleEffectMetadata>();
                 archive(*particle_effect_metadata);
                 handle = std::move(particle_effect_metadata);
+                break;
+            }
+            case AssetType::SKELETON: {
+                auto skeleton_metadata = std::make_unique<SkeletonMetadata>();
+                archive(*skeleton_metadata);
+                handle = std::move(skeleton_metadata);
+                break;
+            }
+            case AssetType::ANIMATION: {
+                auto animation_metadata = std::make_unique<AnimationMetadata>();
+                archive(*animation_metadata);
+                handle = std::move(animation_metadata);
                 break;
             }
             }

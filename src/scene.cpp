@@ -252,6 +252,15 @@ Entity Scene::clone_node_internal(Entity base, Entity cloned_parent) {
         light.light = src_light->light;
     }
 
+    auto src_animation = get_component<components::SkeletalAnimation>(base);
+    if (src_animation) {
+        auto& animation        = add_component<components::SkeletalAnimation>(new_entity);
+        animation.animation_id = src_animation->animation_id;
+        animation.skeleton_id  = src_animation->skeleton_id;
+        animation.looping      = src_animation->looping;
+        animation.time         = src_animation->time;
+    }
+
     return new_entity;
 }
 
