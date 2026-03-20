@@ -124,16 +124,31 @@ int World::load_texture(AssetID id) {
         std::vector<unsigned char> texture_data(header.size);
         archive.loadBinary(texture_data.data(), header.size);
 
-        void* staging_buffer_ptr = nullptr;
-        VK_CHECK(vmaMapMemory(renderer.vma_allocator, renderer.buffers.staging_buffer.allocation, &staging_buffer_ptr));
-        std::memcpy(staging_buffer_ptr, texture_data.data(), texture_data.size());
-        vmaUnmapMemory(renderer.vma_allocator, renderer.buffers.staging_buffer.allocation);
+        int mip_width  = header.width;
+        int mip_height = header.height;
 
-        auto command_buffer = renderer.allocate_temporary_command_buffer();
-        copy_image_mip(
-            renderer.buffers.staging_buffer, image, 0, command_buffer, renderer.graphics_queue, renderer.device
-        );
-        renderer.free_temporary_command_buffer(command_buffer);
+        for (uint32_t mip = 0; mip < header.mip_levels; mip++) {
+            size_t mip_offset = 0;
+            size_t mip_size   = mip_width * mip_height * 4;
+
+            renderer.buffer_offsets.texture_data_size += mip_size;
+
+            void* staging_buffer_ptr = nullptr;
+            VK_CHECK(
+                vmaMapMemory(renderer.vma_allocator, renderer.buffers.staging_buffer.allocation, &staging_buffer_ptr)
+            );
+            std::memcpy(staging_buffer_ptr, texture_data.data() + mip_offset, mip_size);
+            vmaUnmapMemory(renderer.vma_allocator, renderer.buffers.staging_buffer.allocation);
+
+            auto command_buffer = renderer.allocate_temporary_command_buffer();
+            copy_image_mip(
+                renderer.buffers.staging_buffer, image, mip, command_buffer, renderer.graphics_queue, renderer.device
+            );
+            renderer.free_temporary_command_buffer(command_buffer);
+
+            mip_width  = std::max(1, mip_width / 2);
+            mip_height = std::max(1, mip_height / 2);
+        }
     }
 
     auto sampler = get_sampler(header.sampler_description);
