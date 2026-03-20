@@ -36,6 +36,8 @@ struct alignas(16) Mesh {
     uint32_t vertex_offset;
     uint32_t vertex_count;
 
+    uint32_t skin_offset = 0;
+
     uint32_t lod_count;
     MeshLOD  lods[8];
 };
@@ -43,6 +45,11 @@ struct alignas(16) Mesh {
 struct MeshInstance {
     int mesh_id     = 0;
     int material_id = 0;
+
+    int animation_id = -1;
+    int skeleton_id  = -1;
+
+    uint32_t animation_output_offset = 0;
 
     glm::vec3 position = {};
     float     scale    = 1.0f;
@@ -53,6 +60,11 @@ struct MeshInstance {
     float     last_scale    = 1.0f;
 
     glm::quat last_rotation = {0.0f, 0.0f, 0.0f, 1.0f};
+};
+
+struct VertexSkinData {
+    uint16_t joints[4];
+    float    weights[4];
 };
 
 struct Vertex {

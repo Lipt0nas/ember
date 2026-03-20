@@ -225,6 +225,7 @@ int World::load_mesh(AssetID id) {
         .bounds_max    = header.mesh.bounds_max,
         .vertex_offset = static_cast<uint32_t>(base_vertex_offset),
         .vertex_count  = header.mesh.vertex_count,
+        .skin_offset   = 0,
         .lod_count     = header.mesh.lod_count,
     };
 
@@ -336,6 +337,28 @@ int World::load_mesh(AssetID id) {
         renderer.buffer_offsets.meshlet_bounds_buffer += header.meshlet_bounds_buffer_size;
         renderer.free_temporary_command_buffer(command_buffer);
     }
+
+    if (header.skin_buffer_size > 0) {
+        std::vector<unsigned char> skin_data(header.skin_buffer_size);
+        archive.loadBinary(skin_data.data(), header.skin_buffer_size);
+
+        auto command_buffer = renderer.allocate_temporary_command_buffer();
+        memcpy(staging_buffer_ptr, skin_data.data(), header.skin_buffer_size);
+        copy_buffer(
+            renderer.buffers.staging_buffer,
+            renderer.buffers.skin_buffer,
+            command_buffer,
+            renderer.graphics_queue,
+            renderer.device,
+            header.skin_buffer_size,
+            renderer.buffer_offsets.skin_buffer_offset
+        );
+        renderer.free_temporary_command_buffer(command_buffer);
+
+        mesh.skin_offset = renderer.buffer_offsets.skin_buffer_offset / sizeof(VertexSkinData);
+        renderer.buffer_offsets.skin_buffer_offset += header.skin_buffer_size;
+    }
+
     vmaUnmapMemory(renderer.vma_allocator, renderer.buffers.staging_buffer.allocation);
 
     int index = resources.meshes.size();
@@ -414,6 +437,142 @@ int World::load_sound(AssetID id) {
 
 int World::load_sound(const std::string& path) {
     return load_sound(asset_registry.hash_path(asset_registry.root_path() / path));
+}
+
+int World::load_skeleton(AssetID id) {
+    auto it = skeleton_map.find(id);
+    if (it != skeleton_map.end()) {
+        return it->second;
+    }
+
+    auto metadata = asset_registry.get_metadata<SkeletonMetadata>(id);
+    if (!metadata) {
+        spdlog::error("Failed to load skeleton {}", id);
+        return -1;
+    }
+
+    std::ifstream              file(metadata->asset_path, std::ios::binary);
+    cereal::BinaryInputArchive archive(file);
+
+    SkeletonAssetHeader header;
+    archive(header);
+
+    if (header.version != 1) {
+        spdlog::error("Skeleton asset {} has outdated version", metadata->asset_path);
+        return -1;
+    }
+
+    std::vector<SkeletonAssetHeader::JointDescription> joint_descs(header.joint_count);
+    archive.loadBinary(joint_descs.data(), header.joint_count * sizeof(SkeletonAssetHeader::JointDescription));
+
+    Skeleton skeleton;
+    skeleton.joints.resize(header.joint_count);
+
+    for (int i = 0; i < (int)header.joint_count; i++) {
+        skeleton.joints[i].parent_index        = joint_descs[i].parent_index;
+        skeleton.joints[i].bind_translation    = joint_descs[i].bind_translation;
+        skeleton.joints[i].bind_rotation       = joint_descs[i].bind_rotation;
+        skeleton.joints[i].bind_scale          = joint_descs[i].bind_scale;
+        skeleton.joints[i].inverse_bind_matrix = joint_descs[i].inverse_bind_matrix;
+    }
+
+    int index = resources.skeletons.size();
+    resources.skeletons.push_back(skeleton);
+    skeleton_map[id] = index;
+
+    return index;
+}
+
+int World::load_skeleton(const std::string& path) {
+    return load_skeleton(asset_registry.hash_path(asset_registry.root_path() / path));
+}
+
+int World::load_animation(AssetID id) {
+    auto it = animation_map.find(id);
+    if (it != animation_map.end())
+        return it->second;
+
+    auto metadata = asset_registry.get_metadata<AnimationMetadata>(id);
+    if (!metadata) {
+        spdlog::error("Failed to load animation {}", id);
+        return -1;
+    }
+
+    std::ifstream              file(metadata->asset_path, std::ios::binary);
+    cereal::BinaryInputArchive archive(file);
+
+    AnimationAssetHeader header;
+    archive(header);
+
+    if (header.version != 1) {
+        spdlog::error("Animation asset {} has outdated version", metadata->asset_path);
+        return -1;
+    }
+
+    std::vector<AnimationAssetHeader::ChannelDescriptor> channel_descs(header.channel_count);
+    archive.loadBinary(channel_descs.data(), header.channel_count * sizeof(AnimationAssetHeader::ChannelDescriptor));
+
+    std::vector<float>     all_times(header.time_buffer_size / sizeof(float));
+    std::vector<glm::vec3> all_vec3(header.vec3_buffer_size / sizeof(glm::vec3));
+    std::vector<glm::quat> all_quat(header.quat_buffer_size / sizeof(glm::quat));
+
+    archive.loadBinary(all_times.data(), header.time_buffer_size);
+    archive.loadBinary(all_vec3.data(), header.vec3_buffer_size);
+    archive.loadBinary(all_quat.data(), header.quat_buffer_size);
+
+    Animation anim;
+    anim.name           = metadata->source_path;
+    anim.duration       = header.duration;
+    anim.skeleton_index = load_skeleton(metadata->skeleton_id);
+
+    if (anim.skeleton_index == -1) {
+        spdlog::error("Failed to load skeleton for animation {}", id);
+        return -1;
+    }
+
+    anim.channels.resize(header.channel_count);
+    for (int i = 0; i < (int)header.channel_count; i++) {
+        const auto& desc = channel_descs[i];
+
+        AnimationChannel& channel = anim.channels[i];
+        channel.joint_index       = desc.joint_index;
+
+        switch (desc.path) {
+        case 0:
+            channel.path = "translation";
+            break;
+        case 1:
+            channel.path = "rotation";
+            break;
+        case 2:
+            channel.path = "scale";
+            break;
+        }
+
+        channel.sampler.times = std::vector<float>(
+            all_times.begin() + desc.time_offset, all_times.begin() + desc.time_offset + desc.keyframe_count
+        );
+
+        if (desc.path == 1) {
+            channel.sampler.quat_values = std::vector<glm::quat>(
+                all_quat.begin() + desc.value_offset, all_quat.begin() + desc.value_offset + desc.keyframe_count
+            );
+        } else {
+            channel.sampler.vec_values = std::vector<glm::vec3>(
+                all_vec3.begin() + desc.value_offset, all_vec3.begin() + desc.value_offset + desc.keyframe_count
+            );
+        }
+    }
+
+    int index = resources.animations.size();
+    resources.animations.push_back(std::move(anim));
+    animation_map.insert({id, index});
+
+    return index;
+}
+
+int World::load_animation(const std::string& path) {
+    return load_skeleton(asset_registry.hash_path(asset_registry.root_path() / path));
 }
 
 int World::load_material(AssetID id) {

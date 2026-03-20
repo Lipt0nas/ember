@@ -30,6 +30,7 @@ layout(set = 1, binding = 2) readonly buffer Meshes {
 layout(push_constant, std430) uniform pc {
     vec2 screen_size;
 
+    uint draw_offset;
     uint draw_count;
 
     uint disable_frustum_cull;
@@ -41,7 +42,7 @@ layout(push_constant, std430) uniform pc {
 layout(set = 2, binding = 0) uniform sampler2D depth;
 
 void main() {
-    uint object_id = gl_GlobalInvocationID.x;
+    uint object_id = gl_GlobalInvocationID.x + draw_offset;
 
     if (object_id >= draw_count) return;
 

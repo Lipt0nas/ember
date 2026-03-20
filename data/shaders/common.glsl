@@ -154,6 +154,8 @@ struct Mesh {
     uint vertex_offset;
     uint vertex_count;
 
+    uint skin_offset;
+
     uint lod_count;
     MeshLOD lods[8];
 };
@@ -161,6 +163,11 @@ struct Mesh {
 struct MeshInstance {
     int mesh_id;
     int material_id;
+
+    int animation_id;
+    int skeleton_id;
+
+    uint animation_output_offset;
 
     vec3 position;
     float scale;
@@ -219,6 +226,11 @@ struct MeshletBounds {
 
     vec3 cone_apex;
     float _pad;
+};
+
+struct VertexSkinData {
+    uint16_t joints[4];
+    float weights[4];
 };
 
 struct Vertex {

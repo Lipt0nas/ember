@@ -191,6 +191,7 @@ void ParticleEmitter::simulate(SimParams params) {
 
                 simulate_spawn(p, params);
                 p.position += params.emitter_pos;
+                p.velocity = params.emitter_rotation * p.velocity;
 
                 ++live_count;
                 --dead_count;

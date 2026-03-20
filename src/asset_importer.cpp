@@ -12,6 +12,16 @@
 #include <stb_image_resize2.h>
 #include <stb_truetype.h>
 
+template <typename T> std::vector<T> read_accessor(const tinygltf::Model& model, int accessor_index) {
+    const auto& accessor    = model.accessors[accessor_index];
+    const auto& buffer_view = model.bufferViews[accessor.bufferView];
+    const auto& buffer      = model.buffers[buffer_view.buffer];
+
+    const T* ptr = reinterpret_cast<const T*>(buffer.data.data() + buffer_view.byteOffset + accessor.byteOffset);
+
+    return std::vector<T>(ptr, ptr + accessor.count);
+}
+
 void AssetImporter::initialize(class World* world) {
     this->world = world;
 }
@@ -379,6 +389,263 @@ AssetID AssetImporter::import_model(
         }
     }
 
+    std::vector<std::vector<int>> skin_node_to_joint(model.skins.size());
+    for (int s = 0; s < model.skins.size(); s++) {
+        skin_node_to_joint[s].resize(model.nodes.size(), -1);
+        for (int i = 0; i < model.skins[s].joints.size(); i++) {
+            skin_node_to_joint[s][model.skins[s].joints[i]] = i;
+        }
+    }
+
+    auto find_skin_for_animation = [&](const tinygltf::Model& model, const tinygltf::Animation& anim) {
+        for (int s = 0; s < model.skins.size(); s++) {
+            const auto& skin = model.skins[s];
+            for (const auto& channel : anim.channels) {
+                for (int joint_node : skin.joints) {
+                    if (channel.target_node == joint_node)
+                        return s;
+                }
+            }
+        }
+        return -1;
+    };
+
+    spdlog::info("Loading {} skins", model.skins.size());
+    std::unordered_map<int, AssetID> skeleton_hash_map;
+    for (int s = 0; s < model.skins.size(); s++) {
+        const tinygltf::Skin& skin = model.skins[s];
+
+        Skeleton skeleton;
+        for (int i = 0; i < skin.joints.size(); i++) {
+            const auto& node = model.nodes[skin.joints[i]];
+
+            Joint joint;
+            if (!node.matrix.empty()) {
+                glm::mat4 m = glm::make_mat4(node.matrix.data());
+                glm::vec3 skew;
+                glm::vec4 perspective;
+                glm::decompose(m, joint.bind_scale, joint.bind_rotation, joint.bind_translation, skew, perspective);
+            } else {
+                joint.bind_translation = node.translation.empty()
+                                             ? glm::vec3(0)
+                                             : glm::vec3(node.translation[0], node.translation[1], node.translation[2]);
+
+                joint.bind_rotation = node.rotation.empty() ? glm::quat(0, 0, 0, 1)
+                                                            : glm::quat(
+                                                                  (float)node.rotation[0],
+                                                                  (float)node.rotation[1],
+                                                                  (float)node.rotation[2],
+                                                                  (float)node.rotation[3]
+                                                              );
+
+                joint.bind_scale =
+                    node.scale.empty() ? glm::vec3(1) : glm::vec3(node.scale[0], node.scale[1], node.scale[2]);
+            }
+
+            joint.parent_index = -1;
+            for (int j = 0; j < skin.joints.size(); j++) {
+                for (int child : model.nodes[skin.joints[j]].children) {
+                    if (child == skin.joints[i]) {
+                        joint.parent_index = j;
+                        break;
+                    }
+                }
+
+                if (joint.parent_index != -1) {
+                    break;
+                }
+            }
+            skeleton.joints.push_back(joint);
+        }
+
+        std::vector<glm::mat4> inverse_bind_matrices;
+        if (skin.inverseBindMatrices >= 0) {
+            inverse_bind_matrices = read_accessor<glm::mat4>(model, skin.inverseBindMatrices);
+        }
+
+        for (int i = 0; i < skeleton.joints.size(); i++) {
+            skeleton.joints[i].inverse_bind_matrix =
+                (i < inverse_bind_matrices.size()) ? inverse_bind_matrices[i] : glm::mat4(1.0f);
+        }
+
+        auto virtual_source = world->asset_registry.source_asset_path() / "skeletons" / source_destination.stem() /
+                              (skin.name + "_" + std::to_string(s));
+        auto hash = world->asset_registry.hash_path(virtual_source);
+
+        auto skeleton_destination =
+            world->asset_registry.stored_asset_path() / "skeletons" / (std::to_string(hash) + ".skel");
+        auto skeleton_metadata_destination =
+            world->asset_registry.metadata_path() / "skeletons" / (std::to_string(hash) + ".metadata");
+
+        std::filesystem::create_directories(skeleton_destination.parent_path());
+        std::filesystem::create_directories(skeleton_metadata_destination.parent_path());
+
+        {
+            std::vector<SkeletonAssetHeader::JointDescription> joint_descs(skeleton.joints.size());
+            for (int i = 0; i < (int)skeleton.joints.size(); i++) {
+                joint_descs[i] = {
+                    .parent_index        = skeleton.joints[i].parent_index,
+                    .bind_translation    = skeleton.joints[i].bind_translation,
+                    .bind_rotation       = skeleton.joints[i].bind_rotation,
+                    .bind_scale          = skeleton.joints[i].bind_scale,
+                    .inverse_bind_matrix = skeleton.joints[i].inverse_bind_matrix,
+                };
+            }
+
+            SkeletonAssetHeader header;
+            header.version     = 1;
+            header.joint_count = skeleton.joints.size();
+
+            std::ofstream               asset_file(skeleton_destination, std::ios::binary);
+            cereal::BinaryOutputArchive archive(asset_file);
+            archive(header);
+            archive.saveBinary(joint_descs.data(), joint_descs.size() * sizeof(SkeletonAssetHeader::JointDescription));
+        }
+
+        {
+            std::ofstream             metadata_file(skeleton_metadata_destination);
+            cereal::JSONOutputArchive archive(metadata_file);
+
+            auto meta                = std::make_unique<SkeletonMetadata>();
+            meta->id                 = hash;
+            meta->source_path        = virtual_source.string();
+            meta->asset_path         = skeleton_destination.string();
+            meta->type               = AssetType::SKELETON;
+            meta->source_timestamp   = std::filesystem::last_write_time(source_destination).time_since_epoch().count();
+            meta->imported_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+            meta->standalone         = false;
+            archive(cereal::make_nvp("metadata", *meta));
+
+            world->asset_registry.register_asset(hash, std::move(meta));
+        }
+        skeleton_hash_map.insert({s, hash});
+    }
+
+    spdlog::info("Loading {} animations", model.animations.size());
+    for (int a = 0; a < model.animations.size(); a++) {
+        spdlog::info("animation {}", a);
+        const tinygltf::Animation& animation = model.animations[a];
+
+        int skin_index = find_skin_for_animation(model, animation);
+        if (skin_index < 0) {
+            spdlog::warn("Could not match animation {} to skin", animation.name);
+            continue;
+        }
+
+        AssetID skeleton_asset_id = skeleton_hash_map.at(skin_index);
+
+        Animation result;
+        result.name     = animation.name;
+        result.duration = 0.0f;
+
+        for (const auto& channel : animation.channels) {
+            int joint_index = skin_node_to_joint[skin_index][channel.target_node];
+            if (joint_index < 0) {
+                continue;
+            }
+
+            const auto& src = animation.samplers[channel.sampler];
+
+            AnimationChannel ac;
+            ac.joint_index   = joint_index;
+            ac.path          = channel.target_path;
+            ac.sampler.times = read_accessor<float>(model, src.input);
+
+            if (channel.target_path == "rotation") {
+                ac.sampler.quat_values = read_accessor<glm::quat>(model, src.output);
+            } else {
+                ac.sampler.vec_values = read_accessor<glm::vec3>(model, src.output);
+            }
+
+            if (!ac.sampler.times.empty()) {
+                result.duration = glm::max(result.duration, ac.sampler.times.back());
+            }
+
+            result.channels.push_back(std::move(ac));
+        }
+
+        std::vector<AnimationAssetHeader::ChannelDescriptor> channel_descs;
+        std::vector<float>                                   all_times;
+        std::vector<glm::vec3>                               all_vec3;
+        std::vector<glm::quat>                               all_quat;
+
+        for (const auto& channel : result.channels) {
+            AnimationAssetHeader::ChannelDescriptor desc;
+            desc.joint_index    = channel.joint_index;
+            desc.keyframe_count = channel.sampler.times.size();
+            desc.time_offset    = all_times.size();
+
+            uint32_t path = 0;
+            if (channel.path == "rotation")
+                path = 1;
+            if (channel.path == "scale")
+                path = 2;
+            desc.path = path;
+
+            if (path == 1) {
+                desc.value_offset = all_quat.size();
+                all_quat.insert(all_quat.end(), channel.sampler.quat_values.begin(), channel.sampler.quat_values.end());
+            } else {
+                desc.value_offset = all_vec3.size();
+                all_vec3.insert(all_vec3.end(), channel.sampler.vec_values.begin(), channel.sampler.vec_values.end());
+            }
+
+            all_times.insert(all_times.end(), channel.sampler.times.begin(), channel.sampler.times.end());
+            channel_descs.push_back(desc);
+        }
+
+        auto virtual_source = world->asset_registry.source_asset_path() / "animations" / source_destination.stem() /
+                              (animation.name + "_" + std::to_string(a));
+        auto hash = world->asset_registry.hash_path(virtual_source);
+
+        auto anim_destination =
+            world->asset_registry.stored_asset_path() / "animations" / (std::to_string(hash) + ".anim");
+        auto anim_metadata_destination =
+            world->asset_registry.metadata_path() / "animations" / (std::to_string(hash) + ".metadata");
+
+        std::filesystem::create_directories(anim_destination.parent_path());
+        std::filesystem::create_directories(anim_metadata_destination.parent_path());
+
+        {
+            AnimationAssetHeader header;
+            header.version          = 1;
+            header.duration         = result.duration;
+            header.skeleton_id      = skeleton_asset_id;
+            header.channel_count    = channel_descs.size();
+            header.time_buffer_size = all_times.size() * sizeof(float);
+            header.vec3_buffer_size = all_vec3.size() * sizeof(glm::vec3);
+            header.quat_buffer_size = all_quat.size() * sizeof(glm::quat);
+
+            std::ofstream               asset_file(anim_destination, std::ios::binary);
+            cereal::BinaryOutputArchive archive(asset_file);
+            archive(header);
+            archive.saveBinary(
+                channel_descs.data(), channel_descs.size() * sizeof(AnimationAssetHeader::ChannelDescriptor)
+            );
+            archive.saveBinary(all_times.data(), header.time_buffer_size);
+            archive.saveBinary(all_vec3.data(), header.vec3_buffer_size);
+            archive.saveBinary(all_quat.data(), header.quat_buffer_size);
+        }
+
+        {
+            std::ofstream             metadata_file(anim_metadata_destination);
+            cereal::JSONOutputArchive archive(metadata_file);
+
+            auto meta                = std::make_unique<AnimationMetadata>();
+            meta->id                 = hash;
+            meta->source_path        = virtual_source.string();
+            meta->asset_path         = anim_destination.string();
+            meta->type               = AssetType::ANIMATION;
+            meta->source_timestamp   = std::filesystem::last_write_time(source_destination).time_since_epoch().count();
+            meta->imported_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+            meta->standalone         = false;
+            meta->skeleton_id        = skeleton_asset_id;
+            archive(cereal::make_nvp("metadata", *meta));
+
+            world->asset_registry.register_asset(hash, std::move(meta));
+        }
+    }
+
     spdlog::info("Loading {} meshes", model.meshes.size());
     for (int m = 0; m < model.meshes.size(); m++) {
         spdlog::trace("mesh {}", m);
@@ -416,6 +683,62 @@ AssetID AssetImporter::import_model(
             const tinygltf::Buffer& texcoord_buffer = model.buffers[texcoord_view.buffer];
 
             size_t vertex_count = pos_accessor.count;
+
+            auto has_joints  = primitive.attributes.count("JOINTS_0");
+            auto has_weights = primitive.attributes.count("WEIGHTS_0");
+
+            std::vector<VertexSkinData> skin_data;
+
+            if (has_joints && has_weights) {
+                const auto& joints_accessor  = model.accessors[primitive.attributes.at("JOINTS_0")];
+                const auto& weights_accessor = model.accessors[primitive.attributes.at("WEIGHTS_0")];
+
+                const auto& joints_view  = model.bufferViews[joints_accessor.bufferView];
+                const auto& weights_view = model.bufferViews[weights_accessor.bufferView];
+
+                const auto& joints_buffer  = model.buffers[joints_view.buffer];
+                const auto& weights_buffer = model.buffers[weights_view.buffer];
+
+                const float* weights = reinterpret_cast<const float*>(
+                    &weights_buffer.data[weights_view.byteOffset + weights_accessor.byteOffset]
+                );
+
+                skin_data.resize(vertex_count);
+
+                switch (joints_accessor.componentType) {
+                case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE: {
+                    const uint8_t* joints = reinterpret_cast<const uint8_t*>(
+                        &joints_buffer.data[joints_view.byteOffset + joints_accessor.byteOffset]
+                    );
+                    for (size_t i = 0; i < vertex_count; i++) {
+                        skin_data[i].joints[0] = joints[i * 4 + 0];
+                        skin_data[i].joints[1] = joints[i * 4 + 1];
+                        skin_data[i].joints[2] = joints[i * 4 + 2];
+                        skin_data[i].joints[3] = joints[i * 4 + 3];
+                    }
+                    break;
+                }
+                case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
+                    const uint16_t* joints = reinterpret_cast<const uint16_t*>(
+                        &joints_buffer.data[joints_view.byteOffset + joints_accessor.byteOffset]
+                    );
+                    for (size_t i = 0; i < vertex_count; i++) {
+                        skin_data[i].joints[0] = joints[i * 4 + 0];
+                        skin_data[i].joints[1] = joints[i * 4 + 1];
+                        skin_data[i].joints[2] = joints[i * 4 + 2];
+                        skin_data[i].joints[3] = joints[i * 4 + 3];
+                    }
+                    break;
+                }
+                }
+
+                for (size_t i = 0; i < vertex_count; i++) {
+                    skin_data[i].weights[0] = weights[i * 4 + 0];
+                    skin_data[i].weights[1] = weights[i * 4 + 1];
+                    skin_data[i].weights[2] = weights[i * 4 + 2];
+                    skin_data[i].weights[3] = weights[i * 4 + 3];
+                }
+            }
 
             auto* positions =
                 reinterpret_cast<const float*>(&pos_buffer.data[pos_view.byteOffset + pos_accessor.byteOffset]);
@@ -529,21 +852,78 @@ AssetID AssetImporter::import_model(
             }
 
             std::vector<uint32_t> remap_table(vertices.size());
-            auto                  unique_vertices = meshopt_generateVertexRemap(
-                remap_table.data(), indices.data(), indices.size(), vertices.data(), vertices.size(), sizeof(Vertex)
-            );
+            size_t                unique_vertices;
 
-            meshopt_remapVertexBuffer(
-                vertices.data(), vertices.data(), vertices.size(), sizeof(Vertex), remap_table.data()
-            );
-            meshopt_remapIndexBuffer(indices.data(), indices.data(), indices.size(), remap_table.data());
-            vertices.resize(unique_vertices);
+            if (!skin_data.empty()) {
+                struct VertexFull {
+                    Vertex         v;
+                    VertexSkinData skin;
+                };
 
-            meshopt_optimizeVertexCache(indices.data(), indices.data(), indices.size(), vertices.size());
+                std::vector<VertexFull> vertices_full(vertices.size());
+                for (size_t i = 0; i < vertices.size(); i++) {
+                    vertices_full[i].v    = vertices[i];
+                    vertices_full[i].skin = skin_data[i];
+                }
 
-            meshopt_optimizeVertexFetch(
-                vertices.data(), indices.data(), indices.size(), vertices.data(), vertices.size(), sizeof(Vertex)
-            );
+                unique_vertices = meshopt_generateVertexRemap(
+                    remap_table.data(),
+                    indices.data(),
+                    indices.size(),
+                    vertices_full.data(),
+                    vertices_full.size(),
+                    sizeof(VertexFull)
+                );
+
+                meshopt_remapVertexBuffer(
+                    vertices_full.data(),
+                    vertices_full.data(),
+                    vertices_full.size(),
+                    sizeof(VertexFull),
+                    remap_table.data()
+                );
+                meshopt_remapIndexBuffer(indices.data(), indices.data(), indices.size(), remap_table.data());
+                vertices_full.resize(unique_vertices);
+
+                vertices.resize(unique_vertices);
+                skin_data.resize(unique_vertices);
+                for (size_t i = 0; i < unique_vertices; i++) {
+                    vertices[i]  = vertices_full[i].v;
+                    skin_data[i] = vertices_full[i].skin;
+                }
+
+                meshopt_optimizeVertexCache(indices.data(), indices.data(), indices.size(), unique_vertices);
+
+                meshopt_optimizeVertexFetch(
+                    vertices_full.data(),
+                    indices.data(),
+                    indices.size(),
+                    vertices_full.data(),
+                    unique_vertices,
+                    sizeof(VertexFull)
+                );
+
+                for (size_t i = 0; i < unique_vertices; i++) {
+                    vertices[i]  = vertices_full[i].v;
+                    skin_data[i] = vertices_full[i].skin;
+                }
+            } else {
+                unique_vertices = meshopt_generateVertexRemap(
+                    remap_table.data(), indices.data(), indices.size(), vertices.data(), vertices.size(), sizeof(Vertex)
+                );
+
+                meshopt_remapVertexBuffer(
+                    vertices.data(), vertices.data(), vertices.size(), sizeof(Vertex), remap_table.data()
+                );
+                meshopt_remapIndexBuffer(indices.data(), indices.data(), indices.size(), remap_table.data());
+                vertices.resize(unique_vertices);
+
+                meshopt_optimizeVertexCache(indices.data(), indices.data(), indices.size(), unique_vertices);
+
+                meshopt_optimizeVertexFetch(
+                    vertices.data(), indices.data(), indices.size(), vertices.data(), unique_vertices, sizeof(Vertex)
+                );
+            }
 
             std::vector<glm::vec3> unquantized_positions(vertices.size());
             for (int i = 0; i < vertices.size(); i++) {
@@ -730,12 +1110,14 @@ AssetID AssetImporter::import_model(
             }
 
             MeshAssetHeader header = {
+                .version                             = 1,
                 .vertex_buffer_size                  = vertices.size() * sizeof(Vertex),
                 .index_buffer_size                   = all_indices.size() * sizeof(uint32_t),
                 .meshlet_buffer_size                 = all_meshlets.size() * sizeof(meshopt_Meshlet),
                 .meshlet_vertex_indicies_buffer_size = all_meshlet_vertices.size() * sizeof(unsigned int),
                 .meshlet_primitive_buffer_size       = all_meshlet_triangles.size() * sizeof(unsigned char),
                 .meshlet_bounds_buffer_size          = all_meshlet_bounds.size() * sizeof(MeshletBounds),
+                .skin_buffer_size                    = skin_data.size() * sizeof(VertexSkinData),
                 .mesh                                = mesh
             };
 
@@ -763,6 +1145,7 @@ AssetID AssetImporter::import_model(
                 archive.saveBinary(all_meshlet_vertices.data(), header.meshlet_vertex_indicies_buffer_size);
                 archive.saveBinary(all_meshlet_triangles.data(), header.meshlet_primitive_buffer_size);
                 archive.saveBinary(all_meshlet_bounds.data(), header.meshlet_bounds_buffer_size);
+                archive.saveBinary(skin_data.data(), header.skin_buffer_size);
                 metadata->mesh_ids.push_back(hash);
             }
 

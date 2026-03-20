@@ -1483,6 +1483,22 @@ namespace {
     void world_set_sound_listener(glm::vec3 position, glm::vec3 direction) {
         get_world_from_context()->sound.set_listener(position, direction);
     }
+
+    void component_stop_animation(components::SkeletalAnimation* comp) {
+        comp->speed = 0.0f;
+    }
+
+    void component_restart_animation(components::SkeletalAnimation* comp) {
+        comp->time = 0.0f;
+    }
+
+    bool component_is_animation_finished(components::SkeletalAnimation* comp) {
+        if (comp->looping) {
+            return false;
+        } else {
+            return comp->time >= 1.0f;
+        }
+    }
 } // namespace
 
 void node_get_component(asIScriptGeneric* gen) {
@@ -1898,6 +1914,7 @@ void ScriptSystem::initialize(class World* world) {
     register_character_controller_component(engine);
     register_sound_component(engine);
     register_light_component(engine);
+    register_animation_component(engine);
 
     engine->SetDefaultNamespace("World");
     engine->RegisterGlobalFunction(
@@ -2866,6 +2883,40 @@ void ScriptSystem::register_light_component(class asIScriptEngine* engine) {
         type->GetTypeId(),
         [](Scene& scene, Entity e) {
             return scene.get_component<components::Light>(e);
+        },
+    });
+}
+
+void ScriptSystem::register_animation_component(class asIScriptEngine* engine) {
+    engine->RegisterObjectType("SkeletalAnimation", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    engine->RegisterObjectProperty("SkeletalAnimation", "float speed", asOFFSET(components::SkeletalAnimation, speed));
+    engine->RegisterObjectProperty(
+        "SkeletalAnimation", "bool looping", asOFFSET(components::SkeletalAnimation, looping)
+    );
+    engine->RegisterObjectProperty("SkeletalAnimation", "float time", asOFFSET(components::SkeletalAnimation, time));
+
+    engine->RegisterObjectMethod(
+        "SkeletalAnimation", "void stop()", asFUNCTION(component_stop_animation), asCALL_CDECL_OBJFIRST
+    );
+
+    engine->RegisterObjectMethod(
+        "SkeletalAnimation", "void restart()", asFUNCTION(component_restart_animation), asCALL_CDECL_OBJFIRST
+    );
+
+    engine->RegisterObjectMethod(
+        "SkeletalAnimation", "bool is_finished()", asFUNCTION(component_is_animation_finished), asCALL_CDECL_OBJFIRST
+    );
+
+    auto type = engine->GetTypeInfoByName("SkeletalAnimation");
+    if (!type) {
+        spdlog::error("Failed to get type info for SkeletalAnimation component");
+        return;
+    }
+
+    component_retrieve_map.insert({
+        type->GetTypeId(),
+        [](Scene& scene, Entity e) {
+            return scene.get_component<components::SkeletalAnimation>(e);
         },
     });
 }

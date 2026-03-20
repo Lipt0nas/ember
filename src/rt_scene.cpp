@@ -110,10 +110,19 @@ RTScene create_rt_scene(
     );
 
     std::vector<Buffer> scratch_buffers(frames_in_flight);
-
     for (int i = 0; i < frames_in_flight; i++) {
         scratch_buffers[i] = create_buffer(
             acceleration_structure_build_sizes_info.buildScratchSize * 2,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            allocator,
+            VMA_MEMORY_USAGE_GPU_ONLY
+        );
+    }
+
+    std::vector<Buffer> skinned_blas_scratch_buffers(frames_in_flight);
+    for (int i = 0; i < frames_in_flight; i++) {
+        skinned_blas_scratch_buffers[i] = create_buffer(
+            1024 * 1024 * 16,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
             allocator,
             VMA_MEMORY_USAGE_GPU_ONLY
@@ -184,15 +193,226 @@ RTScene create_rt_scene(
 
     RTScene scene = {
         .blas_instances                  = bottom_level_acceleration_structures,
+        .skinned_blas_instances          = {},
         .tlas                            = top_level_acceleration_structure,
         .rt_properties                   = ray_tracing_properties,
         .acceleration_structure_features = acceleration_structure_features,
         .instance_buffers                = instance_buffers,
         .scratch_buffers                 = scratch_buffers,
+        .skinned_blas_scratch_buffers    = skinned_blas_scratch_buffers,
         .max_tlas_instance_count         = max_tlas_instance_count,
     };
 
     return scene;
+}
+
+void rebuild_skinned_blas(
+    RTScene&        scene,
+    World*          world,
+    uint32_t        frame_index,
+    VkCommandBuffer command_buffer,
+    VkDeviceAddress skinned_vertex_buffer_address
+) {
+    uint32_t    skinned_mesh_count = world->renderer.skinned_mesh_count;
+    uint32_t    static_mesh_count  = world->renderer.static_mesh_count;
+    const auto& mesh_instances     = world->renderer.mesh_instances;
+
+    if (skinned_mesh_count == 0) {
+        return;
+    }
+
+    bool count_changed = scene.skinned_blas_instances.size() != skinned_mesh_count;
+
+    if (count_changed) {
+        for (auto& blas : scene.skinned_blas_instances) {
+            vkDestroyAccelerationStructureKHR(world->renderer.device, blas.handle, nullptr);
+            destroy_buffer(blas.buffer, world->renderer.device, world->renderer.vma_allocator);
+        }
+        scene.skinned_blas_instances.clear();
+        scene.skinned_blas_instances.resize(skinned_mesh_count, {});
+    }
+
+    std::vector<bool> instance_needs_rebuild(skinned_mesh_count, count_changed);
+
+    if (!count_changed) {
+        for (uint32_t i = 0; i < skinned_mesh_count; i++) {
+            const MeshInstance& inst = mesh_instances[static_mesh_count + i];
+            const Mesh&         mesh = world->resources.meshes[inst.mesh_id];
+            auto&               blas = scene.skinned_blas_instances[i];
+
+            if (blas.mesh_id != inst.mesh_id || blas.vertex_count != mesh.vertex_count ||
+                blas.index_count != mesh.lods[0].index_count) {
+                vkDestroyAccelerationStructureKHR(world->renderer.device, blas.handle, nullptr);
+                destroy_buffer(blas.buffer, world->renderer.device, world->renderer.vma_allocator);
+                blas                      = {};
+                instance_needs_rebuild[i] = true;
+            }
+        }
+    }
+
+    std::vector<VkAccelerationStructureGeometryKHR> geometries;
+    geometries.reserve(skinned_mesh_count);
+
+    struct BLASBuildData {
+        VkAccelerationStructureBuildGeometryInfoKHR build_info;
+        VkAccelerationStructureBuildSizesInfoKHR    sizes;
+        VkAccelerationStructureBuildRangeInfoKHR    range;
+        uint32_t                                    primitive_count;
+    };
+
+    std::vector<BLASBuildData> build_data;
+    build_data.reserve(skinned_mesh_count);
+
+    VkDeviceSize max_scratch_size = 0;
+
+    for (uint32_t i = 0; i < skinned_mesh_count; i++) {
+        const MeshInstance& instance = mesh_instances[static_mesh_count + i];
+        const Mesh&         mesh     = world->resources.meshes[instance.mesh_id];
+
+        VkDeviceAddress vertex_address =
+            skinned_vertex_buffer_address + instance.animation_output_offset * sizeof(Vertex);
+
+        geometries.push_back({
+            .sType        = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+            .geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR,
+            .geometry =
+                {.triangles =
+                     {
+                         .sType        = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
+                         .vertexFormat = VK_FORMAT_R16G16B16A16_SFLOAT,
+                         .vertexData   = {.deviceAddress = vertex_address},
+                         .vertexStride = sizeof(Vertex),
+                         .maxVertex    = mesh.vertex_count - 1,
+                         .indexType    = VK_INDEX_TYPE_UINT32,
+                         .indexData =
+                             {.deviceAddress = get_buffer_device_address(
+                                                   world->renderer.buffers.index_buffer, world->renderer.device
+                                               ) +
+                                               mesh.lods[0].index_offset * sizeof(uint32_t)},
+                     }},
+            .flags = VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR | VK_GEOMETRY_OPAQUE_BIT_KHR,
+        });
+
+        BLASBuildData data   = {};
+        data.primitive_count = mesh.lods[0].index_count / 3;
+        data.build_info      = {
+                 .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+                 .type  = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+                 .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR |
+                     VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
+                 .geometryCount = 1,
+                 .pGeometries   = &geometries.back(),
+        };
+
+        data.sizes = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+        vkGetAccelerationStructureBuildSizesKHR(
+            world->renderer.device,
+            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+            &data.build_info,
+            &data.primitive_count,
+            &data.sizes
+        );
+
+        max_scratch_size = std::max(max_scratch_size, data.sizes.buildScratchSize);
+        data.range       = {.primitiveCount = data.primitive_count};
+        build_data.push_back(data);
+    }
+
+    if (max_scratch_size > scene.skinned_blas_scratch_buffers[frame_index].size) {
+        destroy_buffer(
+            scene.skinned_blas_scratch_buffers[frame_index], world->renderer.device, world->renderer.vma_allocator
+        );
+        scene.skinned_blas_scratch_buffers[frame_index] = create_buffer(
+            max_scratch_size * 2,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            world->renderer.vma_allocator,
+            VMA_MEMORY_USAGE_GPU_ONLY
+        );
+    }
+
+    VkDeviceAddress scratch_address =
+        get_buffer_device_address(scene.skinned_blas_scratch_buffers[frame_index], world->renderer.device);
+
+    memory_pipeline_barrier(
+        command_buffer,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_SHADER_READ_BIT
+    );
+
+    for (size_t i = 0; i < build_data.size(); i++) {
+        auto&               data     = build_data[i];
+        const MeshInstance& instance = mesh_instances[static_mesh_count + i];
+        const Mesh&         mesh     = world->resources.meshes[instance.mesh_id];
+
+        if (instance_needs_rebuild[i]) {
+            Buffer blas_buffer = create_buffer(
+                data.sizes.accelerationStructureSize,
+                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                world->renderer.vma_allocator,
+                VMA_MEMORY_USAGE_GPU_ONLY
+            );
+
+            VkAccelerationStructureCreateInfoKHR create_info = {
+                .sType  = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
+                .buffer = blas_buffer.handle,
+                .size   = data.sizes.accelerationStructureSize,
+                .type   = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+            };
+
+            VkAccelerationStructureKHR blas_handle = VK_NULL_HANDLE;
+            vkCreateAccelerationStructureKHR(world->renderer.device, &create_info, nullptr, &blas_handle);
+
+            data.build_info.mode                     = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+            data.build_info.srcAccelerationStructure = VK_NULL_HANDLE;
+            data.build_info.dstAccelerationStructure = blas_handle;
+            data.build_info.scratchData              = {.deviceAddress = scratch_address};
+
+            VkAccelerationStructureBuildRangeInfoKHR* range_ptr = &data.range;
+            vkCmdBuildAccelerationStructuresKHR(command_buffer, 1, &data.build_info, &range_ptr);
+
+            VkAccelerationStructureDeviceAddressInfoKHR addr_info = {
+                .sType                 = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
+                .accelerationStructure = blas_handle,
+            };
+
+            scene.skinned_blas_instances[i] = {
+                .buffer       = blas_buffer,
+                .handle       = blas_handle,
+                .address      = vkGetAccelerationStructureDeviceAddressKHR(world->renderer.device, &addr_info),
+                .mesh_id      = instance.mesh_id,
+                .vertex_count = mesh.vertex_count,
+                .index_count  = mesh.lods[0].index_count,
+            };
+        } else {
+            data.build_info.mode                     = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+            data.build_info.srcAccelerationStructure = scene.skinned_blas_instances[i].handle;
+            data.build_info.dstAccelerationStructure = scene.skinned_blas_instances[i].handle;
+            data.build_info.scratchData              = {.deviceAddress = scratch_address};
+
+            VkAccelerationStructureBuildRangeInfoKHR* range_ptr = &data.range;
+            vkCmdBuildAccelerationStructuresKHR(command_buffer, 1, &data.build_info, &range_ptr);
+        }
+
+        if (i < build_data.size() - 1) {
+            memory_pipeline_barrier(
+                command_buffer,
+                VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR
+            );
+        }
+    }
+
+    memory_pipeline_barrier(
+        command_buffer,
+        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR
+    );
 }
 
 void rebuild_blas(
@@ -366,7 +586,9 @@ void rebuild_tlas(
     VkCommandBuffer                  command_buffer,
     uint32_t                         frame_index,
     const std::vector<Mesh>&         meshes,
-    const std::vector<MeshInstance>& mesh_instances
+    const std::vector<MeshInstance>& mesh_instances,
+    uint32_t                         static_mesh_count,
+    uint32_t                         skinned_mesh_count
 ) {
     if (mesh_instances.size() >= scene.max_tlas_instance_count) {
         spdlog::critical("Requested object count is larger than the TLAS currently suppports!");
@@ -383,16 +605,37 @@ void rebuild_tlas(
     );
 
     std::vector<VkAccelerationStructureInstanceKHR> tlas_instances;
-    for (int i = 0; i < mesh_instances.size(); i++) {
+    for (int i = 0; i < static_mesh_count; i++) {
         const MeshInstance& inst = mesh_instances[i];
 
         VkAccelerationStructureInstanceKHR instance = {
-            .transform                              = {},
             .instanceCustomIndex                    = static_cast<uint32_t>(i),
             .mask                                   = 0xFF,
             .instanceShaderBindingTableRecordOffset = 0,
             .flags                                  = 0,
             .accelerationStructureReference         = scene.blas_instances[inst.mesh_id].address
+        };
+
+        glm::mat3 transform = transpose(glm::mat3_cast(inst.rotation)) * inst.scale;
+        memcpy(instance.transform.matrix[0], &transform[0], sizeof(float) * 3);
+        memcpy(instance.transform.matrix[1], &transform[1], sizeof(float) * 3);
+        memcpy(instance.transform.matrix[2], &transform[2], sizeof(float) * 3);
+        instance.transform.matrix[0][3] = inst.position.x;
+        instance.transform.matrix[1][3] = inst.position.y;
+        instance.transform.matrix[2][3] = inst.position.z;
+
+        tlas_instances.push_back(instance);
+    }
+
+    for (int i = 0; i < skinned_mesh_count; i++) {
+        const MeshInstance& inst = mesh_instances[static_mesh_count + i];
+
+        VkAccelerationStructureInstanceKHR instance = {
+            .instanceCustomIndex                    = static_cast<uint32_t>(static_mesh_count + i),
+            .mask                                   = 0xFF,
+            .instanceShaderBindingTableRecordOffset = 0,
+            .flags                                  = 0,
+            .accelerationStructureReference         = scene.skinned_blas_instances[i].address
         };
 
         glm::mat3 transform = transpose(glm::mat3_cast(inst.rotation)) * inst.scale;
@@ -549,6 +792,12 @@ void destroy_rt_scene(const RTScene& scene, VkDevice device, VmaAllocator alloca
         vkDestroyAccelerationStructureKHR(device, structure.handle, nullptr);
         destroy_buffer(structure.buffer, device, allocator);
     }
+
+    for (auto structure : scene.skinned_blas_instances) {
+        vkDestroyAccelerationStructureKHR(device, structure.handle, nullptr);
+        destroy_buffer(structure.buffer, device, allocator);
+    }
+
     vkDestroyAccelerationStructureKHR(device, scene.tlas.handle, nullptr);
     destroy_buffer(scene.tlas.buffer, device, allocator);
 
@@ -557,6 +806,10 @@ void destroy_rt_scene(const RTScene& scene, VkDevice device, VmaAllocator alloca
     }
 
     for (const auto& buffer : scene.scratch_buffers) {
+        destroy_buffer(buffer, device, allocator);
+    }
+
+    for (const auto& buffer : scene.skinned_blas_scratch_buffers) {
         destroy_buffer(buffer, device, allocator);
     }
 }

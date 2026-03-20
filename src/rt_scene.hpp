@@ -19,15 +19,30 @@ struct BLAS {
     VkDeviceAddress            address;
 };
 
+struct SkinnedBLAS {
+    Buffer buffer;
+
+    VkAccelerationStructureKHR handle;
+    VkDeviceAddress            address;
+
+    int      mesh_id;
+    uint32_t vertex_count;
+    uint32_t index_count;
+};
+
 struct RTScene {
-    std::vector<BLAS> blas_instances;
-    TLAS              tlas;
+    std::vector<BLAS>        blas_instances;
+    std::vector<SkinnedBLAS> skinned_blas_instances;
+
+    TLAS tlas;
 
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR  rt_properties;
     VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features;
 
     std::vector<Buffer> instance_buffers;
     std::vector<Buffer> scratch_buffers;
+
+    std::vector<Buffer> skinned_blas_scratch_buffers;
 
     uint32_t max_tlas_instance_count;
 };
@@ -46,6 +61,14 @@ RTScene create_rt_scene(
     uint32_t         frames_in_flight
 );
 
+void rebuild_skinned_blas(
+    RTScene&        scene,
+    class World*    world,
+    uint32_t        frame_index,
+    VkCommandBuffer command_buffer,
+    VkDeviceAddress skinned_vertex_buffer_address
+);
+
 void rebuild_blas(
     RTScene&        scene,
     class World*    world,
@@ -62,7 +85,9 @@ void rebuild_tlas(
     VkCommandBuffer                  command_buffer,
     uint32_t                         frame_index,
     const std::vector<Mesh>&         meshes,
-    const std::vector<MeshInstance>& mesh_instances
+    const std::vector<MeshInstance>& mesh_instances,
+    uint32_t                         static_mesh_count,
+    uint32_t                         skinned_mesh_count
 );
 
 void destroy_rt_scene(const RTScene& scene, VkDevice device, VmaAllocator allocator);

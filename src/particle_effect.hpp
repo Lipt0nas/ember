@@ -122,7 +122,9 @@ struct SimParams {
     float    time        = 0.0f;
     uint32_t particle_id = 0;
 
-    glm::vec3 emitter_pos = {};
+    glm::vec3 emitter_pos      = {};
+    float     emitter_scale    = 1.0f;
+    glm::quat emitter_rotation = {0.0f, 0.0f, 0.0f, 1.0f};
 };
 
 struct ParticleEmitter {

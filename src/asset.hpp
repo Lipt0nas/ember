@@ -86,7 +86,9 @@ enum class AssetType {
     SCRIPT,
     SOUND,
     FONT,
-    PARTICLE_EFFECT
+    PARTICLE_EFFECT,
+    SKELETON,
+    ANIMATION
 };
 
 class AssetMetadata {
@@ -264,5 +266,20 @@ struct FontMetadata : AssetMetadata {
 struct ParticleEffectMetadata : AssetMetadata {
     template <class Archive> void serialize(Archive& ar) {
         AssetMetadata::serialize(ar);
+    }
+};
+
+struct SkeletonMetadata : AssetMetadata {
+    template <class Archive> void serialize(Archive& ar) {
+        AssetMetadata::serialize(ar);
+    }
+};
+
+struct AnimationMetadata : AssetMetadata {
+    AssetID skeleton_id;
+
+    template <class Archive> void serialize(Archive& ar) {
+        AssetMetadata::serialize(ar);
+        ar(skeleton_id);
     }
 };

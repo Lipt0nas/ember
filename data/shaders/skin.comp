@@ -1,0 +1,97 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_ARB_shader_draw_parameters: require
+
+#include "common.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) buffer MeshDrawCommands {
+    uint culled_count;
+    IndexedDrawCommand cmds[];
+} mesh_commands;
+
+layout(scalar, set = 0, binding = 1) readonly buffer MeshBuffer {
+    MeshInstance draw_calls[];
+};
+
+layout(set = 0, binding = 2) readonly buffer Meshes {
+    Mesh meshes[];
+};
+
+layout(set = 0, binding = 4) buffer SkinnedMeshDrawCommands {
+    uint culled_count;
+    IndexedDrawCommand cmds[];
+};
+
+layout(scalar, set = 1, binding = 0) readonly buffer VertexBuffer {
+    Vertex vertices[];
+};
+
+layout(scalar, set = 1, binding = 1) readonly buffer SkinBuffer {
+    VertexSkinData skin_data[];
+};
+
+layout(scalar, set = 1, binding = 2) readonly buffer JointMatrices {
+    mat4 joint_matrices[];
+};
+
+layout(scalar, set = 1, binding = 3) writeonly buffer SkinnedVertexBuffer {
+    Vertex skinned_vertices[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint instance_offset;
+};
+
+const uint MAX_JOINTS_PER_SKELETON = 256;
+
+void main() {
+    uint instance_index = gl_WorkGroupID.y + instance_offset;
+    uint vertex_index = gl_GlobalInvocationID.x;
+
+    MeshInstance instance = draw_calls[instance_index];
+    Mesh mesh = meshes[instance.mesh_id];
+
+    if (vertex_index >= mesh.vertex_count) return;
+
+    uint joint_offset = gl_WorkGroupID.y * MAX_JOINTS_PER_SKELETON;
+    uint vertex_offset = mesh.vertex_offset;
+    uint skin_offset = mesh.skin_offset;
+    uint output_offset = instance.animation_output_offset;
+
+    Vertex v = vertices[vertex_offset + vertex_index];
+    VertexSkinData sd = skin_data[skin_offset + vertex_index];
+
+    vec3 pos = vec3(v.px, v.py, v.pz);
+    vec3 normal = unpack_vertex_normal(v.norm);
+
+    vec4 skinned_pos = vec4(0.0);
+    vec3 skinned_normal = vec3(0.0);
+
+    for (int i = 0; i < 4; i++) {
+        float w = sd.weights[i];
+        if (w == 0.0) continue;
+        mat4 m = joint_matrices[joint_offset + sd.joints[i]];
+        skinned_pos += w * (m * vec4(pos, 1.0));
+        skinned_normal += w * (mat3(m) * normal);
+    }
+
+    skinned_normal = normalize(skinned_normal);
+
+    Vertex out_v = v;
+    out_v.px = float16_t(skinned_pos.x);
+    out_v.py = float16_t(skinned_pos.y);
+    out_v.pz = float16_t(skinned_pos.z);
+
+    out_v.norm =
+        (uint(skinned_normal.x * 511.0 + 511.0) & 1023u) |
+            (uint(skinned_normal.y * 511.0 + 511.0) & 1023u) << 10u |
+            (uint(skinned_normal.z * 511.0 + 511.0) & 1023u) << 20u |
+            (v.norm & (1u << 30u));
+
+    skinned_vertices[output_offset + vertex_index] = out_v;
+}

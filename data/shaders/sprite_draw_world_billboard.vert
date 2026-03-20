@@ -29,11 +29,17 @@ layout(push_constant, std430) uniform pc {
 } push;
 
 void main() {
-    vec3 cam_right = -vec3(push.view_matrix[0][0], push.view_matrix[1][0], push.view_matrix[2][0]);
+    SpriteDraw draw_call = draw_calls[in_drawcall_index];
+
+    vec3 cam_right = vec3(push.view_matrix[0][0], push.view_matrix[1][0], push.view_matrix[2][0]);
     vec3 cam_up = vec3(push.view_matrix[0][1], push.view_matrix[1][1], push.view_matrix[2][1]);
 
-    vec3 offset = in_position - draw_calls[in_drawcall_index].position;
-    vec3 pos = draw_calls[in_drawcall_index].position + cam_right * offset.x + cam_up * offset.y;
+    vec3 base_position = in_position - draw_call.position;
+    base_position = rotate_quat(base_position, conjugate_quat(draw_call.rotation));
+    base_position += draw_call.position;
+
+    vec3 offset = base_position - draw_calls[in_drawcall_index].position;
+    vec3 pos = draw_call.position + cam_right * offset.x + cam_up * offset.y;
 
     gl_Position = push.combined_matrix * vec4(pos, 1.0);
 
