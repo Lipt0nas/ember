@@ -16,8 +16,8 @@
 
 #define DDGI_PROBE_VIEW_BIAS 0.8
 #define DDGI_PROBE_NORMAL_BIAS 0.2
-#define DDGI_PROBE_MIN_FRONTFACE_DISTANCE 1.0
-#define DDGI_PROBE_DISTANCE_SCALE 1.0
+#define DDGI_PROBE_MIN_FRONTFACE_DISTANCE 0.5
+#define DDGI_PROBE_DISTANCE_SCALE 0.1
 
 struct DDGIRay {
     vec4 ray_data; // xyz - irradiance, w - distance
