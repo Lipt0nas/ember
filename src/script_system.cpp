@@ -2872,6 +2872,9 @@ void ScriptSystem::register_light_component(class asIScriptEngine* engine) {
     engine->RegisterObjectProperty(
         "Light", "bool casts_shadow", asOFFSET(components::Light, light) + asOFFSET(Light, casts_shadow)
     );
+    engine->RegisterObjectProperty(
+        "Light", "bool enabled", asOFFSET(components::Light, light) + asOFFSET(Light, enabled)
+    );
 
     auto type = engine->GetTypeInfoByName("Light");
     if (!type) {
@@ -2917,6 +2920,44 @@ void ScriptSystem::register_animation_component(class asIScriptEngine* engine) {
         type->GetTypeId(),
         [](Scene& scene, Entity e) {
             return scene.get_component<components::SkeletalAnimation>(e);
+        },
+    });
+}
+
+void ScriptSystem::register_directional_light_component(class asIScriptEngine* engine) {
+    engine->RegisterObjectType("DirectionalLight", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    engine->RegisterObjectProperty("DirectionalLight", "bool enabled", asOFFSET(components::DirectionalLight, enabled));
+    engine->RegisterObjectProperty("DirectionalLight", "vec4 color", asOFFSET(components::DirectionalLight, color));
+
+    auto type = engine->GetTypeInfoByName("DirectionalLight");
+    if (!type) {
+        spdlog::error("Failed to get type info for Directional Light component");
+        return;
+    }
+
+    component_retrieve_map.insert({
+        type->GetTypeId(),
+        [](Scene& scene, Entity e) {
+            return scene.get_component<components::DirectionalLight>(e);
+        },
+    });
+}
+
+void ScriptSystem::register_sky_component(class asIScriptEngine* engine) {
+    engine->RegisterObjectType("Sky", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    engine->RegisterObjectProperty("Sky", "vec4 top_hemisphere", asOFFSET(components::Sky, top_hemisphere_color));
+    engine->RegisterObjectProperty("Sky", "vec4 bottom_hemisphere", asOFFSET(components::Sky, bottom_hemisphere_color));
+
+    auto type = engine->GetTypeInfoByName("Sky");
+    if (!type) {
+        spdlog::error("Failed to get type info for Sky component");
+        return;
+    }
+
+    component_retrieve_map.insert({
+        type->GetTypeId(),
+        [](Scene& scene, Entity e) {
+            return scene.get_component<components::Sky>(e);
         },
     });
 }

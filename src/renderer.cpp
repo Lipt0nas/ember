@@ -2887,6 +2887,10 @@ void Renderer::setup_framegraph() {
                 .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                 .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                 .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                    if (!directional_light_enabled()) {
+                        return;
+                    }
+
                     const Pipeline& pipeline = shadow_pipeline;
 
                     vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -2955,6 +2959,10 @@ void Renderer::setup_framegraph() {
                 .samples_image(gbuffer_normals, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                 .writes_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                 .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                    if (!directional_light_enabled()) {
+                        return;
+                    }
+
                     const Pipeline& pipeline = shadow_fill_pipeline;
 
                     vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -3015,6 +3023,10 @@ void Renderer::setup_framegraph() {
                 .reads_storage_image(directional_shadow_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                 .writes_storage_image(directional_shadow_buffer_pong, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                 .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                    if (!directional_light_enabled()) {
+                        return;
+                    }
+
                     const Pipeline& pipeline = shadow_blur_pipeline;
 
                     vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -4616,13 +4628,9 @@ void Renderer::initialize(
         .frame_index      = {},
     };
 
-    lighting_data.use_bent_normals         = 1;
-    lighting_data.gi_intensity             = 1.5f;
-    lighting_data.compensate_specular      = 1;
-    lighting_data.multibounce              = 1;
-    lighting_data.remove_visibility_checks = 0;
-    lighting_data.sky_hemisphere_top       = {0.3, 0.5, 0.8, 1.0};
-    lighting_data.sky_hemisphere_bottom    = {0.6, 0.7, 0.9, 1.0};
+    lighting_data.gi_intensity          = 1.5f;
+    lighting_data.sky_hemisphere_top    = {0.3, 0.5, 0.8, 1.0};
+    lighting_data.sky_hemisphere_bottom = {0.6, 0.7, 0.9, 1.0};
 
     lighting_data.depth_texels_per_probe  = 14;
     lighting_data.rays_per_probe          = MAX_RAYS_PER_PROBE;
@@ -6436,6 +6444,30 @@ void Renderer::render_frame(float delta_time) {
     lighting_data.camera_pos              = camera->position;
     lighting_data.ddgi_probe_ray_rotation = ddgi_random_rotation();
 
+    {
+        auto directional = world->scene.find_component<components::DirectionalLight>();
+        if (directional != entt::null) {
+            auto t     = world->scene.get_component<components::Transform>(directional);
+            auto light = world->scene.get_component<components::DirectionalLight>(directional);
+
+            auto forward   = glm::vec3(0.0f, 0.0f, -1.0f);
+            auto direction = t->world_rotation * forward;
+
+            lighting_data.light_direction = glm::vec4(direction, light->enabled);
+            lighting_data.light_color     = light->color;
+        } else {
+            lighting_data.light_direction.w = 0;
+        }
+
+        auto sky = world->scene.find_component<components::Sky>();
+        if (sky != entt::null) {
+            auto s = world->scene.get_component<components::Sky>(sky);
+
+            lighting_data.sky_hemisphere_top    = s->top_hemisphere_color;
+            lighting_data.sky_hemisphere_bottom = s->bottom_hemisphere_color;
+        }
+    }
+
     SceneUBO scene_ubo        = {};
     scene_ubo.proj            = camera->projection_matrix;
     scene_ubo.camera_position = glm::vec4(camera->position, 1.0);
@@ -6926,6 +6958,10 @@ void Renderer::render_frame(float delta_time) {
     {
         auto view = world->scene.entity_registry.view<components::Transform, components::Light>();
         for (auto [e, t, l] : view.each()) {
+            if (!l.light.enabled) {
+                continue;
+            }
+
             Light light    = l.light;
             light.position = t.world_position;
             light.radius *= t.world_scale;
@@ -7372,4 +7408,8 @@ void SpriteBatcher::render_batch(const Batch& batch, VkCommandBuffer command_buf
 
     vkCmdBindVertexBuffers(command_buffer, 0, 1, &geometry_buffer.handle, &offset);
     vkCmdDraw(command_buffer, batch.drawcall_count * 6, 1, 0, 0);
+}
+
+bool Renderer::directional_light_enabled() {
+    return lighting_data.light_direction.w == 1;
 }

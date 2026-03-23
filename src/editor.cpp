@@ -833,6 +833,14 @@ template <> bool Editor::render_component_ui<components::Light>(Entity e) {
 
     auto* l = world->scene.get_component<components::Light>(e);
 
+    if (ImGui::Checkbox("Enabled", (bool*)&l->light.enabled)) {
+        edited |= true;
+    }
+
+    if (ImGui::Checkbox("Casts Shadow", (bool*)&l->light.casts_shadow)) {
+        edited |= true;
+    }
+
     std::vector<std::string> light_types = {
         "Point",
         "Cone",
@@ -930,6 +938,48 @@ template <> bool Editor::render_component_ui<components::SkeletalAnimation>(Enti
     }
 
     ImGui::DragFloat("Animation Speed", &s->speed, 0.1f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    return edited;
+}
+
+template <> bool Editor::render_component_ui<components::DirectionalLight>(Entity e) {
+    bool edited = false;
+
+    auto* l = world->scene.get_component<components::DirectionalLight>(e);
+
+    if (ImGui::Checkbox("Enabled", &l->enabled)) {
+        edited |= true;
+    }
+
+    ImGui::ColorEdit3("Color", &l->color.x, ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::SliderFloat("Intensity", &l->color.w, 0.0, 100.0);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    return edited;
+}
+
+template <> bool Editor::render_component_ui<components::Sky>(Entity e) {
+    bool edited = false;
+
+    auto* s = world->scene.get_component<components::Sky>(e);
+
+    ImGui::ColorEdit3(
+        "Top Hemisphere Color", &s->top_hemisphere_color.x, ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float
+    );
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::SliderFloat("Top Hemisphere Intensity", &s->top_hemisphere_color.w, 0.0, 100.0);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::ColorEdit3(
+        "Bottom Hemisphere Color", &s->bottom_hemisphere_color.x, ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float
+    );
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::SliderFloat("Bottom Hemisphere Intensity", &s->bottom_hemisphere_color.w, 0.0, 100.0);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     return edited;

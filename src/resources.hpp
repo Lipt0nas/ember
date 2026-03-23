@@ -428,7 +428,7 @@ struct Light {
     int       ies_profile_index = -1;
 
     int casts_shadow = false;
-    int _pad0        = 0;
+    int enabled      = true;
     int _pad1        = 0;
     int _pad2        = 0;
 
@@ -442,6 +442,7 @@ struct Light {
            CEREAL_NVP(area_width),
            CEREAL_NVP(type),
            CEREAL_NVP(ies_profile_index),
-           CEREAL_NVP(casts_shadow));
+           CEREAL_NVP(casts_shadow),
+           CEREAL_NVP(enabled));
     }
 };

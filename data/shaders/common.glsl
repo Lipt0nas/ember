@@ -64,7 +64,7 @@ struct Light {
     int ies_profile_index;
 
     int casts_shadow;
-    int _pad0;
+    int enabled;
     int _pad1;
     int _pad2;
 };
@@ -190,19 +190,14 @@ struct LightingUBO {
     ivec3 probe_counts;
     int texels_per_probe;
 
-    int multibounce;
-    int remove_visiblity_checks;
-
-    int depth_texels_per_probe;
-    int rays_per_probe;
-
     vec3 camera_pos;
     int frame_index;
 
     float gi_intensity;
-    int use_bent_normals;
-    int compensate_specular;
     int disney_diffuse;
+
+    int depth_texels_per_probe;
+    int rays_per_probe;
 
     vec4 sky_hemisphere_top;
     vec4 sky_hemisphere_bottom;
@@ -391,7 +386,8 @@ vec3 oct_decode(vec2 oct) {
 float gradient_noise(vec2 uv) {
     return fract(52.9829189 * fract(dot(uv, vec2(0.06711056, 0.00583715))));
 }
-vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisphere_bottom, vec4 sun_params) {
+
+vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisphere_bottom, vec4 sun_params, float sun_present) {
     vec3 rd = normalize(ray_dir);
     vec3 sd = normalize(sun_dir);
 
@@ -402,8 +398,8 @@ vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisph
     float scatter = pow(sun_height, 1.0 / 15.0);
     scatter = 1.0 - clamp(scatter, 0.8, 1.0);
 
-    vec3 base_sky = mix(hemisphere_bottom.rgb, hemisphere_top.rgb, sky_gradient);
-    vec3 scatter_color = mix(base_sky, sun_params.rgb * 1.5 * sun_params.w, scatter);
+    vec3 base_sky = mix(hemisphere_bottom.rgb * hemisphere_bottom.w, hemisphere_top.rgb * hemisphere_top.w, sky_gradient);
+    vec3 scatter_color = mix(base_sky, sun_params.rgb * 1.5 * sun_params.w * sun_present, scatter);
     vec3 sky_color = mix(base_sky, scatter_color, atmosphere / 1.3);
 
     float sun_dot = dot(rd, sd);
@@ -418,7 +414,7 @@ vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisph
     float height_factor = pow(max(0.0, rd.y), 1.0 / 1.65);
     sun *= height_factor;
 
-    vec3 sun_color = sun_params.rgb * sun * sun_params.w;
+    vec3 sun_color = sun_params.rgb * sun * sun_params.w * sun_present;
 
     return sky_color + sun_color;
 }

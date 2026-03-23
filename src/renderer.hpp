@@ -341,19 +341,14 @@ private:
         glm::ivec3 probe_counts;
         int        texels_per_probe;
 
-        int multibounce;
-        int remove_visibility_checks;
-
-        int depth_texels_per_probe;
-        int rays_per_probe;
-
         glm::vec3 camera_pos;
         int       frame_index;
 
         float gi_intensity;
-        int   use_bent_normals;
-        int   compensate_specular;
         int   disney_diffuse;
+
+        int depth_texels_per_probe;
+        int rays_per_probe;
 
         glm::vec4 sky_hemisphere_top;
         glm::vec4 sky_hemisphere_bottom;
@@ -623,6 +618,8 @@ private:
         VkDescriptorPool descriptor_pool
     );
     void destroy_debug_renderer(const DebugRenderer& renderer, VkDevice device, VmaAllocator vma_allocator);
+
+    bool directional_light_enabled();
 
 public:
     DebugRendererConstants debug_renderer_constants;

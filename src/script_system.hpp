@@ -111,4 +111,6 @@ private:
     void register_sound_component(class asIScriptEngine* engine);
     void register_light_component(class asIScriptEngine* engine);
     void register_animation_component(class asIScriptEngine* engine);
+    void register_directional_light_component(class asIScriptEngine* engine);
+    void register_sky_component(class asIScriptEngine* engine);
 };

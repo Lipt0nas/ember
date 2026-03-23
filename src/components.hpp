@@ -233,6 +233,17 @@ namespace components {
         float time = 0.0f;
     };
 
+    struct DirectionalLight {
+        bool enabled = true;
+
+        glm::vec4 color = {1, 1, 1, 10};
+    };
+
+    struct Sky {
+        glm::vec4 top_hemisphere_color    = {1, 1, 1, 1};
+        glm::vec4 bottom_hemisphere_color = {0, 0, 0, 1};
+    };
+
     template <typename Archive> void serialize(Archive& archive, Transform& transform) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
             archive(
@@ -451,6 +462,25 @@ namespace components {
             );
         } else {
             archive(animation.skeleton_id, animation.animation_id, animation.looping, animation.speed);
+        }
+    }
+
+    template <typename Archive> void serialize(Archive& archive, DirectionalLight& directional) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("enabled", directional.enabled), cereal::make_nvp("color", directional.color));
+        } else {
+            archive(directional.enabled, directional.color);
+        }
+    }
+
+    template <typename Archive> void serialize(Archive& archive, Sky& sky) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("top_hemisphere_color", sky.top_hemisphere_color),
+                cereal::make_nvp("bottom_hemisphere_color", sky.bottom_hemisphere_color)
+            );
+        } else {
+            archive(sky.top_hemisphere_color, sky.bottom_hemisphere_color);
         }
     }
 
