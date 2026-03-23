@@ -44,6 +44,11 @@ public:
         return entt::to_entity(entity_registry.storage<T>(), component);
     }
 
+    template <typename T> Entity find_component() {
+        auto view = entity_registry.view<T>();
+        return view.front();
+    }
+
 private:
     class World* world = nullptr;
 

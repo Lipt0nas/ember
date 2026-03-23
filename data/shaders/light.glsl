@@ -68,7 +68,7 @@ void main() {
         mat3 viewRotation = mat3(scene.view);
         vec3 worldDirection = inverse(viewRotation) * viewDir;
 
-        vec3 radiance = get_sky_color(worldDirection, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, lighting.light_color);
+        vec3 radiance = get_sky_color(worldDirection, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, lighting.light_color, lighting.light_direction.w);
         final_color = radiance;
     } else {
         vec4 albedo_rougness = texture(g_albedo_texture, uv);
@@ -117,10 +117,14 @@ void main() {
         vec3 kD = vec3(1.0) - kS;
         kD *= 1.0 - metallic;
 
-        vec3 radiance = light_color * light_intensity * shadow;
+        vec3 Lo = vec3(0.0);
 
-        vec3 diffuse = albedo * D_Oren_Nayar(NoV, NdotL, a, L, V);
-        vec3 Lo = (kD * diffuse + specular) * radiance * NdotL;
+        if (lighting.light_direction.w == 1) {
+            vec3 radiance = light_color * light_intensity * shadow;
+
+            vec3 diffuse = albedo * D_Oren_Nayar(NoV, NdotL, a, L, V);
+            Lo = (kD * diffuse + specular) * radiance * NdotL;
+        }
 
         for (int i = 0; i < light_count; i++) {
             Lo += evaluate_point_light(lights[i], world_pos, normal, V, albedo, roughness, metallic, F0);
@@ -165,7 +169,7 @@ void main() {
 
         vec3 ambient = diffuse_ibl * ao + specular_ibl;
         #else
-        vec3 ambient = ao * get_sky_color(V, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, vec4(0.0)) * albedo / PI;
+        vec3 ambient = ao * get_sky_color(V, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, vec4(0.0), 0.0f) * albedo / PI;
         #endif
         vec3 color = Lo + ambient + emissive;
 

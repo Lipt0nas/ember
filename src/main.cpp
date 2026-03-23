@@ -1162,27 +1162,6 @@ int main(int argc, char* argv[]) {
         }
 
         if (ImGui::CollapsingHeader("Rendering")) {
-            ImGui::SeparatorText("Directional Light");
-            ImGui::DragFloat3("Direction", &world.renderer.lighting_data.light_direction.x, 0.01, -1.0, 1.0);
-            ImGui::ColorEdit3(
-                "Color",
-                &world.renderer.lighting_data.light_color.x,
-                ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float
-            );
-            ImGui::SliderFloat("Intensity", &world.renderer.lighting_data.light_color.w, 0.0, 100.0);
-
-            ImGui::SeparatorText("Sky");
-            ImGui::ColorEdit3(
-                "Top Hemisphere",
-                &world.renderer.lighting_data.sky_hemisphere_top.x,
-                ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float
-            );
-            ImGui::ColorEdit3(
-                "Bottom Hemisphere",
-                &world.renderer.lighting_data.sky_hemisphere_bottom.x,
-                ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float
-            );
-
             ImGui::SeparatorText("DDGI");
             ImGui::DragFloat("GI Intensity", &world.renderer.lighting_data.gi_intensity, 0.01);
             ImGui::DragFloat("Probe Spacing", &world.renderer.lighting_data.probe_spacing, 0.01, 0.1, 10.0);
@@ -1191,12 +1170,8 @@ int main(int argc, char* argv[]) {
             ImGui::Checkbox(
                 "Cull Innactive Probes", (bool*)&world.renderer.debug_renderer_constants.cull_innactive_probes
             );
-            ImGui::Checkbox("Multibounce Diffuse", (bool*)&world.renderer.lighting_data.multibounce);
 
             ImGui::SeparatorText("Light Pass");
-            ImGui::Checkbox("Use Bent Normals", (bool*)&world.renderer.lighting_data.use_bent_normals);
-            ImGui::Checkbox("Remove Visibility Checks", (bool*)&world.renderer.lighting_data.remove_visibility_checks);
-            ImGui::Checkbox("Compensate Specular", (bool*)&world.renderer.lighting_data.compensate_specular);
             ImGui::Checkbox("Disney Diffuse", (bool*)&world.renderer.lighting_data.disney_diffuse);
 
             ImGui::SeparatorText("Bloom");

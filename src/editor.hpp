@@ -115,3 +115,5 @@ template <> bool Editor::render_component_ui<components::Sound>(Entity e);
 template <> bool Editor::render_component_ui<components::ParticleEffect>(Entity e);
 template <> bool Editor::render_component_ui<components::Light>(Entity e);
 template <> bool Editor::render_component_ui<components::SkeletalAnimation>(Entity e);
+template <> bool Editor::render_component_ui<components::DirectionalLight>(Entity e);
+template <> bool Editor::render_component_ui<components::Sky>(Entity e);
