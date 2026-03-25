@@ -46,7 +46,7 @@ void main() {
             vec3 exponent = vec3(DDGI_PROBE_IRRADIANCE_ENCODING_GAMMA * 0.5);
             irradiance = pow(irradiance, exponent);
             irradiance *= irradiance;
-            irradiance *= PI;
+            irradiance *= PI2;
 
             irradiance.x = GranTurismoTonemapper(irradiance.x);
             irradiance.y = GranTurismoTonemapper(irradiance.y);

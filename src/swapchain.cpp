@@ -1,7 +1,12 @@
 #include "swapchain.hpp"
 
 Swapchain create_swapchain(
-    SDL_Window* window, VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, bool vsync
+    SDL_Window*      window,
+    VkInstance       instance,
+    VkDevice         device,
+    VkPhysicalDevice physical_device,
+    bool             vsync,
+    bool&            hdr_enabled
 ) {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     if (!SDL_Vulkan_CreateSurface(window, instance, nullptr, &surface)) {
@@ -25,10 +30,23 @@ Swapchain create_swapchain(
     vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &present_mode_count, present_modes.data());
 
     VkSurfaceFormatKHR surface_format = surface_formats[0];
+
+    VkFormat        target_format = hdr_enabled ? VK_FORMAT_A2B10G10R10_UNORM_PACK32 : VK_FORMAT_B8G8R8A8_UNORM;
+    VkColorSpaceKHR target_colorspace =
+        hdr_enabled ? VK_COLOR_SPACE_HDR10_ST2084_EXT : VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+
     for (const auto& format : surface_formats) {
-        if (format.format == VK_FORMAT_B8G8R8A8_UNORM && format.colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
+        if (format.format == target_format && format.colorSpace == target_colorspace) {
             surface_format = format;
             break;
+        }
+    }
+
+    if (hdr_enabled) {
+        if (surface_format.format != target_format || surface_format.colorSpace != target_colorspace) {
+            spdlog::warn("HDR was supported, but the target swapwchain properties are not supported");
+
+            hdr_enabled = false;
         }
     }
 

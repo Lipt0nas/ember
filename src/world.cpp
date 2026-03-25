@@ -8,11 +8,13 @@
 World::World() {
 }
 
-void World::initialize(SDL_Window* window, bool meshlets_enabled, bool hardware_rt_enabled, bool vsync) {
+void World::initialize(
+    SDL_Window* window, bool meshlets_enabled, bool hardware_rt_enabled, bool vsync, bool hdr_requested
+) {
     this->scene.initialize(this);
     this->script.initialize(this);
     this->asset_registry.initialize(this);
-    this->renderer.initialize(this, window, meshlets_enabled, hardware_rt_enabled, vsync);
+    this->renderer.initialize(this, window, meshlets_enabled, hardware_rt_enabled, vsync, hdr_requested);
     this->sound.initialize();
 }
 

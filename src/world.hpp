@@ -43,7 +43,9 @@ public:
 
     World();
 
-    void initialize(struct SDL_Window* window, bool meshlets_enabled, bool hardware_rt_enabled, bool vsync);
+    void initialize(
+        struct SDL_Window* window, bool meshlets_enabled, bool hardware_rt_enabled, bool vsync, bool hdr_requested
+    );
 
     int load_texture(AssetID id);
     int load_texture(const std::string& path);

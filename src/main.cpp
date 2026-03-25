@@ -282,6 +282,7 @@ int main(int argc, char* argv[]) {
     bool meshlets_requested    = args.get_arg<bool>("meshlets", true);
     bool hardware_rt_requested = args.get_arg<bool>("hardware-rt", true);
     bool vsync_requested       = args.get_arg<bool>("vsync", false);
+    bool hdr_requested         = args.get_arg<bool>("hdr", false);
     bool debug                 = args.get_arg<bool>("debug", false);
 
     int window_width  = args.get_arg("w", 1920);
@@ -309,7 +310,7 @@ int main(int argc, char* argv[]) {
     ComponentRegistry::register_components(&editor);
 
     World world;
-    world.initialize(window, meshlets_requested, hardware_rt_requested, vsync_requested);
+    world.initialize(window, meshlets_requested, hardware_rt_requested, vsync_requested, hdr_requested);
 
     world.asset_registry.load(project_path);
     world.script.load_scripts();
