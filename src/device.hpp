@@ -2,7 +2,7 @@
 
 #include "ember.hpp"
 
-VkInstance create_instance(bool enable_validation, VkDebugUtilsMessengerEXT& debug_messenger);
+VkInstance create_instance(bool enable_validation, VkDebugUtilsMessengerEXT& debug_messenger, bool& use_hdr);
 
 VkPhysicalDevice pick_physical_device(VkInstance instance);
 uint32_t         get_graphics_family_index(VkPhysicalDevice physical_device);

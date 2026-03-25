@@ -4374,7 +4374,12 @@ void Renderer::setup_framegraph() {
 }
 
 void Renderer::initialize(
-    class World* world, SDL_Window* window, bool meshlets_enabled, bool hardware_rt_enabled, bool vsync
+    class World* world,
+    SDL_Window*  window,
+    bool         meshlets_enabled,
+    bool         hardware_rt_enabled,
+    bool         vsync,
+    bool         hdr_requested
 ) {
     this->world = world;
 
@@ -4386,7 +4391,7 @@ void Renderer::initialize(
     VK_CHECK(volkInitialize());
 
     spdlog::info("Creating Vulkan instance");
-    instance = create_instance(enable_validation, debug_messenger);
+    instance = create_instance(enable_validation, debug_messenger, this->hdr_enabled);
 
     spdlog::info("Picking physical device");
     physical_device       = pick_physical_device(instance);
@@ -4435,6 +4440,12 @@ void Renderer::initialize(
         this->hardware_rt_enabled = hardware_rt_enabled;
     }
 
+    if (hdr_requested && !this->hdr_enabled) {
+        spdlog::warn("HDR requested, but not supported");
+    } else {
+        this->hdr_enabled = hdr_requested;
+    }
+
     spdlog::info(
         "Extension support:\n\tMesh shading: {}\n\tRay tracing: {}", this->meshlets_enabled, this->hardware_rt_enabled
     );
@@ -4459,7 +4470,9 @@ void Renderer::initialize(
 
     VK_CHECK(vmaCreateAllocator(&allocator_info, &vma_allocator));
 
-    swapchain = create_swapchain(window, instance, device, physical_device, vsync);
+    swapchain = create_swapchain(window, instance, device, physical_device, vsync, this->hdr_enabled);
+
+    spdlog::info("HDR: {}", this->hdr_enabled);
 
     vkGetDeviceQueue(device, graphics_family_index, 0, &graphics_queue);
 

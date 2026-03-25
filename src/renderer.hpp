@@ -72,7 +72,12 @@ public:
     void cleanup();
 
     void initialize(
-        class World* world, struct SDL_Window* window, bool meshlets_enabled, bool hardware_rt_enabled, bool vsync
+        class World*       world,
+        struct SDL_Window* window,
+        bool               meshlets_enabled,
+        bool               hardware_rt_enabled,
+        bool               vsync,
+        bool               hdr_requested
     );
 
     void begin_frame(Camera* camera);
@@ -102,6 +107,7 @@ public:
     bool meshlets_enabled           = false;
     bool hardware_rt_enabled        = false;
     bool supports_timestamp_queries = true;
+    bool hdr_enabled                = false;
 
     constexpr static int FRAMES_IN_FLIGHT = 2;
 
@@ -177,7 +183,7 @@ public:
     float bloom_upscale_sample_scale;
 
     float min_log_lum    = -4.0f;
-    float max_log_lum    = 4.0f;
+    float max_log_lum    = 14.0f;
     float adaption_speed = 1.1f;
 
     float camera_aperture     = 8.0f;

@@ -19,6 +19,11 @@ struct Swapchain {
 };
 
 Swapchain create_swapchain(
-    SDL_Window* window, VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, bool vsync
+    SDL_Window*      window,
+    VkInstance       instance,
+    VkDevice         device,
+    VkPhysicalDevice physical_device,
+    bool             vsync,
+    bool&            hdr_enabled
 );
 void destroy_swapchain(const Swapchain& swapchain, SDL_Window* window, VkInstance instance, VkDevice device);

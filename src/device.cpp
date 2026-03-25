@@ -23,10 +23,21 @@ VKAPI_ATTR VkBool32 VKAPI_CALL vulkan_debug_callback(
     return VK_FALSE;
 }
 
-VkInstance create_instance(bool enable_validation, VkDebugUtilsMessengerEXT& debug_messenger) {
+VkInstance create_instance(bool enable_validation, VkDebugUtilsMessengerEXT& debug_messenger, bool& use_hdr) {
     uint32_t extension_count = 0;
     vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
     spdlog::debug("Instance supports {} extensions", extension_count);
+
+    std::vector<VkExtensionProperties> extension_props(extension_count);
+    vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, extension_props.data());
+
+    bool hdr_supported = false;
+    for (auto& extension : extension_props) {
+        hdr_supported =
+            hdr_supported || strcmp(extension.extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME) == 0;
+    }
+
+    use_hdr = hdr_supported;
 
     uint32_t sdl_extension_count = 0;
     auto     sdl_extensions      = SDL_Vulkan_GetInstanceExtensions(&sdl_extension_count);
@@ -36,6 +47,10 @@ VkInstance create_instance(bool enable_validation, VkDebugUtilsMessengerEXT& deb
     std::vector<const char*> instance_extensions = {};
     for (uint32_t i = 0; i < sdl_extension_count; i++) {
         instance_extensions.push_back(sdl_extensions[i]);
+    }
+
+    if (hdr_supported) {
+        instance_extensions.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
     }
 
     VkValidationFeatureEnableEXT validation_enables[] = {
@@ -72,6 +87,11 @@ VkInstance create_instance(bool enable_validation, VkDebugUtilsMessengerEXT& deb
         .engineVersion      = 1,
         .apiVersion         = VK_MAKE_API_VERSION(0, 1, 4, 0)
     };
+
+    spdlog::debug("Enabled Instance Extensions");
+    for (auto ext : instance_extensions) {
+        spdlog::debug("\t{}", ext);
+    }
 
     VkInstanceCreateInfo instance_info = {
         .sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,

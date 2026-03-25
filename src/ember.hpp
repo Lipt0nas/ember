@@ -8,6 +8,7 @@
 #include <vk_mem_alloc.h>
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_vulkan.h>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
