@@ -182,7 +182,7 @@ public:
     int   bloom_levels;
     float bloom_upscale_sample_scale;
 
-    float min_log_lum    = -4.0f;
+    float min_log_lum    = 2.0f;
     float max_log_lum    = 14.0f;
     float adaption_speed = 1.1f;
 
