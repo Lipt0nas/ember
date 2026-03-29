@@ -4641,7 +4641,7 @@ void Renderer::initialize(
         .frame_index      = {},
     };
 
-    lighting_data.gi_intensity          = 1.5f;
+    lighting_data.gi_intensity          = 1.0f;
     lighting_data.sky_hemisphere_top    = {0.3, 0.5, 0.8, 1.0};
     lighting_data.sky_hemisphere_bottom = {0.6, 0.7, 0.9, 1.0};
 
@@ -5028,7 +5028,7 @@ void Renderer::initialize(
         sizeof(uint32_t) * 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, vma_allocator
     );
     average_luminance_image = create_image(
-        VK_FORMAT_R16_SFLOAT,
+        VK_FORMAT_R32_SFLOAT,
         1,
         1,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -6370,7 +6370,7 @@ void Renderer::initialize(
     composite_push_constants  = {
          .bloom_strength        = 0.04f,
          .tonemapping_type      = 1,
-         .min_ev100             = -4.0f,
+         .min_ev100             = -2.0f,
          .max_ev100             = 16.0f,
          .enable_auto_exposure  = true,
          .manual_ev100          = 0.0f,
@@ -6980,13 +6980,33 @@ void Renderer::render_frame(float delta_time) {
             light.radius *= t.world_scale;
             light.direction = glm::normalize(glm::mat3_cast(t.world_rotation) * glm::vec3(0, 0, -1));
 
+            if (light.type == LightType::TUBE) {
+                light.area_width *= t.world_scale;
+            }
+
+            auto luminous_intensity = [&l](const Light& light) -> float {
+                switch (light.type) {
+                case LightType::POINT:
+                    return light.color.w / (4.0f * glm::pi<float>());
+
+                case LightType::SPOT: {
+                    float cos_outer   = glm::cos(glm::radians(l.light.outer_cone_angle));
+                    float solid_angle = 2.0f * glm::pi<float>() * (1.0f - cos_outer);
+                    return light.color.w / solid_angle;
+                }
+
+                case LightType::TUBE:
+                    return light.color.w / (4.0f * glm::pi<float>() * glm::max(light.area_width, 0.001f));
+                }
+
+                return 1.0f;
+            };
+
+            light.color.w = luminous_intensity(light);
+
             if (light.type == LightType::SPOT) {
                 light.inner_cone_angle = glm::cos(glm::radians(l.light.inner_cone_angle));
                 light.outer_cone_angle = glm::cos(glm::radians(l.light.outer_cone_angle));
-            }
-
-            if (light.type == LightType::TUBE) {
-                light.area_width *= t.world_scale;
             }
 
             lights[light_count++] = light;

@@ -292,7 +292,8 @@ vec3 material_get_normal(const Material material, sampler2D normal_sampler, vec2
 }
 
 vec3 material_get_emissive(const Material material, sampler2D emissive_sampler, vec2 uv) {
-    vec3 emissive = material.emissive_factor;
+    // NOTE: arbitrary scale to compete with the new lighting values
+    vec3 emissive = material.emissive_factor * 1000.0;
 
     if (material.emissive_index >= 0) {
         emissive *= texture(emissive_sampler, uv).rgb;
@@ -400,7 +401,7 @@ vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisph
 
     vec3 base_sky = mix(hemisphere_bottom.rgb * hemisphere_bottom.w, hemisphere_top.rgb * hemisphere_top.w, sky_gradient);
     vec3 scatter_color = mix(base_sky, sun_params.rgb * 1.5 * sun_params.w * sun_present, scatter);
-    vec3 sky_color = mix(base_sky, scatter_color, atmosphere / 1.3);
+    vec3 sky_color = base_sky;
 
     float sun_dot = dot(rd, sd);
     float sun_disk = clamp(sun_dot, 0.0, 1.0);
@@ -416,7 +417,7 @@ vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisph
 
     vec3 sun_color = sun_params.rgb * sun * sun_params.w * sun_present;
 
-    return sky_color + sun_color;
+    return sky_color;
 }
 
 vec3 pack_normals(vec3 normals) {
@@ -524,8 +525,8 @@ float V_Smith_GGX_Correlated(float NoV, float NoL, float a) {
     return 0.5 / (GGXV + GGXL);
 }
 
-vec3 D_Lambert(vec3 albedo) {
-    return albedo / PI;
+float D_Lambert() {
+    return 1.0 / PI;
 }
 
 float D_Disney(float NoV, float NoL, float LoH, float roughness) {
@@ -556,6 +557,14 @@ float linear_rgb_to_luminance(vec3 rgb) {
     return dot(rgb, weights);
 }
 
+vec3 linear_to_srgb(vec3 x) {
+    bvec3 cutoff = lessThan(x, vec3(0.0031308));
+    vec3 higher = vec3(1.055) * pow(x, vec3(1.0 / 2.4)) - vec3(0.055);
+    vec3 lower = x * vec3(12.92);
+
+    return mix(higher, lower, cutoff);
+}
+
 vec3 unpack_vertex_normal(uint packed) {
     return vec3(
         (packed & 1023) / 511.0 - 1.0,
@@ -576,6 +585,22 @@ vec3 closest_point_on_segment(vec3 a, vec3 b, vec3 p) {
     vec3 ab = b - a;
     float t = clamp(dot(p - a, ab) / dot(ab, ab), 0.0, 1.0);
     return a + t * ab;
+}
+
+float tube_diffuse_integral(vec3 tube_a, vec3 tube_b, vec3 world_pos, vec3 normal) {
+    vec3 L0 = tube_a - world_pos;
+    vec3 L1 = tube_b - world_pos;
+
+    float len0 = length(L0);
+    float len1 = length(L1);
+
+    vec3 nL0 = L0 / len0;
+    vec3 nL1 = L1 / len1;
+
+    float NdotL0 = dot(normal, nL0);
+    float NdotL1 = dot(normal, nL1);
+
+    return (NdotL0 + NdotL1) / (len0 + len1 + dot(L0, L1) / (len0 * len1) + 2.0);
 }
 
 vec3 tube_specular_representative_point(vec3 a, vec3 b, vec3 world_pos, vec3 R) {
@@ -627,6 +652,7 @@ vec3 evaluate_point_light(Light light, vec3 world_pos, vec3 normal, vec3 V,
     vec3 specular_L;
     float dist;
     float spec_norm = 1.0;
+    float diffuse_NoL;
 
     if (light.type == LIGHT_TYPE_TUBE) {
         vec3 tube_a = light.position - light.direction * light.area_width * 0.5;
@@ -650,10 +676,13 @@ vec3 evaluate_point_light(Light light, vec3 world_pos, vec3 normal, vec3 V,
         float t_unclamped = (dL0 - dL1 == 0.0) ? 0.5 : dL0 / (dL0 - dL1);
         float endpoint_fade = 1.0 - smoothstep(0.0, 1.0, abs(t_unclamped - clamp(t_unclamped, 0.0, 1.0)) * light.area_width);
         spec_norm *= endpoint_fade;
+
+        diffuse_NoL = tube_diffuse_integral(tube_a, tube_b, world_pos, normal);
     } else {
         L = normalize(light.position - world_pos);
         specular_L = L;
         dist = length(light.position - world_pos);
+        diffuse_NoL = clamp(dot(normal, L), 0.0, 1.0);
     }
 
     float falloff = light_attenuation(dist, light.radius);
@@ -661,11 +690,9 @@ vec3 evaluate_point_light(Light light, vec3 world_pos, vec3 normal, vec3 V,
 
     if (angular <= 0.0 || falloff <= 0.0) return vec3(0.0);
 
-    float NoL = clamp(dot(normal, L), 0.0, 1.0);
-    if (NoL <= 0.0) return vec3(0.0);
+    if (diffuse_NoL <= 0.0) return vec3(0.0);
 
     float NoV = max(dot(normal, V), 1e-5);
-    float NoL_diff = clamp(dot(normal, L), 0.0, 1.0);
 
     vec3 H_spec = normalize(V + specular_L);
     float NoH = clamp(dot(normal, H_spec), 0.0, 1.0);
@@ -678,16 +705,18 @@ vec3 evaluate_point_light(Light light, vec3 world_pos, vec3 normal, vec3 V,
 
     vec3 specular = (D * Vis) * F;
     vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
-    vec3 diffuse = albedo * D_Oren_Nayar(NoV, NoL_diff, a, L, V);
+    vec3 diffuse = albedo * D_Oren_Nayar(NoV, diffuse_NoL, a, L, V);
 
     vec3 radiance = light.color.rgb * light.color.a * falloff * angular;
-    return (kD * diffuse + specular) * radiance * NoL;
+
+    return (kD * diffuse + specular) * radiance * diffuse_NoL;
 }
 
 vec3 evaluate_point_light_diffuse(Light light, vec3 world_pos, vec3 normal,
     vec3 albedo, float metallic) {
     vec3 L;
     float dist;
+    float diffuse_NoL;
 
     if (light.type == LIGHT_TYPE_TUBE) {
         vec3 tube_a = light.position - light.direction * light.area_width * 0.5;
@@ -695,22 +724,23 @@ vec3 evaluate_point_light_diffuse(Light light, vec3 world_pos, vec3 normal,
         vec3 closest = closest_point_on_segment(tube_a, tube_b, world_pos);
         L = normalize(closest - world_pos);
         dist = length(closest - world_pos);
+        diffuse_NoL = tube_diffuse_integral(tube_a, tube_b, world_pos, normal);
     } else {
         L = normalize(light.position - world_pos);
         dist = length(light.position - world_pos);
+        diffuse_NoL = clamp(dot(normal, L), 0.0, 1.0);
     }
 
     float falloff = light_attenuation(dist, light.radius);
     float angular = light_angular_attenuation(light, L);
 
     if (angular <= 0.0 || falloff <= 0.0) return vec3(0.0);
-
-    float NoL = clamp(dot(normal, L), 0.0, 1.0);
-    if (NoL <= 0.0) return vec3(0.0);
+    if (diffuse_NoL <= 0.0) return vec3(0.0);
 
     vec3 kD = (1.0 - metallic) * albedo;
     vec3 radiance = light.color.rgb * light.color.a * falloff * angular;
-    return D_Lambert(kD) * radiance * NoL;
+
+    return kD * D_Lambert() * radiance * diffuse_NoL;
 }
 
 #endif

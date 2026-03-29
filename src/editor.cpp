@@ -868,7 +868,7 @@ template <> bool Editor::render_component_ui<components::Light>(Entity e) {
     ImGui::ColorEdit3("Color", &l->light.color.x, ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::SliderFloat("Intensity", &l->light.color.w, 0.0, 100.0);
+    ImGui::InputFloat("Lumens", &l->light.color.w);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     switch (l->light.type) {
@@ -955,7 +955,7 @@ template <> bool Editor::render_component_ui<components::DirectionalLight>(Entit
     ImGui::ColorEdit3("Color", &l->color.x, ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::SliderFloat("Intensity", &l->color.w, 0.0, 100.0);
+    ImGui::InputFloat("Lux", &l->color.w);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     return edited;
@@ -971,7 +971,7 @@ template <> bool Editor::render_component_ui<components::Sky>(Entity e) {
     );
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::SliderFloat("Top Hemisphere Intensity", &s->top_hemisphere_color.w, 0.0, 100.0);
+    ImGui::InputFloat("Top Hemisphere Lux", &s->top_hemisphere_color.w);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     ImGui::ColorEdit3(
@@ -979,7 +979,7 @@ template <> bool Editor::render_component_ui<components::Sky>(Entity e) {
     );
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::SliderFloat("Bottom Hemisphere Intensity", &s->bottom_hemisphere_color.w, 0.0, 100.0);
+    ImGui::InputFloat("Bottom Hemisphere Lux", &s->bottom_hemisphere_color.w);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     return edited;

@@ -194,7 +194,7 @@ void main() {
             vec3 kD = (1.0 - metallic) * albedo.rgb;
 
             vec3 direct_radiance = lighting.light_color.xyz * lighting.light_color.a * NdotL * shadow;
-            Lo = D_Lambert(kD.rgb) * direct_radiance;
+            Lo = kD.rgb * D_Lambert() * direct_radiance;
         }
 
         vec3 V = ray_dir;
