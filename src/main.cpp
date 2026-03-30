@@ -294,7 +294,7 @@ int main(int argc, char* argv[]) {
     spdlog::info("Starting ember");
 
     spdlog::info("Initializing SDL");
-    if (!SDL_Init(SDL_INIT_EVENTS | SDL_INIT_VIDEO)) {
+    if (!SDL_Init(SDL_INIT_EVENTS | SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         spdlog::error("Failed to initialize SDL");
         return 1;
     }
@@ -525,15 +525,39 @@ int main(int argc, char* argv[]) {
         }
 
         static std::queue<std::string> dropped_filenames;
-        SDL_Event                      window_event;
-        while (SDL_PollEvent(&window_event)) {
-            ImGui_ImplSDL3_ProcessEvent(&window_event);
-            switch (window_event.type) {
+        SDL_Event                      event;
+        while (SDL_PollEvent(&event)) {
+            ImGui_ImplSDL3_ProcessEvent(&event);
+            switch (event.type) {
+            case SDL_EVENT_GAMEPAD_ADDED:
+                world.input.add_gamepad(event.gdevice.which);
+                break;
+            case SDL_EVENT_GAMEPAD_REMOVED:
+                world.input.remove_gamepad(event.gdevice.which);
+                break;
+            case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
+                auto raw = event.gaxis.value;
+
+                float amount = 0.0f;
+                if (raw < 0) {
+                    amount = raw / (float)SDL_JOYSTICK_AXIS_MIN;
+                } else {
+                    amount = raw / (float)SDL_JOYSTICK_AXIS_MIN;
+                }
+
+                world.input.register_gamepad_axis(event.gaxis.which, event.gaxis.axis, glm::clamp(amount, -1.0f, 1.0f));
+            } break;
+            case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+                world.input.register_gamepad_button_press(event.gbutton.which, event.gbutton.button);
+                break;
+            case SDL_EVENT_GAMEPAD_BUTTON_UP:
+                world.input.register_gamepad_button_release(event.gbutton.which, event.gbutton.button);
+                break;
             case SDL_EVENT_DROP_BEGIN:
                 break;
             case SDL_EVENT_DROP_FILE:
-                if (window_event.drop.data != nullptr) {
-                    dropped_filenames.push(window_event.drop.data);
+                if (event.drop.data != nullptr) {
+                    dropped_filenames.push(event.drop.data);
                 }
                 break;
             case SDL_EVENT_DROP_COMPLETE:
@@ -542,15 +566,15 @@ int main(int argc, char* argv[]) {
                 running = false;
                 break;
             case SDL_EVENT_KEY_DOWN:
-                world.input.register_key_press(window_event.key.scancode);
+                world.input.register_key_press(event.key.scancode);
                 break;
             case SDL_EVENT_KEY_UP:
-                world.input.register_key_release(window_event.key.scancode);
+                world.input.register_key_release(event.key.scancode);
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                world.input.register_button_press(window_event.button.button);
+                world.input.register_button_press(event.button.button);
 
-                if (window_event.button.button == SDL_BUTTON_RIGHT &&
+                if (event.button.button == SDL_BUTTON_RIGHT &&
                     coords_in_scene_viewport(world.input.get_mouse_position())) {
                     SDL_SetWindowMouseGrab(window, true);
                     SDL_SetWindowRelativeMouseMode(window, true);
@@ -559,9 +583,9 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
-                world.input.register_button_release(window_event.button.button);
+                world.input.register_button_release(event.button.button);
 
-                if (window_event.button.button == SDL_BUTTON_RIGHT && capturing_mouse) {
+                if (event.button.button == SDL_BUTTON_RIGHT && capturing_mouse) {
                     SDL_SetWindowMouseGrab(window, false);
                     SDL_SetWindowRelativeMouseMode(window, false);
 
@@ -569,11 +593,11 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case SDL_EVENT_MOUSE_MOTION:
-                auto xrel = static_cast<float>(window_event.motion.xrel);
-                auto yrel = static_cast<float>(window_event.motion.yrel);
+                auto xrel = static_cast<float>(event.motion.xrel);
+                auto yrel = static_cast<float>(event.motion.yrel);
 
-                auto x = static_cast<float>(window_event.motion.x);
-                auto y = static_cast<float>(window_event.motion.y);
+                auto x = static_cast<float>(event.motion.x);
+                auto y = static_cast<float>(event.motion.y);
 
                 world.input.mouse_pos = {x, y};
                 world.input.mouse_delta_accumulator += glm::vec2(xrel, yrel);

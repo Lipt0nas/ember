@@ -116,6 +116,36 @@ enum class Button {
     RIGHT
 };
 
+enum class GamepadButton {
+    UNKNOWN,
+    SOUTH,
+    EAST,
+    WEST,
+    NORTH,
+    BACK,
+    GUIDE,
+    START,
+    LEFT_STICK,
+    RIGHT_STICK,
+    LEFT_SHOULDER,
+    RIGHT_SHOULDER,
+    DPAD_UP,
+    DPAD_DOWN,
+    DPAD_LEFT,
+    DPAD_RIGHT,
+};
+
+struct Gamepad {
+    glm::vec2 left_axis  = {0.0f, 0.0f};
+    glm::vec2 right_axis = {0.0f, 0.0f};
+
+    float left_trigger  = 0.0f;
+    float right_trigger = 0.0f;
+
+    std::array<bool, 24> pressed_buttons  = {0};
+    std::array<bool, 24> released_buttons = {1};
+};
+
 class InputSystem {
 public:
     void update_key_states();
@@ -148,6 +178,30 @@ public:
     glm::vec2 mouse_delta;
     glm::vec2 mouse_delta_accumulator;
 
+    void add_gamepad(uint32_t id);
+    void remove_gamepad(uint32_t id);
+
+    Gamepad* get_gamepad_by_id(uint32_t id);
+    Gamepad* get_gamepad_by_index(uint32_t index);
+
+    glm::vec2 get_gamepad_left_axis(uint32_t index);
+    glm::vec2 get_gamepad_right_axis(uint32_t index);
+
+    float get_gamepad_left_trigger(uint32_t index);
+    float get_gamepad_right_trigger(uint32_t index);
+
+    bool is_gamepad_button_pressed(uint32_t index, GamepadButton button);
+    bool is_gamepad_button_just_pressed(uint32_t index, GamepadButton button);
+
+    int           get_gamepad_button_count();
+    std::string   gamepad_button_to_string(GamepadButton button);
+    GamepadButton string_to_gamepad_button(const std::string& str);
+
+    void register_gamepad_button_press(uint32_t id, int scancode);
+    void register_gamepad_button_release(uint32_t id, int scancode);
+
+    void register_gamepad_axis(uint32_t id, int axis, float amount);
+
 private:
     std::array<bool, 512> pressed_keys    = {0};
     std::array<bool, 12>  pressed_buttons = {0};
@@ -155,9 +209,14 @@ private:
     std::array<bool, 512> released_keys    = {1};
     std::array<bool, 12>  released_buttons = {1};
 
+    std::map<uint32_t, Gamepad> gamepads;
+
     static const std::unordered_map<int, Key> scancode_to_key;
     static const std::vector<std::string>     key_to_string_map;
 
     static const std::unordered_map<int, Button> scancode_to_button;
     static const std::vector<std::string>        button_to_string_map;
+
+    static const std::unordered_map<int, GamepadButton> scancode_to_gamepad_button;
+    static const std::vector<std::string>               gamepad_button_to_string_map;
 };

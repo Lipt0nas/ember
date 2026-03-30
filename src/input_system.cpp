@@ -232,6 +232,43 @@ const std::vector<std::string> InputSystem::button_to_string_map = {
     "Right",
 };
 
+const std::unordered_map<int, GamepadButton> InputSystem::scancode_to_gamepad_button = {
+    {SDL_GAMEPAD_BUTTON_SOUTH, GamepadButton::SOUTH},
+    {SDL_GAMEPAD_BUTTON_EAST, GamepadButton::EAST},
+    {SDL_GAMEPAD_BUTTON_WEST, GamepadButton::WEST},
+    {SDL_GAMEPAD_BUTTON_NORTH, GamepadButton::NORTH},
+    {SDL_GAMEPAD_BUTTON_BACK, GamepadButton::BACK},
+    {SDL_GAMEPAD_BUTTON_GUIDE, GamepadButton::GUIDE},
+    {SDL_GAMEPAD_BUTTON_START, GamepadButton::START},
+    {SDL_GAMEPAD_BUTTON_LEFT_STICK, GamepadButton::LEFT_STICK},
+    {SDL_GAMEPAD_BUTTON_RIGHT_STICK, GamepadButton::RIGHT_STICK},
+    {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, GamepadButton::LEFT_SHOULDER},
+    {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, GamepadButton::RIGHT_SHOULDER},
+    {SDL_GAMEPAD_BUTTON_DPAD_UP, GamepadButton::DPAD_UP},
+    {SDL_GAMEPAD_BUTTON_DPAD_DOWN, GamepadButton::DPAD_DOWN},
+    {SDL_GAMEPAD_BUTTON_DPAD_LEFT, GamepadButton::DPAD_LEFT},
+    {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, GamepadButton::DPAD_RIGHT},
+};
+
+const std::vector<std::string> InputSystem::gamepad_button_to_string_map = {
+    "Unkown",
+    "South",
+    "East",
+    "West",
+    "North",
+    "Back",
+    "Guide",
+    "Start",
+    "LeftStick",
+    "RightStick",
+    "LeftShoulder",
+    "RightShoulder",
+    "DpadUp",
+    "DpadDown",
+    "DpadLeft",
+    "DpadRight",
+};
+
 void InputSystem::update_key_states() {
     for (int i = 0; i < pressed_keys.size(); i++) {
         released_keys[i] = !pressed_keys[i];
@@ -239,6 +276,12 @@ void InputSystem::update_key_states() {
 
     for (int i = 0; i < pressed_buttons.size(); i++) {
         released_buttons[i] = !pressed_buttons[i];
+    }
+
+    for (auto& [_, gamepad] : gamepads) {
+        for (int i = 0; i < gamepad.pressed_buttons.size(); i++) {
+            gamepad.released_buttons[i] = !gamepad.pressed_buttons[i];
+        }
     }
 }
 
@@ -346,4 +389,152 @@ int InputSystem::get_key_count() {
 
 int InputSystem::get_button_count() {
     return button_to_string_map.size();
+}
+
+void InputSystem::add_gamepad(uint32_t id) {
+    gamepads.insert({id, {}});
+}
+
+void InputSystem::remove_gamepad(uint32_t id) {
+    gamepads.erase(id);
+}
+
+Gamepad* InputSystem::get_gamepad_by_id(uint32_t id) {
+    auto it = gamepads.find(id);
+
+    return it == gamepads.end() ? nullptr : &it->second;
+}
+
+Gamepad* InputSystem::get_gamepad_by_index(uint32_t index) {
+    if (gamepads.empty() || index >= gamepads.size()) {
+        return nullptr;
+    }
+
+    uint32_t idx = 0;
+    for (auto& [_, gamepad] : gamepads) {
+        if (idx++ == index) {
+            return &gamepad;
+        }
+    }
+
+    return nullptr;
+}
+
+glm::vec2 InputSystem::get_gamepad_left_axis(uint32_t index) {
+    auto gamepad = get_gamepad_by_index(index);
+
+    return gamepad ? gamepad->left_axis : glm::vec2(0.0f, 0.0f);
+}
+
+glm::vec2 InputSystem::get_gamepad_right_axis(uint32_t index) {
+    auto gamepad = get_gamepad_by_index(index);
+
+    return gamepad ? gamepad->right_axis : glm::vec2(0.0f, 0.0f);
+}
+
+float InputSystem::get_gamepad_left_trigger(uint32_t index) {
+    auto gamepad = get_gamepad_by_index(index);
+
+    return gamepad ? gamepad->left_trigger : 0.0f;
+}
+
+float InputSystem::get_gamepad_right_trigger(uint32_t index) {
+    auto gamepad = get_gamepad_by_index(index);
+
+    return gamepad ? gamepad->right_trigger : 0.0f;
+}
+
+int InputSystem::get_gamepad_button_count() {
+    return gamepad_button_to_string_map.size();
+}
+
+std::string InputSystem::gamepad_button_to_string(GamepadButton button) {
+    return gamepad_button_to_string_map[static_cast<int>(button)];
+}
+
+GamepadButton InputSystem::string_to_gamepad_button(const std::string& str) {
+    for (int i = 0; i < gamepad_button_to_string_map.size(); i++) {
+        if (str == gamepad_button_to_string_map[i]) {
+            return static_cast<GamepadButton>(i);
+        }
+    }
+
+    return GamepadButton::UNKNOWN;
+}
+
+bool InputSystem::is_gamepad_button_pressed(uint32_t index, GamepadButton button) {
+    auto gamepad = get_gamepad_by_index(index);
+
+    return gamepad ? gamepad->pressed_buttons[static_cast<int>(button)] : false;
+}
+
+bool InputSystem::is_gamepad_button_just_pressed(uint32_t index, GamepadButton button) {
+    auto gamepad = get_gamepad_by_index(index);
+
+    return gamepad ? gamepad->pressed_buttons[static_cast<int>(button)] &&
+                         gamepad->released_buttons[static_cast<int>(button)]
+                   : false;
+}
+
+void InputSystem::register_gamepad_button_press(uint32_t id, int scancode) {
+    auto gamepad = get_gamepad_by_id(id);
+    if (!gamepad) {
+        return;
+    }
+
+    GamepadButton button = GamepadButton::UNKNOWN;
+
+    auto entry = scancode_to_gamepad_button.find(scancode);
+    if (entry != scancode_to_gamepad_button.end()) {
+        button = entry->second;
+    }
+
+    gamepad->pressed_buttons[static_cast<int>(button)] = true;
+}
+
+void InputSystem::register_gamepad_button_release(uint32_t id, int scancode) {
+    auto gamepad = get_gamepad_by_id(id);
+    if (!gamepad) {
+        return;
+    }
+
+    GamepadButton button = GamepadButton::UNKNOWN;
+
+    auto entry = scancode_to_gamepad_button.find(scancode);
+    if (entry != scancode_to_gamepad_button.end()) {
+        button = entry->second;
+    }
+
+    gamepad->pressed_buttons[static_cast<int>(button)]  = false;
+    gamepad->released_buttons[static_cast<int>(button)] = true;
+}
+
+void InputSystem::register_gamepad_axis(uint32_t id, int axis, float amount) {
+    auto gamepad = get_gamepad_by_id(id);
+    if (!gamepad) {
+        return;
+    }
+
+    switch (axis) {
+    case SDL_GAMEPAD_AXIS_LEFTX:
+        gamepad->left_axis.x = amount;
+        break;
+    case SDL_GAMEPAD_AXIS_LEFTY:
+        gamepad->left_axis.y = amount;
+        break;
+    case SDL_GAMEPAD_AXIS_RIGHTX:
+        gamepad->right_axis.x = amount;
+        break;
+    case SDL_GAMEPAD_AXIS_RIGHTY:
+        gamepad->right_axis.y = amount;
+        break;
+    case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
+        gamepad->left_trigger = amount;
+        break;
+    case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
+        gamepad->right_trigger = amount;
+        break;
+    default:
+        break;
+    }
 }
