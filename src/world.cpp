@@ -922,3 +922,38 @@ int World::play_sound(AssetID id, bool spatial) {
 int World::play_sound(const std::string& path, bool spatial) {
     return play_sound(asset_registry.hash_path(asset_registry.root_path() / path), spatial);
 }
+
+int World::load_ies_profile(AssetID id) {
+    auto it = ies_profile_map.find(id);
+    if (it != ies_profile_map.end()) {
+        return it->second;
+    }
+
+    auto metadata = asset_registry.get_metadata<IESProfileMetadata>(id);
+    if (!metadata) {
+        spdlog::error("Failed to load IES profile {}", id);
+        return -1;
+    }
+
+    std::ifstream asset_file(metadata->asset_path);
+    if (!asset_file.is_open()) {
+        spdlog::error("Failed to open IES profile {} for reading", metadata->asset_path);
+        return -1;
+    }
+
+    cereal::BinaryInputArchive archive(asset_file);
+
+    IESProfile profile;
+    archive(profile);
+
+    int index = resources.ies_profiles.size();
+    resources.ies_profiles.push_back(profile);
+
+    ies_profile_map.insert({id, index});
+
+    return index;
+}
+
+int World::load_ies_profile(const std::string& path) {
+    return load_ies_profile(asset_registry.hash_path(asset_registry.root_path() / path));
+}

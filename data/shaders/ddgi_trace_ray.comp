@@ -208,7 +208,7 @@ void main() {
         indirect *= (min(albedo.rgb, vec3(0.90f)) / PI);
 
         for (int i = 0; i < light_count; i++) {
-            Lo += evaluate_point_light_diffuse(lights[i], pos, world_normal, albedo.rgb, metallic);
+            Lo += evaluate_point_light_diffuse(lights[i], pos, world_normal, albedo.rgb, metallic, textures[nonuniformEXT(lights[i].ies_texture_id)]);
         }
 
         radiance = Lo + indirect + emissive;

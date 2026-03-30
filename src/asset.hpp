@@ -88,7 +88,8 @@ enum class AssetType {
     FONT,
     PARTICLE_EFFECT,
     SKELETON,
-    ANIMATION
+    ANIMATION,
+    IES_PROFILE,
 };
 
 class AssetMetadata {
@@ -281,5 +282,11 @@ struct AnimationMetadata : AssetMetadata {
     template <class Archive> void serialize(Archive& ar) {
         AssetMetadata::serialize(ar);
         ar(skeleton_id);
+    }
+};
+
+struct IESProfileMetadata : AssetMetadata {
+    template <class Archive> void serialize(Archive& ar) {
+        AssetMetadata::serialize(ar);
     }
 };

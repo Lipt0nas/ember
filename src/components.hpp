@@ -219,6 +219,7 @@ namespace components {
     };
 
     struct Light {
+        AssetID ies_profile = AssetMetadata::INVALID_METADATA;
         ::Light light;
     };
 
@@ -446,9 +447,9 @@ namespace components {
 
     template <typename Archive> void serialize(Archive& archive, Light& light) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("light", light.light));
+            archive(cereal::make_nvp("ies_profile", light.ies_profile), cereal::make_nvp("light", light.light));
         } else {
-            archive(light.light);
+            archive(light.ies_profile, light.light);
         }
     }
 

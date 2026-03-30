@@ -3173,14 +3173,20 @@ void Renderer::setup_framegraph() {
                     dynamic_offsets[static_cast<uint32_t>(DynamicOffset::SCENE_UBO)]
                 };
 
+                std::array<VkDescriptorSet, 3> descriptors = {
+                    light_descriptor_sets[0],
+                    light_descriptor_sets[1],
+                    global_texture_descriptor_set,
+                };
+
                 vkCmdBindPipeline(command_buffer, light_pipeline.bind_point, light_pipeline.pipeline_handle);
                 vkCmdBindDescriptorSets(
                     command_buffer,
                     light_pipeline.bind_point,
                     light_pipeline.pipeline_layout,
                     0,
-                    light_descriptor_sets.size(),
-                    light_descriptor_sets.data(),
+                    descriptors.size(),
+                    descriptors.data(),
                     offsets.size(),
                     offsets.data()
                 );
@@ -4965,7 +4971,7 @@ void Renderer::initialize(
     };
 
     ddgi_depth_atlas = create_image(
-        VK_FORMAT_R16G16_SFLOAT,
+        VK_FORMAT_R32G32_SFLOAT,
         depth_atlas_width,
         depth_atlas_height,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -4977,7 +4983,7 @@ void Renderer::initialize(
     );
 
     ddgi_depth_atlas_history = create_image(
-        VK_FORMAT_R16G16_SFLOAT,
+        VK_FORMAT_R32G32_SFLOAT,
         depth_atlas_width,
         depth_atlas_height,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -6297,7 +6303,9 @@ void Renderer::initialize(
                     }
             },
             scene_data_layout,
-        }
+        },
+        0,
+        global_texture_descriptor_layout
     );
     light_descriptor_sets = allocate_descriptor_sets(device, descriptor_pool, light_pipeline);
 
@@ -6980,10 +6988,6 @@ void Renderer::render_frame(float delta_time) {
             light.radius *= t.world_scale;
             light.direction = glm::normalize(glm::mat3_cast(t.world_rotation) * glm::vec3(0, 0, -1));
 
-            if (light.type == LightType::TUBE) {
-                light.area_width *= t.world_scale;
-            }
-
             auto luminous_intensity = [&l](const Light& light) -> float {
                 switch (light.type) {
                 case LightType::POINT:
@@ -6994,9 +6998,6 @@ void Renderer::render_frame(float delta_time) {
                     float solid_angle = 2.0f * glm::pi<float>() * (1.0f - cos_outer);
                     return light.color.w / solid_angle;
                 }
-
-                case LightType::TUBE:
-                    return light.color.w / (4.0f * glm::pi<float>() * glm::max(light.area_width, 0.001f));
                 }
 
                 return 1.0f;
@@ -7007,6 +7008,20 @@ void Renderer::render_frame(float delta_time) {
             if (light.type == LightType::SPOT) {
                 light.inner_cone_angle = glm::cos(glm::radians(l.light.inner_cone_angle));
                 light.outer_cone_angle = glm::cos(glm::radians(l.light.outer_cone_angle));
+            }
+
+            if (l.ies_profile != AssetMetadata::INVALID_METADATA) {
+                int ies_index = world->load_ies_profile(l.ies_profile);
+                if (ies_index != -1) {
+                    auto profile = world->resources.ies_profiles[ies_index];
+
+                    int texture_index = world->load_texture(profile.texture_id);
+                    if (texture_index != -1) {
+                        light.ies_texture_id  = texture_index;
+                        light.authored_lumens = profile.authored_lumens;
+                        light.color.w         = l.light.color.w;
+                    }
+                }
             }
 
             lights[light_count++] = light;
@@ -7065,13 +7080,6 @@ void Renderer::render_frame(float delta_time) {
                         l.outer_cone_angle,
                         l.inner_cone_angle,
                         {1, 1, 1}
-                    );
-                    break;
-                case LightType::TUBE:
-                    glm::vec3 half_axis = l.direction * (l.area_width * 0.5f);
-                    debug_renderer_draw_tube_light(
-                        debug_renderer, l.position - half_axis, l.position + half_axis, l.radius, {1, 1, 1}
-
                     );
                     break;
                 }

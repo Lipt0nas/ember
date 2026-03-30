@@ -3,6 +3,15 @@
 #include "asset.hpp"
 #include "ember.hpp"
 
+struct IESProfile {
+    AssetID texture_id;
+    float   authored_lumens;
+
+    template <class Archive> void serialize(Archive& ar) {
+        ar(CEREAL_NVP(texture_id), CEREAL_NVP(authored_lumens));
+    }
+};
+
 struct Sound {
     std::string path;
     bool        stream = false;
@@ -409,8 +418,7 @@ struct ImageResource {
 
 enum class LightType : int {
     POINT,
-    SPOT,
-    TUBE
+    SPOT
 };
 
 struct Light {
@@ -422,15 +430,15 @@ struct Light {
     glm::vec3 direction        = {0.0f, 0.0f, -1.0f};
     float     inner_cone_angle = 20.0f;
 
-    float     outer_cone_angle  = 30.0f;
-    float     area_width        = 1.0f;
-    LightType type              = LightType::POINT;
-    int       ies_profile_index = -1;
+    float     outer_cone_angle = 30.0f;
+    float     area_width       = 1.0f;
+    LightType type             = LightType::POINT;
+    int       casts_shadow     = false;
 
-    int casts_shadow = false;
-    int enabled      = true;
-    int _pad1        = 0;
-    int _pad2        = 0;
+    int   enabled         = true;
+    int   ies_texture_id  = -1;
+    float authored_lumens = 0;
+    int   _pad            = 0;
 
     template <class Archive> void serialize(Archive& ar) {
         ar(CEREAL_NVP(position),
@@ -441,7 +449,6 @@ struct Light {
            CEREAL_NVP(inner_cone_angle),
            CEREAL_NVP(area_width),
            CEREAL_NVP(type),
-           CEREAL_NVP(ies_profile_index),
            CEREAL_NVP(casts_shadow),
            CEREAL_NVP(enabled));
     }

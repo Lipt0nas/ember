@@ -248,8 +248,9 @@ Entity Scene::clone_node_internal(Entity base, Entity cloned_parent) {
 
     auto src_light = get_component<components::Light>(base);
     if (src_light) {
-        auto& light = add_component<components::Light>(new_entity);
-        light.light = src_light->light;
+        auto& light       = add_component<components::Light>(new_entity);
+        light.ies_profile = src_light->ies_profile;
+        light.light       = src_light->light;
     }
 
     auto src_animation = get_component<components::SkeletalAnimation>(base);

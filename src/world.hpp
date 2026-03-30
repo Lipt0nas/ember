@@ -33,6 +33,7 @@ public:
         std::vector<ParticleEffectAsset>    particle_effects;
         std::vector<Skeleton>               skeletons;
         std::vector<Animation>              animations;
+        std::vector<IESProfile>             ies_profiles;
     } resources;
 
     // True when in the "play" state
@@ -65,6 +66,9 @@ public:
     int load_animation(AssetID id);
     int load_animation(const std::string& path);
 
+    int load_ies_profile(AssetID id);
+    int load_ies_profile(const std::string& path);
+
     int       load_material(AssetID id);
     int       load_material(const std::string& path);
     Material* get_material(AssetID id);
@@ -93,6 +97,7 @@ public:
     std::unordered_map<AssetID, int> particle_effect_map;
     std::unordered_map<AssetID, int> skeleton_map;
     std::unordered_map<AssetID, int> animation_map;
+    std::unordered_map<AssetID, int> ies_profile_map;
 
     void cleanup();
 

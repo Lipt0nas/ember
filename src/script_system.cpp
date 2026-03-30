@@ -1550,7 +1550,6 @@ void ScriptSystem::initialize(class World* world) {
     engine->RegisterEnum("LightType");
     engine->RegisterEnumValue("LightType", "POINT", 0);
     engine->RegisterEnumValue("LightType", "SPOT", 1);
-    engine->RegisterEnumValue("LightType", "TUBE", 2);
 
     engine->RegisterEnum("Key");
     for (int i = 0; i < world->input.get_key_count(); i++) {
