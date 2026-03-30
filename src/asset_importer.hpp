@@ -16,14 +16,17 @@ public:
 
     AssetID import_sound(const std::filesystem::path& path, const SoundMetadata::SoundImportOptions& import_options);
 
+    AssetID import_ies_profile(const std::filesystem::path& path);
+
 private:
     bool process_texture(
         const std::filesystem::path&                 destination,
         int                                          width,
         int                                          height,
         int                                          channels,
-        unsigned char*                               data,
-        const TextureMetadata::TextureImportOptions& import_options
+        void*                                        data,
+        const TextureMetadata::TextureImportOptions& import_options,
+        bool                                         is_floating_point = false
     );
 
     World* world = nullptr;

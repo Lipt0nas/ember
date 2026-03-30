@@ -242,7 +242,7 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
             Lo = (kD * diffuse + specular) * direct_radiance * NdotL * shadow;
         }
         for (int i = 0; i < light_count; i++) {
-            Lo += evaluate_point_light(lights[i], hit_pos, world_normal, V, albedo.rgb, roughness, metallic, F0);
+            Lo += evaluate_point_light(lights[i], hit_pos, world_normal, V, albedo.rgb, roughness, metallic, F0, textures[nonuniformEXT(lights[i].ies_texture_id)]);
         }
 
         DDGIWeights ddgi_weights = compute_ddgi_weights(lighting, hit_pos, world_normal, V, ddgi_depth);

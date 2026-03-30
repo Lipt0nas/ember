@@ -37,6 +37,8 @@ layout(set = 1, binding = 0) uniform UBO {
     SceneUBO scene;
 };
 
+layout(set = 2, binding = 0) uniform sampler2D textures[];
+
 #include "ddgi_sample.glsl"
 
 void main() {
@@ -127,7 +129,7 @@ void main() {
         }
 
         for (int i = 0; i < light_count; i++) {
-            Lo += evaluate_point_light(lights[i], world_pos, normal, V, albedo, roughness, metallic, F0);
+            Lo += evaluate_point_light(lights[i], world_pos, normal, V, albedo, roughness, metallic, F0, textures[nonuniformEXT(lights[i].ies_texture_id)]);
         }
 
         #if defined(RT_ENABLED)

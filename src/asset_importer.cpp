@@ -12,6 +12,8 @@
 #include <stb_image_resize2.h>
 #include <stb_truetype.h>
 
+#include <queue>
+
 template <typename T> std::vector<T> read_accessor(const tinygltf::Model& model, int accessor_index) {
     const auto& accessor    = model.accessors[accessor_index];
     const auto& buffer_view = model.bufferViews[accessor.bufferView];
@@ -1246,12 +1248,34 @@ bool AssetImporter::process_texture(
     int                                          width,
     int                                          height,
     int                                          channels,
-    unsigned char*                               data,
-    const TextureMetadata::TextureImportOptions& import_options
+    void*                                        data,
+    const TextureMetadata::TextureImportOptions& import_options,
+    bool                                         is_floating_point
 ) {
     VkFormat format = import_options.is_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    if (is_floating_point) {
+        if (import_options.generate_mipmaps) {
+            spdlog::error("Mipmaps are not supported for floating point textures");
+            return false;
+        }
 
-    size_t   data_size  = width * height * sizeof(unsigned char) * channels;
+        switch (channels) {
+        case 1:
+            format = VK_FORMAT_R32_SFLOAT;
+            break;
+        case 2:
+            format = VK_FORMAT_R32G32_SFLOAT;
+            break;
+        case 3:
+            format = VK_FORMAT_R32G32B32_SFLOAT;
+            break;
+        default:
+            format = VK_FORMAT_R32G32B32A32_SFLOAT;
+            break;
+        }
+    }
+
+    size_t   data_size  = width * height * (is_floating_point ? sizeof(float) : sizeof(unsigned char)) * channels;
     uint32_t mip_levels = import_options.generate_mipmaps
                               ? static_cast<uint32_t>(glm::floor(glm::log2((float)glm::max(width, height))) + 1)
                               : 1;
@@ -1278,7 +1302,9 @@ bool AssetImporter::process_texture(
             return false;
         }
 
-        result = ktxTexture_SetImageFromMemory(ktxTexture(ktx_texture), 0, 0, 0, data, data_size);
+        result = ktxTexture_SetImageFromMemory(
+            ktxTexture(ktx_texture), 0, 0, 0, reinterpret_cast<ktx_uint8_t*>(data), data_size
+        );
         if (result != KTX_SUCCESS) {
             spdlog::error("Failed to set image data: {}", (int)result);
             ktxTexture_Destroy(ktxTexture(ktx_texture));
@@ -1289,7 +1315,9 @@ bool AssetImporter::process_texture(
         int mip_height = height;
 
         if (import_options.generate_mipmaps) {
-            std::vector<uint8_t> prev_mip(data, data + data_size);
+            std::vector<uint8_t> prev_mip(
+                reinterpret_cast<uint8_t*>(data), reinterpret_cast<uint8_t*>(data) + data_size
+            );
 
             for (uint32_t level = 1; level < mip_levels; level++) {
                 int new_width  = std::max(1, mip_width / 2);
@@ -1388,54 +1416,75 @@ bool AssetImporter::process_texture(
 
         ktxTexture_Destroy(ktxTexture(ktx_texture));
     } else {
-        std::vector<uint8_t> image_data(data, data + data_size);
+        if (!is_floating_point) {
+            std::vector<uint8_t> image_data(
+                reinterpret_cast<uint8_t*>(data), reinterpret_cast<uint8_t*>(data) + data_size
+            );
 
-        if (import_options.generate_mipmaps && mip_levels > 1) {
-            int mip_width  = width;
-            int mip_height = height;
+            if (import_options.generate_mipmaps && mip_levels > 1) {
+                int mip_width  = width;
+                int mip_height = height;
 
-            std::vector<uint8_t> prev_mip(data, data + data_size);
-
-            for (uint32_t level = 1; level < mip_levels; level++) {
-                int new_width  = std::max(1, mip_width / 2);
-                int new_height = std::max(1, mip_height / 2);
-
-                std::vector<uint8_t> mip_data(new_width * new_height * channels);
-
-                stbir_resize_uint8_linear(
-                    prev_mip.data(),
-                    mip_width,
-                    mip_height,
-                    0,
-                    mip_data.data(),
-                    new_width,
-                    new_height,
-                    0,
-                    (stbir_pixel_layout)channels
+                std::vector<uint8_t> prev_mip(
+                    reinterpret_cast<uint8_t*>(data), reinterpret_cast<uint8_t*>(data) + data_size
                 );
 
-                image_data.insert(image_data.end(), mip_data.begin(), mip_data.end());
+                for (uint32_t level = 1; level < mip_levels; level++) {
+                    int new_width  = std::max(1, mip_width / 2);
+                    int new_height = std::max(1, mip_height / 2);
 
-                prev_mip   = std::move(mip_data);
-                mip_width  = new_width;
-                mip_height = new_height;
+                    std::vector<uint8_t> mip_data(new_width * new_height * channels);
+
+                    stbir_resize_uint8_linear(
+                        prev_mip.data(),
+                        mip_width,
+                        mip_height,
+                        0,
+                        mip_data.data(),
+                        new_width,
+                        new_height,
+                        0,
+                        (stbir_pixel_layout)channels
+                    );
+
+                    image_data.insert(image_data.end(), mip_data.begin(), mip_data.end());
+
+                    prev_mip   = std::move(mip_data);
+                    mip_width  = new_width;
+                    mip_height = new_height;
+                }
             }
+
+            TextureAssetHeader header = {
+                .format              = format,
+                .width               = static_cast<uint32_t>(width),
+                .height              = static_cast<uint32_t>(height),
+                .mip_levels          = mip_levels,
+                .size                = image_data.size(),
+                .compressed          = false,
+                .sampler_description = import_options.sampler_description,
+            };
+
+            std::ofstream               asset_file(destination, std::ios::binary);
+            cereal::BinaryOutputArchive archive(asset_file);
+            archive(header);
+            archive.saveBinary(image_data.data(), image_data.size());
+        } else {
+            TextureAssetHeader header = {
+                .format              = format,
+                .width               = static_cast<uint32_t>(width),
+                .height              = static_cast<uint32_t>(height),
+                .mip_levels          = mip_levels,
+                .size                = data_size,
+                .compressed          = false,
+                .sampler_description = import_options.sampler_description,
+            };
+
+            std::ofstream               asset_file(destination, std::ios::binary);
+            cereal::BinaryOutputArchive archive(asset_file);
+            archive(header);
+            archive.saveBinary(data, data_size);
         }
-
-        TextureAssetHeader header = {
-            .format              = format,
-            .width               = static_cast<uint32_t>(width),
-            .height              = static_cast<uint32_t>(height),
-            .mip_levels          = mip_levels,
-            .size                = image_data.size(),
-            .compressed          = false,
-            .sampler_description = import_options.sampler_description,
-        };
-
-        std::ofstream               asset_file(destination, std::ios::binary);
-        cereal::BinaryOutputArchive archive(asset_file);
-        archive(header);
-        archive.saveBinary(image_data.data(), image_data.size());
     }
 
     return true;
@@ -1679,7 +1728,6 @@ AssetImporter::import_font(const std::filesystem::path& path, const FontMetadata
 AssetID AssetImporter::import_sound(
     const std::filesystem::path& path, const SoundMetadata::SoundImportOptions& import_options
 ) {
-
     spdlog::info("Importing sound: {}", path.string());
 
     auto source_destination = world->asset_registry.source_asset_path() / "sounds" / path.filename();
@@ -1709,6 +1757,366 @@ AssetID AssetImporter::import_sound(
     metadata->imported_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
     metadata->standalone         = true;
     metadata->import_options     = import_options;
+    archive(cereal::make_nvp("metadata", *metadata));
+
+    world->asset_registry.register_asset(hash, std::move(metadata));
+
+    return hash;
+}
+
+AssetID AssetImporter::import_ies_profile(const std::filesystem::path& path) {
+    spdlog::info("Importing IES profile: {}", path.string());
+
+    auto source_destination = world->asset_registry.source_asset_path() / "ies_profiles" / path.filename();
+    auto hash               = world->asset_registry.hash_path(source_destination);
+
+    auto processed_destination =
+        world->asset_registry.stored_asset_path() / "ies_profiles" / (std::to_string(hash) + ".profile");
+    auto metadata_destination =
+        world->asset_registry.metadata_path() / "ies_profiles" / (std::to_string(hash) + ".metadata");
+
+    std::filesystem::create_directories(source_destination.parent_path());
+    std::filesystem::create_directories(processed_destination.parent_path());
+    std::filesystem::create_directories(metadata_destination.parent_path());
+
+    try {
+        std::filesystem::copy(path, source_destination, std::filesystem::copy_options::overwrite_existing);
+    } catch (const std::filesystem::filesystem_error& e) {
+        spdlog::error("Failed to copy source file: {}", e.what());
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    std::ifstream file(source_destination);
+    if (!file.is_open()) {
+        spdlog::error("Failed to open IES file: {}", source_destination.string());
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    std::unordered_map<std::string, std::string> headers;
+    std::vector<float>                           vertical_angles;
+    std::vector<float>                           horizontal_angles;
+    std::vector<std::vector<float>>              candelas;
+
+    auto trim = [](const std::string& str) -> std::string {
+        if (str.empty()) {
+            return "";
+        }
+
+        auto start = str.begin();
+        while (start != str.end() && std::isspace(*start)) {
+            ++start;
+        }
+
+        if (start == str.end()) {
+            return "";
+        }
+
+        auto end = str.end();
+        do {
+            --end;
+        } while (end != start && std::isspace(*end));
+
+        return std::string(start, end + 1);
+    };
+
+    std::string line;
+    auto        read_next_line = [&]() -> bool {
+        return (bool)std::getline(file, line);
+    };
+
+    if (!read_next_line()) {
+        spdlog::error("Failed to read IES version");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    auto parse_header_value = [&]() -> bool {
+        if (!read_next_line()) {
+            return false;
+        }
+
+        line = trim(line);
+
+        if (line.empty() || line[0] != '[') {
+            return false;
+        }
+
+        auto pos = line.find(']');
+        if (pos == std::string::npos) {
+            return false;
+        }
+
+        std::string key = line.substr(1, pos - 1);
+        std::string val = trim(line.substr(pos + 1));
+        headers.insert({key, val});
+
+        return true;
+    };
+
+    while (parse_header_value()) {
+    }
+
+    auto tilt_pos = line.find("TILT=");
+    if (tilt_pos == std::string::npos) {
+        spdlog::error("Failed to find TILT value");
+        return AssetMetadata::INVALID_METADATA;
+    }
+    auto tilt = trim(line.substr(tilt_pos + 5));
+
+    if (tilt != "NONE") {
+        spdlog::error("Only TILT=NONE is supported");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    std::queue<float> values;
+    while (read_next_line()) {
+        std::stringstream stream(line);
+        std::string       token;
+        while (std::getline(stream, token, ' ')) {
+            if (token.empty()) {
+                continue;
+            }
+            try {
+                values.push(std::stof(token));
+            } catch (const std::exception& e) {
+                spdlog::error("Failed to parse token: {}", token);
+                return AssetMetadata::INVALID_METADATA;
+            }
+        }
+    }
+
+    auto read_next_val = [&](auto& val) -> bool {
+        if (values.empty()) {
+            return false;
+        }
+
+        val = values.front();
+        values.pop();
+
+        return true;
+    };
+
+    float tmp;
+
+    if (!read_next_val(tmp)) {
+        spdlog::error("Failed to read lamp count");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    if (!read_next_val(tmp)) {
+        spdlog::error("Failed to read lumens per lamp");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    float multiplier;
+    if (!read_next_val(multiplier)) {
+        spdlog::error("Failed to read multiplier");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    float vertical_angle_count;
+    if (!read_next_val(vertical_angle_count)) {
+        spdlog::error("Failed to read vertical angle count");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    float horizontal_angle_count;
+    if (!read_next_val(horizontal_angle_count)) {
+        spdlog::error("Failed to read horizontal angle count");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    if (!read_next_val(tmp)) {
+        spdlog::error("Failed to read goniometer type");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    if (!read_next_val(tmp)) {
+        spdlog::error("Failed to read units");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    float width;
+    if (!read_next_val(width)) {
+        spdlog::error("Failed to read width");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    float length;
+    if (!read_next_val(length)) {
+        spdlog::error("Failed to read length");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    float height;
+    if (!read_next_val(height)) {
+        spdlog::error("Failed to read height");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    float ballast_factor;
+    if (!read_next_val(ballast_factor)) {
+        spdlog::error("Failed to read ballast factor");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    float ballast_lamp_photometric_factor;
+    if (!read_next_val(ballast_lamp_photometric_factor)) {
+        spdlog::error("Failed to read ballast lamp photometric factor");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    float input_watts;
+    if (!read_next_val(input_watts)) {
+        spdlog::error("Failed to read input_watts");
+        return AssetMetadata::INVALID_METADATA;
+    }
+
+    for (int i = 0; i < vertical_angle_count; i++) {
+        float val;
+        if (!read_next_val(val)) {
+            spdlog::error("Failed to read vertical angle");
+            return AssetMetadata::INVALID_METADATA;
+        }
+        vertical_angles.push_back(val);
+    }
+
+    for (int i = 0; i < horizontal_angle_count; i++) {
+        float val;
+        if (!read_next_val(val)) {
+            spdlog::error("Failed to read horizontal angle");
+            return AssetMetadata::INVALID_METADATA;
+        }
+        horizontal_angles.push_back(val);
+    }
+
+    for (int i = 0; i < horizontal_angle_count; i++) {
+        candelas.push_back({});
+        for (int j = 0; j < vertical_angle_count; j++) {
+            float val;
+            if (!read_next_val(val)) {
+                spdlog::error("Failed to read candela value");
+                return AssetMetadata::INVALID_METADATA;
+            }
+            candelas[i].push_back(val);
+        }
+    }
+
+    float               scale = multiplier * ballast_factor * ballast_lamp_photometric_factor;
+    std::vector<float>& slice = candelas[0];
+
+    float min_angle = vertical_angles.front();
+    float max_angle = vertical_angles.back();
+
+    auto sample_ies = [&](float angle_degrees) -> float {
+        if (angle_degrees <= min_angle) {
+            return slice[0] * scale;
+        }
+
+        if (angle_degrees >= max_angle) {
+            return 0.0f;
+        }
+
+        for (int i = 0; i < (int)vertical_angles.size() - 1; i++) {
+            if (angle_degrees <= vertical_angles[i + 1]) {
+                float t = (angle_degrees - vertical_angles[i]) / (vertical_angles[i + 1] - vertical_angles[i]);
+
+                return (slice[i] + t * (slice[i + 1] - slice[i])) * scale;
+            }
+        }
+
+        return 0.0f;
+    };
+
+    float total_lumens;
+    for (int i = 0; i < (int)vertical_angles.size() - 1; i++) {
+        float angle0      = vertical_angles[i] * M_PI / 180.0f;
+        float angle1      = vertical_angles[i + 1] * M_PI / 180.0f;
+        float candela0    = slice[i] * scale;
+        float candela1    = slice[i + 1] * scale;
+        float mid_candela = (candela0 + candela1) * 0.5f;
+        total_lumens += mid_candela * 2.0f * M_PI * (cos(angle0) - cos(angle1));
+    }
+
+    std::vector<float> texture_data(256);
+    for (int i = 0; i < 256; i++) {
+        float angle     = (i / (float)(256 - 1)) * 180.0f;
+        texture_data[i] = sample_ies(angle) / total_lumens;
+    }
+
+    AssetID texture_id;
+    {
+        auto virtual_source =
+            world->asset_registry.source_asset_path() / "textures" / source_destination.stem() / "ies";
+        auto hash = world->asset_registry.hash_path(virtual_source);
+        spdlog::info("Texture virtual source: {}", virtual_source.string());
+
+        auto tex_destination = world->asset_registry.stored_asset_path() / "textures" / (std::to_string(hash) + ".tex");
+        auto tex_metadata_destination =
+            world->asset_registry.metadata_path() / "textures" / (std::to_string(hash) + ".metadata");
+        spdlog::info("Texture destination: {}", tex_destination.string());
+
+        std::filesystem::create_directories(tex_destination.parent_path());
+        std::filesystem::create_directories(tex_metadata_destination.parent_path());
+
+        TextureMetadata::TextureImportOptions options = {
+            .is_srgb             = false,
+            .is_normal_map       = false,
+            .generate_mipmaps    = false,
+            .compression         = TextureMetadata::TextureImportOptions::Compression::None,
+            .sampler_description = {
+                .filter       = VK_FILTER_LINEAR,
+                .address_mode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+                .mipmap_mode  = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                .anisotropy   = 0.0f
+            }
+        };
+
+        if (!process_texture(tex_destination, 256, 1, 1, texture_data.data(), options, true)) {
+            spdlog::error("Failed to process {} IES texture", tex_destination.string());
+            return AssetMetadata::INVALID_METADATA;
+        }
+
+        std::ofstream             metadata_file(tex_metadata_destination);
+        cereal::JSONOutputArchive archive(metadata_file);
+
+        std::unique_ptr<TextureMetadata> metadata = std::make_unique<TextureMetadata>();
+        metadata->id                              = hash;
+        metadata->source_path                     = virtual_source.string();
+        metadata->asset_path                      = tex_destination.string();
+        metadata->type                            = AssetType::TEXTURE;
+        metadata->source_timestamp   = std::filesystem::last_write_time(source_destination).time_since_epoch().count();
+        metadata->imported_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+        metadata->standalone         = false;
+        metadata->import_options     = options;
+        archive(cereal::make_nvp("metadata", *metadata));
+
+        texture_id = hash;
+
+        world->asset_registry.register_asset(hash, std::move(metadata));
+    }
+
+    {
+        IESProfile header = {
+            .texture_id      = texture_id,
+            .authored_lumens = total_lumens,
+        };
+
+        std::ofstream               asset_file(processed_destination, std::ios::binary);
+        cereal::BinaryOutputArchive archive(asset_file);
+        archive(header);
+    }
+
+    std::ofstream             metadata_file(metadata_destination);
+    cereal::JSONOutputArchive archive(metadata_file);
+
+    std::unique_ptr<IESProfileMetadata> metadata = std::make_unique<IESProfileMetadata>();
+    metadata->id                                 = hash;
+    metadata->source_path                        = source_destination.string();
+    metadata->asset_path                         = processed_destination.string();
+    metadata->type                               = AssetType::IES_PROFILE;
+    metadata->source_timestamp   = std::filesystem::last_write_time(source_destination).time_since_epoch().count();
+    metadata->imported_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+    metadata->standalone         = true;
     archive(cereal::make_nvp("metadata", *metadata));
 
     world->asset_registry.register_asset(hash, std::move(metadata));

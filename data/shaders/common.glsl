@@ -6,14 +6,14 @@
 
 #define MESHLETS_PER_TASK 32
 
-#define EFFECT_RADIUS 0.5
+#define EFFECT_RADIUS 1.0
 #define EFFECT_FALLOFF_RANGE 0.615
 
 #define XE_GTAO_DEFAULT_RADIUS_MULTIPLIER           1.457       // Allows us to use different value as compared to ground truth radius to counter inherent screen space biases
 #define XE_GTAO_DEFAULT_SAMPLE_DISTRIBUTION_POWER   2.0         // Distribution of samples around the hemisphere (higher = more focused around normal)
-#define XE_GTAO_DEFAULT_THIN_OCCLUDER_COMPENSATION  0.0         // Reduces artifacts from thin occluders (0 = off, higher = more compensation)
+#define XE_GTAO_DEFAULT_THIN_OCCLUDER_COMPENSATION  0.2         // Reduces artifacts from thin occluders (0 = off, higher = more compensation)
 #define XE_GTAO_DEFAULT_FALLOFF_RANGE               0.615       // Distance falloff range as percentage of effectRadius (0.615 is optimal)
-#define XE_GTAO_DEFAULT_FINAL_VALUE_POWER           1.2         // Power curve for final AO value (for aesthetics)
+#define XE_GTAO_DEFAULT_FINAL_VALUE_POWER           1.5         // Power curve for final AO value (for aesthetics)
 #define XE_GTAO_DEFAULT_DEPTH_MIP_SAMPLING_OFFSET   3.30        // Controls which MIP level to use based on sample distance
 
 // 0 - low
@@ -47,7 +47,6 @@
 
 #define LIGHT_TYPE_POINT 0
 #define LIGHT_TYPE_SPOT  1
-#define LIGHT_TYPE_TUBE  2
 
 struct Light {
     vec3 position;
@@ -61,12 +60,12 @@ struct Light {
     float outer_cone_angle;
     float area_width;
     int type;
-    int ies_profile_index;
-
     int casts_shadow;
+
     int enabled;
-    int _pad1;
-    int _pad2;
+    int ies_texture_id;
+    int authored_lumens;
+    int _pad;
 };
 
 struct SpriteDraw {
@@ -390,34 +389,16 @@ float gradient_noise(vec2 uv) {
 
 vec3 get_sky_color(vec3 ray_dir, vec3 sun_dir, vec4 hemisphere_top, vec4 hemisphere_bottom, vec4 sun_params, float sun_present) {
     vec3 rd = normalize(ray_dir);
-    vec3 sd = normalize(sun_dir);
 
-    float sky_gradient = rd.y * 0.5 + 0.5;
-    float atmosphere = sqrt(max(0.0, rd.y));
+    float sky_gradient = clamp(rd.y * 0.5 + 0.5, 0.0, 1.0);
+    float horizon_fade = smoothstep(-0.1, 0.1, rd.y);
 
-    float sun_height = sd.y * 0.5 + 0.5;
-    float scatter = pow(sun_height, 1.0 / 15.0);
-    scatter = 1.0 - clamp(scatter, 0.8, 1.0);
+    vec3 top_radiance = hemisphere_top.rgb * (hemisphere_top.w / PI);
+    vec3 bottom_radiance = hemisphere_bottom.rgb * (hemisphere_bottom.w / PI);
 
-    vec3 base_sky = mix(hemisphere_bottom.rgb * hemisphere_bottom.w, hemisphere_top.rgb * hemisphere_top.w, sky_gradient);
-    vec3 scatter_color = mix(base_sky, sun_params.rgb * 1.5 * sun_params.w * sun_present, scatter);
-    vec3 sky_color = base_sky;
+    vec3 base_sky = mix(bottom_radiance, top_radiance, sky_gradient) * horizon_fade;
 
-    float sun_dot = dot(rd, sd);
-    float sun_disk = clamp(sun_dot, 0.0, 1.0);
-
-    float sun = pow(sun_disk, 1000.0);
-    sun = clamp(sun, 0.0, 1.0);
-
-    float glow = pow(sun_disk, 50.0) * 0.1;
-    sun += glow;
-
-    float height_factor = pow(max(0.0, rd.y), 1.0 / 1.65);
-    sun *= height_factor;
-
-    vec3 sun_color = sun_params.rgb * sun * sun_params.w * sun_present;
-
-    return sky_color;
+    return base_sky;
 }
 
 vec3 pack_normals(vec3 normals) {
@@ -581,53 +562,11 @@ vec3 unpack_tangent(uint packed) {
     return oct_decode(vec2((packed & 255) / 127.0 - 1.0, ((packed >> 8) & 255) / 127.0 - 1.0));
 }
 
-vec3 closest_point_on_segment(vec3 a, vec3 b, vec3 p) {
-    vec3 ab = b - a;
-    float t = clamp(dot(p - a, ab) / dot(ab, ab), 0.0, 1.0);
-    return a + t * ab;
-}
-
-float tube_diffuse_integral(vec3 tube_a, vec3 tube_b, vec3 world_pos, vec3 normal) {
-    vec3 L0 = tube_a - world_pos;
-    vec3 L1 = tube_b - world_pos;
-
-    float len0 = length(L0);
-    float len1 = length(L1);
-
-    vec3 nL0 = L0 / len0;
-    vec3 nL1 = L1 / len1;
-
-    float NdotL0 = dot(normal, nL0);
-    float NdotL1 = dot(normal, nL1);
-
-    return (NdotL0 + NdotL1) / (len0 + len1 + dot(L0, L1) / (len0 * len1) + 2.0);
-}
-
-vec3 tube_specular_representative_point(vec3 a, vec3 b, vec3 world_pos, vec3 R) {
-    vec3 L0 = a - world_pos;
-    vec3 L1 = b - world_pos;
-
-    float dL0 = dot(R, L0);
-    float dL1 = dot(R, L1);
-
-    float t = (dL0 - dL1) == 0.0 ? 0.5 : clamp(dL0 / (dL0 - dL1), 0.0, 1.0);
-
-    return a + t * (L1 - L0) + world_pos;
-}
-
-float tube_specular_normalization(float roughness, float tube_length, float dist) {
-    float a = roughness * roughness;
-    float sphere_angle = clamp(tube_length / (2.0 * dist), 0.0, 1.0);
-    float a_prime = clamp(a + sphere_angle * 0.5, 0.0, 1.0);
-    return (a * a) / max(a_prime * a_prime, 1e-5);
-}
-
 float light_attenuation(float dist, float radius) {
     float d_sqr = dist * dist;
     float radius_sqr = radius * radius;
 
-    return pow(clamp(1.0 - pow(d_sqr / radius_sqr, 2.0), 0.0, 1.0), 2.0)
-        / max(d_sqr, 0.0001);
+    return pow(clamp(1.0 - pow(d_sqr / radius_sqr, 2.0), 0.0, 1.0), 2.0) / max(d_sqr, 0.0001);
 }
 
 float spot_attenuation(vec3 L, vec3 light_dir, float inner, float outer) {
@@ -645,7 +584,7 @@ float light_angular_attenuation(Light light, vec3 L) {
 }
 
 vec3 evaluate_point_light(Light light, vec3 world_pos, vec3 normal, vec3 V,
-    vec3 albedo, float roughness, float metallic, vec3 F0) {
+    vec3 albedo, float roughness, float metallic, vec3 F0, sampler2D ies_sampler) {
     float a = roughness * roughness;
 
     vec3 L;
@@ -654,43 +593,23 @@ vec3 evaluate_point_light(Light light, vec3 world_pos, vec3 normal, vec3 V,
     float spec_norm = 1.0;
     float diffuse_NoL;
 
-    if (light.type == LIGHT_TYPE_TUBE) {
-        vec3 tube_a = light.position - light.direction * light.area_width * 0.5;
-        vec3 tube_b = light.position + light.direction * light.area_width * 0.5;
-
-        vec3 closest = closest_point_on_segment(tube_a, tube_b, world_pos);
-        L = normalize(closest - world_pos);
-        dist = length(closest - world_pos);
-
-        vec3 R = reflect(-V, normal);
-        vec3 rep_point = tube_specular_representative_point(tube_a, tube_b, world_pos, R);
-        specular_L = normalize(rep_point - world_pos);
-
-        float spec_dist = length(rep_point - world_pos);
-        spec_norm = tube_specular_normalization(roughness, light.area_width, spec_dist);
-
-        vec3 L0 = tube_a - world_pos;
-        vec3 L1 = tube_b - world_pos;
-        float dL0 = dot(R, L0);
-        float dL1 = dot(R, L1);
-        float t_unclamped = (dL0 - dL1 == 0.0) ? 0.5 : dL0 / (dL0 - dL1);
-        float endpoint_fade = 1.0 - smoothstep(0.0, 1.0, abs(t_unclamped - clamp(t_unclamped, 0.0, 1.0)) * light.area_width);
-        spec_norm *= endpoint_fade;
-
-        diffuse_NoL = tube_diffuse_integral(tube_a, tube_b, world_pos, normal);
-    } else {
-        L = normalize(light.position - world_pos);
-        specular_L = L;
-        dist = length(light.position - world_pos);
-        diffuse_NoL = clamp(dot(normal, L), 0.0, 1.0);
-    }
+    L = normalize(light.position - world_pos);
+    specular_L = L;
+    dist = length(light.position - world_pos);
+    diffuse_NoL = clamp(dot(normal, L), 0.0, 1.0);
 
     float falloff = light_attenuation(dist, light.radius);
     float angular = light_angular_attenuation(light, L);
 
-    if (angular <= 0.0 || falloff <= 0.0) return vec3(0.0);
+    float ies_attenuation = 1.0;
+    if (light.ies_texture_id != -1) {
+        vec3 light_to_frag = normalize(world_pos - light.position);
+        float angle = acos(clamp(dot(light_to_frag, light.direction), -1.0, 1.0));
+        float t = angle / PI;
+        ies_attenuation = texture(ies_sampler, vec2(t, 0.5)).r;
+    }
 
-    if (diffuse_NoL <= 0.0) return vec3(0.0);
+    if (angular <= 0.0 || falloff <= 0.0 || ies_attenuation <= 0.0) return vec3(0.0);
 
     float NoV = max(dot(normal, V), 1e-5);
 
@@ -698,6 +617,8 @@ vec3 evaluate_point_light(Light light, vec3 world_pos, vec3 normal, vec3 V,
     float NoH = clamp(dot(normal, H_spec), 0.0, 1.0);
     float LoH = clamp(dot(specular_L, H_spec), 0.0, 1.0);
     float NoL_spec = clamp(dot(normal, specular_L), 0.0, 1.0);
+
+    if (diffuse_NoL <= 0.0 && NoL_spec <= 0.0) return vec3(0.0);
 
     float D = D_GGX(NoH, a) * spec_norm;
     vec3 F = F_Schlick(LoH, F0);
@@ -707,38 +628,37 @@ vec3 evaluate_point_light(Light light, vec3 world_pos, vec3 normal, vec3 V,
     vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
     vec3 diffuse = albedo * D_Oren_Nayar(NoV, diffuse_NoL, a, L, V);
 
-    vec3 radiance = light.color.rgb * light.color.a * falloff * angular;
+    vec3 radiance = light.color.rgb * light.color.a * falloff * angular * ies_attenuation;
 
     return (kD * diffuse + specular) * radiance * diffuse_NoL;
 }
 
 vec3 evaluate_point_light_diffuse(Light light, vec3 world_pos, vec3 normal,
-    vec3 albedo, float metallic) {
+    vec3 albedo, float metallic, sampler2D ies_sampler) {
     vec3 L;
     float dist;
     float diffuse_NoL;
 
-    if (light.type == LIGHT_TYPE_TUBE) {
-        vec3 tube_a = light.position - light.direction * light.area_width * 0.5;
-        vec3 tube_b = light.position + light.direction * light.area_width * 0.5;
-        vec3 closest = closest_point_on_segment(tube_a, tube_b, world_pos);
-        L = normalize(closest - world_pos);
-        dist = length(closest - world_pos);
-        diffuse_NoL = tube_diffuse_integral(tube_a, tube_b, world_pos, normal);
-    } else {
-        L = normalize(light.position - world_pos);
-        dist = length(light.position - world_pos);
-        diffuse_NoL = clamp(dot(normal, L), 0.0, 1.0);
-    }
+    L = normalize(light.position - world_pos);
+    dist = length(light.position - world_pos);
+    diffuse_NoL = clamp(dot(normal, L), 0.0, 1.0);
 
     float falloff = light_attenuation(dist, light.radius);
     float angular = light_angular_attenuation(light, L);
 
-    if (angular <= 0.0 || falloff <= 0.0) return vec3(0.0);
+    float ies_attenuation = 1.0;
+    if (light.ies_texture_id != -1) {
+        vec3 light_to_frag = normalize(world_pos - light.position);
+        float angle = acos(clamp(dot(light_to_frag, light.direction), -1.0, 1.0));
+        float t = angle / PI;
+        ies_attenuation = texture(ies_sampler, vec2(t, 0.5)).r;
+    }
+
+    if (angular <= 0.0 || falloff <= 0.0 || ies_attenuation <= 0.0) return vec3(0.0);
     if (diffuse_NoL <= 0.0) return vec3(0.0);
 
     vec3 kD = (1.0 - metallic) * albedo;
-    vec3 radiance = light.color.rgb * light.color.a * falloff * angular;
+    vec3 radiance = light.color.rgb * light.color.a * falloff * angular * ies_attenuation;
 
     return kD * D_Lambert() * radiance * diffuse_NoL;
 }

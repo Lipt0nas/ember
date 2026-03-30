@@ -26,6 +26,8 @@ AssetRegistry::AssetRegistry() {
         {".skel", AssetType::SKELETON},
 
         {".anim", AssetType::ANIMATION},
+
+        {".ies", AssetType::IES_PROFILE},
     };
 }
 
@@ -113,6 +115,12 @@ void AssetRegistry::load(const std::filesystem::path& path) {
                 auto animation_metadata = std::make_unique<AnimationMetadata>();
                 archive(*animation_metadata);
                 handle = std::move(animation_metadata);
+                break;
+            }
+            case AssetType::IES_PROFILE: {
+                auto ies_metadata = std::make_unique<IESProfileMetadata>();
+                archive(*ies_metadata);
+                handle = std::move(ies_metadata);
                 break;
             }
             }

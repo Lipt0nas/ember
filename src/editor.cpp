@@ -844,7 +844,6 @@ template <> bool Editor::render_component_ui<components::Light>(Entity e) {
     std::vector<std::string> light_types = {
         "Point",
         "Cone",
-        "Tube",
     };
     int light_type = (int)l->light.type;
 
@@ -881,10 +880,34 @@ template <> bool Editor::render_component_ui<components::Light>(Entity e) {
         ImGui::DragFloat("Outer cone angle", &l->light.outer_cone_angle, 0.5f, 1.0f, 89.0f, "%.1f deg");
         edited |= ImGui::IsItemDeactivatedAfterEdit();
         break;
-    case LightType::TUBE:
-        ImGui::DragFloat("Area width", &l->light.area_width, 0.1f, 0.1f);
-        edited |= ImGui::IsItemDeactivatedAfterEdit();
-        break;
+    }
+
+    auto metadata = world->asset_registry.get_metadata<IESProfileMetadata>(l->ies_profile);
+    ImGui::Text(ICON_FA_CIRCLE "  IES Profile: ");
+    ImGui::SameLine();
+    if (metadata) {
+        if (ImGui::Button(ICON_FA_REDO)) {
+            l->ies_profile = AssetMetadata::INVALID_METADATA;
+            edited |= true;
+        }
+        ImGui::SameLine();
+        ImGui::Text("%s", metadata->source_path.c_str());
+    } else {
+        ImGui::Text("Invalid");
+    }
+    ImGui::NewLine();
+
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* payload =
+            ImGui::AcceptDragDropPayload(get_asset_info(AssetType::IES_PROFILE).drag_drop_id.c_str());
+        if (payload) {
+            AssetID new_id = *(AssetID*)payload->Data;
+            if (l->ies_profile != new_id) {
+                l->ies_profile = new_id;
+                edited         = true;
+            }
+        }
+        ImGui::EndDragDropTarget();
     }
 
     return edited;
@@ -1052,6 +1075,12 @@ Editor::Editor() {
              .icon          = ICON_FA_BONE,
              .category_name = "Skeletons",
              .drag_drop_id  = "DRAG_DROP_SKELETON",
+         }},
+        {AssetType::IES_PROFILE,
+         AssetTypeInfo{
+             .icon          = ICON_FA_CIRCLE,
+             .category_name = "IES Profiles",
+             .drag_drop_id  = "DRAG_DROP_IES_PROFILE",
          }},
         {AssetType::UNSUPPORTED,
          AssetTypeInfo{
@@ -1567,6 +1596,8 @@ void Editor::render_asset_importer() {
         case AssetType::SOUND:
             render_sound_import_dialog(sound_import_options);
             break;
+        case AssetType::IES_PROFILE:
+            break;
         case AssetType::MATERIAL:
         case AssetType::SHADER:
         case AssetType::SCRIPT:
@@ -1596,6 +1627,9 @@ void Editor::render_asset_importer() {
                 break;
             case AssetType::SOUND:
                 asset_importer.import_sound(import_asset_path, sound_import_options);
+                break;
+            case AssetType::IES_PROFILE:
+                asset_importer.import_ies_profile(import_asset_path);
                 break;
             case AssetType::MATERIAL:
             case AssetType::SHADER:
