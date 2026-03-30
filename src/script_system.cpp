@@ -1563,6 +1563,12 @@ void ScriptSystem::initialize(class World* world) {
         engine->RegisterEnumValue("Button", name.c_str(), i);
     }
 
+    engine->RegisterEnum("GamepadButton");
+    for (int i = 0; i < world->input.get_gamepad_button_count(); i++) {
+        auto name = world->input.gamepad_button_to_string(static_cast<GamepadButton>(i));
+        engine->RegisterEnumValue("GamepadButton", name.c_str(), i);
+    }
+
     engine->RegisterObjectType("Mesh", 0, asOBJ_REF | asOBJ_NOCOUNT);
     engine->RegisterObjectProperty("Mesh", "vec3 center", asOFFSET(Mesh, center));
     engine->RegisterObjectProperty("Mesh", "float radius", asOFFSET(Mesh, radius));
@@ -1646,6 +1652,62 @@ void ScriptSystem::initialize(class World* world) {
     engine->RegisterGlobalFunction(
         "Button string_to_button(string &in)",
         asMETHOD(InputSystem, InputSystem::string_to_button),
+        asCALL_THISCALL_ASGLOBAL,
+        &world->input
+    );
+
+    engine->RegisterGlobalFunction(
+        "vec2 get_gamepad_left_axis(uint)",
+        asMETHOD(InputSystem, InputSystem::get_gamepad_left_axis),
+        asCALL_THISCALL_ASGLOBAL,
+        &world->input
+    );
+
+    engine->RegisterGlobalFunction(
+        "vec2 get_gamepad_right_axis(uint)",
+        asMETHOD(InputSystem, InputSystem::get_gamepad_right_axis),
+        asCALL_THISCALL_ASGLOBAL,
+        &world->input
+    );
+
+    engine->RegisterGlobalFunction(
+        "float get_gamepad_left_trigger(uint)",
+        asMETHOD(InputSystem, InputSystem::get_gamepad_left_trigger),
+        asCALL_THISCALL_ASGLOBAL,
+        &world->input
+    );
+
+    engine->RegisterGlobalFunction(
+        "float get_gamepad_right_trigger(uint)",
+        asMETHOD(InputSystem, InputSystem::get_gamepad_right_trigger),
+        asCALL_THISCALL_ASGLOBAL,
+        &world->input
+    );
+
+    engine->RegisterGlobalFunction(
+        "bool is_gamepad_button_pressed(uint, GamepadButton)",
+        asMETHOD(InputSystem, InputSystem::is_gamepad_button_pressed),
+        asCALL_THISCALL_ASGLOBAL,
+        &world->input
+    );
+
+    engine->RegisterGlobalFunction(
+        "bool is_gamepad_button_just_pressed(uint, GamepadButton)",
+        asMETHOD(InputSystem, InputSystem::is_gamepad_button_just_pressed),
+        asCALL_THISCALL_ASGLOBAL,
+        &world->input
+    );
+
+    engine->RegisterGlobalFunction(
+        "string gamepad_button_to_string(GamepadButton)",
+        asMETHOD(InputSystem, InputSystem::gamepad_button_to_string),
+        asCALL_THISCALL_ASGLOBAL,
+        &world->input
+    );
+
+    engine->RegisterGlobalFunction(
+        "GamepadButton string_to_gamepad_button(string &in)",
+        asMETHOD(InputSystem, InputSystem::string_to_gamepad_button),
         asCALL_THISCALL_ASGLOBAL,
         &world->input
     );
