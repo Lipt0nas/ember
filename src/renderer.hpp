@@ -335,32 +335,19 @@ private:
         glm::mat4 last_frame_view_proj;
     };
 
-#define DDGI_NUM_FIXED_RAYS 32
-#define MAX_RAYS_PER_PROBE  256
     struct alignas(16) LightingUBO {
         glm::vec4 light_direction;
         glm::vec4 light_color;
 
-        glm::vec3 grid_origin;
-        float     probe_spacing;
-
-        glm::ivec3 probe_counts;
-        int        texels_per_probe;
-
         glm::vec3 camera_pos;
         int       frame_index;
 
-        float gi_intensity;
-        int   disney_diffuse;
-
-        int depth_texels_per_probe;
-        int rays_per_probe;
-
         glm::vec4 sky_hemisphere_top;
         glm::vec4 sky_hemisphere_bottom;
-
-        glm::quat ddgi_probe_ray_rotation;
     };
+
+    DDGIVolume ddgi_volume;
+    Buffer     ddgi_volume_buffer;
 
     struct LuminanceConstants {
         float min_log2_luminance;
@@ -626,6 +613,7 @@ private:
     void destroy_debug_renderer(const DebugRenderer& renderer, VkDevice device, VmaAllocator vma_allocator);
 
     bool directional_light_enabled();
+    bool ddgi_enabled();
 
 public:
     DebugRendererConstants debug_renderer_constants;

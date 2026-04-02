@@ -453,3 +453,69 @@ struct Light {
            CEREAL_NVP(enabled));
     }
 };
+
+#define DDGI_NUM_FIXED_RAYS         32
+#define DDGI_MAX_RAYS_PER_PROBE     256
+#define DDGI_TEXELS_PER_PROBE       6
+#define DDGI_DEPTH_TEXELS_PER_PROBE 14
+#define DDGI_MAX_PROBE_COUNTS       glm::ivec3(32, 16, 32)
+struct DDGIVolume {
+    glm::vec3 grid_origin = {0, 0, 0};
+    int       enabled     = 1;
+
+    glm::ivec3 probe_counts = {2, 2, 2};
+    float      intensity    = 1.0f;
+
+    glm::vec3 probe_spacing  = {4.0f, 4.0f, 4.0f};
+    int       rays_per_probe = DDGI_MAX_RAYS_PER_PROBE;
+
+    float hysteresis        = 0.97f;
+    float normal_bias       = 0.2f;
+    float view_bias         = 0.8f;
+    float distance_exponent = 50.0f;
+
+    float irradiance_encoding_gamma = 11.0f;
+    float irradiance_threshold      = 0.25f; // crossing this threshold reduces hystereris
+    float brightness_threshold      = 0.1f;  // maximum allowed brightness change per blend cycle
+    float random_ray_backface_threshold =
+        0.1f; // 0.0f - 1.0f, fraction of backface hitting random rays needed to consider the probe inside geometry
+
+    float fixed_ray_backface_threshold =
+        0.25f; // 0.0f - 1.0f, fraction of backface hitting fixed rays needed to consider the probe inside geometry
+
+    float min_frontface_distance =
+        0.5f; // minimum world distance to a front facing triangle before the probe will be tried to be relocated
+    int   scrolling      = 0;
+    float distance_scale = 0.1f;
+
+    glm::quat rotation = {0, 0, 0, 1};
+
+    glm::ivec3 scroll_offsets    = {0, 0, 0};
+    float      _pad1             = 0.0f;
+    glm::ivec4 scroll_clear      = {0, 0, 0, 0};
+    glm::ivec4 scroll_directions = {0, 0, 0, 0};
+
+    glm::quat probe_ray_rotation = {0, 0, 0, 1};
+
+    template <class Archive> void serialize(Archive& ar) {
+        ar(CEREAL_NVP(grid_origin),
+           CEREAL_NVP(enabled),
+           CEREAL_NVP(probe_counts),
+           CEREAL_NVP(intensity),
+           CEREAL_NVP(probe_spacing),
+           CEREAL_NVP(rays_per_probe),
+           CEREAL_NVP(hysteresis),
+           CEREAL_NVP(normal_bias),
+           CEREAL_NVP(view_bias),
+           CEREAL_NVP(distance_exponent),
+           CEREAL_NVP(irradiance_encoding_gamma),
+           CEREAL_NVP(irradiance_threshold),
+           CEREAL_NVP(brightness_threshold),
+           CEREAL_NVP(random_ray_backface_threshold),
+           CEREAL_NVP(fixed_ray_backface_threshold),
+           CEREAL_NVP(min_frontface_distance),
+           CEREAL_NVP(rotation),
+           CEREAL_NVP(scrolling),
+           CEREAL_NVP(distance_scale));
+    }
+};

@@ -183,25 +183,11 @@ struct LightingUBO {
     vec4 light_direction;
     vec4 light_color;
 
-    vec3 grid_origin;
-    float probe_spacing;
-
-    ivec3 probe_counts;
-    int texels_per_probe;
-
     vec3 camera_pos;
     int frame_index;
 
-    float gi_intensity;
-    int disney_diffuse;
-
-    int depth_texels_per_probe;
-    int rays_per_probe;
-
     vec4 sky_hemisphere_top;
     vec4 sky_hemisphere_bottom;
-
-    vec4 ddgi_probe_ray_rotation;
 };
 
 struct Meshlet {

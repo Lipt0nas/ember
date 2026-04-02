@@ -45,6 +45,10 @@ layout(set = 0, binding = 3, rg16f) uniform image2D out_depth;
 layout(set = 0, binding = 4, rg16f) uniform image2D depth_history;
 #endif
 
+layout(set = 0, binding = 5, std430) readonly buffer DDGIVolumeData {
+    DDGIVolume volume;
+};
+
 #if defined(DDGI_BLEND_IRRADIANCE)
 shared vec3 shared_ray_irradiance[DDGI_BLEND_RAYS_PER_PROBE];
 #endif
@@ -60,14 +64,14 @@ void load_shared_memory(int probe_index, uint group_index) {
             break;
         }
 
-        uint global_ray_index = (probe_index * lighting.rays_per_probe) + ray_index;
+        uint global_ray_index = (probe_index * volume.rays_per_probe) + ray_index;
 
         #if defined(DDGI_BLEND_IRRADIANCE)
         shared_ray_irradiance[ray_index] = ray_buffer.rays[global_ray_index].ray_data.xyz;
         #endif
 
         shared_ray_distance[ray_index] = ray_buffer.rays[global_ray_index].ray_data.w;
-        shared_ray_direction[ray_index] = ddgi_get_probe_ray_direction(int(ray_index), int(lighting.rays_per_probe), lighting.ddgi_probe_ray_rotation);
+        shared_ray_direction[ray_index] = ddgi_get_probe_ray_direction(int(ray_index), int(volume.rays_per_probe), volume.probe_ray_rotation);
     }
 
     barrier();
@@ -78,8 +82,17 @@ void update_border_texel(uvec3 group_thread_id, uvec3 group_id, uint probe_idx, 
             (group_thread_id.y == 0 || group_thread_id.y == (DDGI_PROBE_NUM_TEXELS - 1));
     bool is_row_texel = (group_thread_id.x > 0 && group_thread_id.x < (DDGI_PROBE_NUM_TEXELS - 1));
 
-    uint probe_atlas_x = probe_idx % probes_per_row;
-    uint probe_atlas_y = probe_idx / probes_per_row;
+    uint max_probes_per_row = DDGI_MAX_PROBE_COUNTS.x * DDGI_MAX_PROBE_COUNTS.y;
+
+    uint actual_per_row = volume.probe_counts.x * volume.probe_counts.y;
+    uint grid_z = probe_idx / actual_per_row;
+    uint grid_y = (probe_idx % actual_per_row) / volume.probe_counts.x;
+    uint grid_x = probe_idx % volume.probe_counts.x;
+
+    uint atlas_idx = grid_z * max_probes_per_row + grid_y * DDGI_MAX_PROBE_COUNTS.x + grid_x;
+
+    uint probe_atlas_x = atlas_idx % max_probes_per_row;
+    uint probe_atlas_y = atlas_idx / max_probes_per_row;
 
     ivec2 probe_base = ivec2(
             probe_atlas_x * DDGI_PROBE_NUM_TEXELS,
@@ -120,12 +133,10 @@ void main() {
     bool is_border_texel = (group_thread_id.x == 0 || group_thread_id.x == (DDGI_PROBE_NUM_INTERIOR_TEXELS + 1));
     is_border_texel = is_border_texel || (group_thread_id.y == 0 || group_thread_id.y == (DDGI_PROBE_NUM_INTERIOR_TEXELS + 1));
 
-    uint probes_per_row = lighting.probe_counts.x * lighting.probe_counts.y;
-    uint probe_idx = group_id.z * probes_per_row +
-            group_id.y * lighting.probe_counts.x +
-            group_id.x;
+    uint probes_per_row = volume.probe_counts.x * volume.probe_counts.y;
+    uint probe_idx = group_id.z * probes_per_row + group_id.y * volume.probe_counts.x + group_id.x;
 
-    uint probe_count = lighting.probe_counts.x * lighting.probe_counts.y * lighting.probe_counts.z;
+    uint probe_count = volume.probe_counts.x * volume.probe_counts.y * volume.probe_counts.z;
 
     if (probe_idx >= probe_count) {
         return;
@@ -137,8 +148,19 @@ void main() {
 
     load_shared_memory(int(probe_idx), group_index);
 
-    uint probe_atlas_x = probe_idx % probes_per_row;
-    uint probe_atlas_y = probe_idx / probes_per_row;
+    uint max_probes_per_row = DDGI_MAX_PROBE_COUNTS.x * DDGI_MAX_PROBE_COUNTS.y;
+
+    uint actual_per_row = volume.probe_counts.x * volume.probe_counts.y;
+    uint grid_z = probe_idx / actual_per_row;
+    uint grid_y = (probe_idx % actual_per_row) / volume.probe_counts.x;
+    uint grid_x = probe_idx % volume.probe_counts.x;
+
+    uint atlas_idx = grid_z * max_probes_per_row
+            + grid_y * DDGI_MAX_PROBE_COUNTS.x
+            + grid_x;
+
+    uint probe_atlas_x = atlas_idx % max_probes_per_row;
+    uint probe_atlas_y = atlas_idx / max_probes_per_row;
 
     ivec2 probe_base_coord = ivec2(
             probe_atlas_x * DDGI_PROBE_NUM_TEXELS,
@@ -154,11 +176,11 @@ void main() {
 
         #if defined(DDGI_BLEND_IRRADIANCE)
         uint backface_count = 0;
-        uint max_backfaces = uint(float(lighting.rays_per_probe - DDGI_NUM_FIXED_RAYS) * DDGI_PROBE_RANDOM_RAY_BACKFACE_THRESHOLD);
+        uint max_backfaces = uint(float(volume.rays_per_probe - DDGI_NUM_FIXED_RAYS) * volume.random_ray_backface_threshold);
         #endif
 
         vec4 result = vec4(0.0);
-        for (int r = DDGI_NUM_FIXED_RAYS; r < lighting.rays_per_probe; r++) {
+        for (int r = DDGI_NUM_FIXED_RAYS; r < volume.rays_per_probe; r++) {
             vec3 ray_direction = shared_ray_direction[r];
 
             float weight = max(0.0, dot(ray_direction, probe_direction));
@@ -181,23 +203,23 @@ void main() {
             #endif
 
             #if defined(DDGI_BLEND_DEPTH)
-            float ray_max_distance = length(lighting.probe_spacing) * 1.5;
+            float ray_max_distance = length(volume.probe_spacing) * 1.5;
 
-            weight = pow(weight, DDGI_PROBE_DISTANCE_EXPONENT);
+            weight = pow(weight, volume.distance_exponent);
             float ray_distance = min(abs(shared_ray_distance[r]), ray_max_distance);
 
             result += vec4(ray_distance * weight, (ray_distance * ray_distance) * weight, 0.0, weight);
             #endif
         }
 
-        float epsilon = float(lighting.rays_per_probe - DDGI_NUM_FIXED_RAYS);
+        float epsilon = float(volume.rays_per_probe - DDGI_NUM_FIXED_RAYS);
         epsilon *= 1e-9f;
 
         result.rgb *= 1.0 / (2.0 * max(result.a, epsilon));
         result.a = 1.0;
 
         #if defined(DDGI_BLEND_IRRADIANCE)
-        result.rgb = pow(result.rgb, vec3(1.0 / DDGI_PROBE_IRRADIANCE_ENCODING_GAMMA));
+        result.rgb = pow(result.rgb, vec3(1.0 / volume.irradiance_encoding_gamma));
         vec3 history = imageLoad(irradiance_history, atlas_coord).rgb;
         #endif
 
@@ -205,16 +227,16 @@ void main() {
         vec3 history = imageLoad(depth_history, atlas_coord).rgb;
         #endif
 
-        float hysteresis = DDGI_PROBE_HYSTERESIS;
+        float hysteresis = volume.hysteresis;
         if (dot(history, history) == 0) hysteresis = 0.0;
 
         #if defined(DDGI_BLEND_IRRADIANCE)
-        if (component_max(history - result.rgb) > DDGI_PROBE_IRRADIANCE_THRESHOLD) {
+        if (component_max(history - result.rgb) > volume.irradiance_threshold) {
             hysteresis = max(0.0, hysteresis - 0.75);
         }
 
         vec3 delta = (result.rgb - history);
-        if (linear_rgb_to_luminance(delta) > DDGI_PROBE_BRIGTHNESS_THRESHOLD) {
+        if (linear_rgb_to_luminance(delta) > volume.brightness_threshold) {
             delta *= 0.25;
         }
 

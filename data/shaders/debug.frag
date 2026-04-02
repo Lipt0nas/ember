@@ -24,6 +24,10 @@ layout(set = 0, binding = 4, std430) readonly uniform LightingData {
     LightingUBO lighting;
 };
 
+layout(set = 0, binding = 5, std430) readonly buffer DDGIVolumeData {
+    DDGIVolume volume;
+};
+
 layout(push_constant, std430) uniform pc {
     mat4 combined_matrix;
     vec3 camera_pos;
@@ -32,7 +36,7 @@ layout(push_constant, std430) uniform pc {
 #include "ddgi_sample.glsl"
 
 void main() {
-    int probe_count = lighting.probe_counts.x * lighting.probe_counts.y * lighting.probe_counts.z;
+    int probe_count = volume.probe_counts.x * volume.probe_counts.y * volume.probe_counts.z;
 
     if (in_probe_index < probe_count) {
         DDGIProbe probe = probes[in_probe_index];
@@ -41,12 +45,14 @@ void main() {
         bool valid_probe = probe.state == 1;
 
         if (valid_probe) {
-            irradiance = texture(ddgi_irradiance, ddgi_probe_uv(lighting.probe_counts, in_probe_index, normalize(in_normal), lighting.texels_per_probe)).rgb;
+            irradiance = texture(ddgi_irradiance, ddgi_probe_uv(volume.probe_counts, in_probe_index, normalize(in_normal), DDGI_PROBE_NUM_RADIANCE_INTERIOR_TEXELS)).rgb;
 
-            vec3 exponent = vec3(DDGI_PROBE_IRRADIANCE_ENCODING_GAMMA * 0.5);
+            vec3 exponent = vec3(volume.irradiance_encoding_gamma * 0.5);
             irradiance = pow(irradiance, exponent);
             irradiance *= irradiance;
             irradiance *= PI2;
+            irradiance *= 0.0002;
+            irradiance *= 1.0 / volume.intensity;
 
             irradiance.x = GranTurismoTonemapper(irradiance.x);
             irradiance.y = GranTurismoTonemapper(irradiance.y);

@@ -25,10 +25,14 @@ layout(set = 0, binding = 2, std430) readonly uniform LightingData {
     LightingUBO lighting;
 };
 
+layout(set = 0, binding = 3, std430) readonly buffer DDGIVolumeData {
+    DDGIVolume volume;
+};
+
 void main() {
     uint probe_index = gl_GlobalInvocationID.x;
 
-    uint probe_count = lighting.probe_counts.x * lighting.probe_counts.y * lighting.probe_counts.z;
+    uint probe_count = volume.probe_counts.x * volume.probe_counts.y * volume.probe_counts.z;
 
     if (probe_index >= probe_count) return;
 
@@ -48,7 +52,7 @@ void main() {
     int ray_count = DDGI_NUM_FIXED_RAYS;
 
     for (int i = 0; i < ray_count; i++) {
-        uint global_ray_idx = probe_index * lighting.rays_per_probe + i;
+        uint global_ray_idx = probe_index * volume.rays_per_probe + i;
 
         float hit_distance = ray_buffer.rays[global_ray_idx].ray_data.w;
         if (hit_distance < 0.0) {
@@ -72,28 +76,28 @@ void main() {
 
     vec3 full_offset = vec3(1e27);
 
-    const float min_frontface_distance = DDGI_PROBE_MIN_FRONTFACE_DISTANCE;
-    if (closest_backface_index != -1 && (float(backface_count) / float(ray_count)) > DDGI_PROBE_FIXED_RAY_BACKFACE_THRESHOLD) {
-        vec3 closest_backface_direction = closest_backface_distance * normalize(ddgi_get_probe_ray_direction(closest_backface_index, int(lighting.rays_per_probe), lighting.ddgi_probe_ray_rotation));
+    const float min_frontface_distance = volume.min_frontface_distance;
+    if (closest_backface_index != -1 && (float(backface_count) / float(ray_count)) > volume.fixed_ray_backface_threshold) {
+        vec3 closest_backface_direction = closest_backface_distance * normalize(ddgi_get_probe_ray_direction(closest_backface_index, int(volume.rays_per_probe), volume.probe_ray_rotation));
 
-        full_offset = current_offset + closest_backface_direction * (DDGI_PROBE_DISTANCE_SCALE + 1.0);
+        full_offset = current_offset + closest_backface_direction * (volume.distance_scale + 1.0);
     } else if (closest_frontface_distance < min_frontface_distance) {
-        vec3 closest_frontface_direction = normalize(ddgi_get_probe_ray_direction(closest_frontface_index, int(lighting.rays_per_probe), lighting.ddgi_probe_ray_rotation));
-        vec3 farthest_frontface_direction = normalize(ddgi_get_probe_ray_direction(farthest_frontface_index, int(lighting.rays_per_probe), lighting.ddgi_probe_ray_rotation));
+        vec3 closest_frontface_direction = normalize(ddgi_get_probe_ray_direction(closest_frontface_index, int(volume.rays_per_probe), volume.probe_ray_rotation));
+        vec3 farthest_frontface_direction = normalize(ddgi_get_probe_ray_direction(farthest_frontface_index, int(volume.rays_per_probe), volume.probe_ray_rotation));
 
-        if (!(dot(farthest_frontface_direction, closest_frontface_direction) > 0.5)) {
+        if (dot(farthest_frontface_direction, closest_frontface_direction) <= 0.0f) {
             farthest_frontface_direction *= min(farthest_frontface_distance, 1.0);
 
-            full_offset = current_offset + farthest_frontface_direction * DDGI_PROBE_DISTANCE_SCALE;
+            full_offset = current_offset + farthest_frontface_direction * volume.distance_scale;
         }
-    } else if (closest_frontface_distance > min_frontface_distance + DDGI_PROBE_DISTANCE_SCALE) {
-        float margin = min(closest_frontface_distance - min_frontface_distance, length(current_offset));
+    } else if (closest_frontface_distance > min_frontface_distance + volume.distance_scale) {
+        float margin = min(closest_frontface_distance - volume.min_frontface_distance, length(current_offset));
         vec3 direction = normalize(-current_offset);
 
         full_offset = current_offset + (margin * direction);
     }
 
-    vec3 normalized_offset = full_offset / lighting.probe_spacing;
+    vec3 normalized_offset = full_offset / volume.probe_spacing;
     if (dot(normalized_offset, normalized_offset) < 0.2025) {
         current_offset = full_offset;
     }

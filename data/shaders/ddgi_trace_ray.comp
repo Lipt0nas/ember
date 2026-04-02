@@ -38,6 +38,10 @@ layout(set = 0, binding = 4, std430) readonly buffer LightData {
 layout(set = 0, binding = 5) uniform sampler2D ddgi_atlas;
 layout(set = 0, binding = 6) uniform sampler2D ddgi_depth;
 
+layout(set = 0, binding = 7, std430) readonly buffer DDGIVolumeData {
+    DDGIVolume volume;
+};
+
 layout(scalar, set = 1, binding = 1) readonly buffer MeshBuffer {
     MeshInstance draw_calls[];
 };
@@ -68,19 +72,19 @@ layout(set = 3, binding = 0) uniform sampler2D textures[];
 
 void main() {
     uint global_ray_idx = gl_GlobalInvocationID.x;
-    uint total_rays = (lighting.probe_counts.x * lighting.probe_counts.y * lighting.probe_counts.z) * lighting.rays_per_probe;
+    uint total_rays = (volume.probe_counts.x * volume.probe_counts.y * volume.probe_counts.z) * volume.rays_per_probe;
 
     if (global_ray_idx >= total_rays) return;
 
-    uint probe_idx = global_ray_idx / lighting.rays_per_probe;
-    uint ray_idx = global_ray_idx % lighting.rays_per_probe;
+    uint probe_idx = global_ray_idx / volume.rays_per_probe;
+    uint ray_idx = global_ray_idx % volume.rays_per_probe;
 
     if (probes[probe_idx].state == 0 && ray_idx >= DDGI_NUM_FIXED_RAYS) {
         return;
     }
 
-    vec3 origin = ddgi_get_probe_position(int(probe_idx), lighting.probe_counts, lighting.grid_origin, vec3(lighting.probe_spacing), probes[probe_idx].offset);
-    vec3 ray_dir = ddgi_get_probe_ray_direction(int(ray_idx), int(lighting.rays_per_probe), lighting.ddgi_probe_ray_rotation);
+    vec3 origin = ddgi_get_probe_position(int(probe_idx), volume.probe_counts, volume.grid_origin, volume.probe_spacing, probes[probe_idx].offset);
+    vec3 ray_dir = ddgi_get_probe_ray_direction(int(ray_idx), int(volume.rays_per_probe), volume.probe_ray_rotation);
 
     float t_min = 0.0;
     float t_max = 1000.0;
@@ -201,10 +205,10 @@ void main() {
         vec3 pos = world_pos;
 
         DDGIWeights ddgi_weights = compute_ddgi_weights(
-                lighting, pos, world_normal, -V, ddgi_depth
+                volume, pos, world_normal, -V, ddgi_depth
             );
 
-        vec3 indirect = sample_ddgi(ddgi_weights, lighting, world_normal, ddgi_atlas);
+        vec3 indirect = sample_ddgi(ddgi_weights, volume, world_normal, ddgi_atlas);
         indirect *= (min(albedo.rgb, vec3(0.90f)) / PI);
 
         for (int i = 0; i < light_count; i++) {
@@ -216,5 +220,5 @@ void main() {
         radiance = get_sky_color(ray_dir, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, lighting.light_color, lighting.light_direction.w);
     }
 
-    ray_buffer.rays[global_ray_idx].ray_data = vec4(radiance * lighting.gi_intensity, hit_distance);
+    ray_buffer.rays[global_ray_idx].ray_data = vec4(radiance * volume.intensity, hit_distance);
 }
