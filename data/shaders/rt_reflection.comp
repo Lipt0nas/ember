@@ -50,6 +50,10 @@ layout(set = 0, binding = 13, std430) readonly buffer LightData {
     Light lights[];
 };
 
+layout(set = 0, binding = 14, std430) readonly buffer DDGIVolumeData {
+    DDGIVolume volume;
+};
+
 layout(set = 1, binding = 0) uniform UBO {
     SceneUBO scene;
 };
@@ -245,13 +249,13 @@ vec4 trace_ray(vec3 origin, vec3 direction, vec3 normal) {
             Lo += evaluate_point_light(lights[i], hit_pos, world_normal, V, albedo.rgb, roughness, metallic, F0, textures[nonuniformEXT(lights[i].ies_texture_id)]);
         }
 
-        DDGIWeights ddgi_weights = compute_ddgi_weights(lighting, hit_pos, world_normal, V, ddgi_depth);
+        DDGIWeights ddgi_weights = compute_ddgi_weights(volume, hit_pos, world_normal, V, ddgi_depth);
 
-        vec3 indirect = sample_ddgi(ddgi_weights, lighting, world_normal, ddgi_atlas);
+        vec3 indirect = sample_ddgi(ddgi_weights, volume, world_normal, ddgi_atlas);
         vec3 diffuse_ibl = kD_ibl * indirect * albedo.rgb / PI;
 
         vec2 brdf = texture(brdf_lut, vec2(NoV, roughness)).rg;
-        vec3 ddgi_specular = sample_ddgi(ddgi_weights, lighting, R, ddgi_atlas) / PI;
+        vec3 ddgi_specular = sample_ddgi(ddgi_weights, volume, R, ddgi_atlas) / PI;
         float norm = (1.0 - a);
         vec3 specular_ibl = ddgi_specular * (F_ibl * brdf.x + brdf.y) * norm;
 

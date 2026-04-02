@@ -245,6 +245,10 @@ namespace components {
         glm::vec4 bottom_hemisphere_color = {0, 0, 0, 1};
     };
 
+    struct DDGIVolume {
+        ::DDGIVolume volume;
+    };
+
     template <typename Archive> void serialize(Archive& archive, Transform& transform) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
             archive(
@@ -482,6 +486,14 @@ namespace components {
             );
         } else {
             archive(sky.top_hemisphere_color, sky.bottom_hemisphere_color);
+        }
+    }
+
+    template <typename Archive> void serialize(Archive& archive, DDGIVolume& volume) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("volume", volume.volume));
+        } else {
+            archive(volume.volume);
         }
     }
 

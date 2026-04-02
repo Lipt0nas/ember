@@ -49,6 +49,14 @@ namespace glm {
         }
     }
 
+    template <class Archive> void serialize(Archive& archive, glm::ivec3& v) {
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("x", v.x), cereal::make_nvp("y", v.y), cereal::make_nvp("z", v.z));
+        } else {
+            archive(v.x, v.y, v.z);
+        }
+    }
+
     template <class Archive> void serialize(Archive& archive, glm::vec4& v) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
             archive(

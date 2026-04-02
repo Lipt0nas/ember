@@ -9,7 +9,7 @@ struct DDGIWeights {
 };
 
 DDGIWeights compute_ddgi_weights(
-    LightingUBO lighting,
+    DDGIVolume volume,
     vec3 surface_pos,
     vec3 surface_normal,
     vec3 view_dir,
@@ -19,21 +19,20 @@ DDGIWeights compute_ddgi_weights(
     result.total_weight = 0.0;
     result.valid = false;
 
-    vec3 biased_pos = surface_pos + (surface_normal * DDGI_PROBE_NORMAL_BIAS)
-            + (view_dir * DDGI_PROBE_VIEW_BIAS);
+    vec3 biased_pos = surface_pos + (surface_normal * volume.normal_bias) + (view_dir * volume.view_bias);
 
-    vec3 grid_shift = vec3(lighting.probe_counts - ivec3(1)) * 0.5;
-    vec3 grid_pos_float = ((biased_pos - lighting.grid_origin) / lighting.probe_spacing) + grid_shift;
+    vec3 grid_shift = vec3(volume.probe_counts - ivec3(1)) * 0.5;
+    vec3 grid_pos_float = ((biased_pos - volume.grid_origin) / volume.probe_spacing) + grid_shift;
 
     ivec3 base_grid_coord = ivec3(floor(grid_pos_float));
     vec3 alpha = clamp(grid_pos_float - vec3(base_grid_coord), vec3(0.0), vec3(1.0));
 
     for (int i = 0; i < 8; i++) {
         ivec3 offset = ivec3((i >> 0) & 1, (i >> 1) & 1, (i >> 2) & 1);
-        ivec3 probe_grid_coord = clamp(base_grid_coord + offset, ivec3(0), lighting.probe_counts - ivec3(1));
+        ivec3 probe_grid_coord = clamp(base_grid_coord + offset, ivec3(0), volume.probe_counts - ivec3(1));
 
-        int probe_idx = probe_grid_coord.z * (lighting.probe_counts.x * lighting.probe_counts.y)
-                + probe_grid_coord.y * lighting.probe_counts.x
+        int probe_idx = probe_grid_coord.z * (volume.probe_counts.x * volume.probe_counts.y)
+                + probe_grid_coord.y * volume.probe_counts.x
                 + probe_grid_coord.x;
 
         result.probe_indices[i] = probe_idx;
@@ -46,9 +45,9 @@ DDGIWeights compute_ddgi_weights(
 
         vec3 probe_pos = ddgi_get_probe_position(
                 probe_idx,
-                lighting.probe_counts,
-                lighting.grid_origin,
-                vec3(lighting.probe_spacing),
+                volume.probe_counts,
+                volume.grid_origin,
+                volume.probe_spacing,
                 probe.offset
             );
 
@@ -66,8 +65,8 @@ DDGIWeights compute_ddgi_weights(
 
         // Chebyshev visibility
         vec2 depth_data = 2.0 * texture(ddgi_depth, ddgi_probe_uv(
-                        lighting.probe_counts, probe_idx, probe_to_surface,
-                        lighting.depth_texels_per_probe)).rg;
+                        volume.probe_counts, probe_idx, probe_to_surface,
+                        DDGI_PROBE_NUM_DEPTH_INTERIOR_TEXELS)).rg;
         float mean_dist = depth_data.x;
         float mean_dist_sq = depth_data.y;
         float variance = abs(mean_dist * mean_dist - mean_dist_sq);
@@ -101,23 +100,23 @@ DDGIWeights compute_ddgi_weights(
 
 vec3 sample_ddgi(
     DDGIWeights s,
-    LightingUBO lighting,
+    DDGIVolume volume,
     vec3 direction,
     sampler2D ddgi_atlas
 ) {
     if (!s.valid || s.total_weight == 0.0) return vec3(0.0);
 
-    vec3 exponent = vec3(DDGI_PROBE_IRRADIANCE_ENCODING_GAMMA * 0.5);
+    vec3 exponent = vec3(volume.irradiance_encoding_gamma * 0.5);
     vec3 total_irradiance = vec3(0.0);
 
     for (int i = 0; i < 8; i++) {
         if (s.weights[i] == 0.0) continue;
 
         vec3 probe_irradiance = texture(ddgi_atlas, ddgi_probe_uv(
-                    lighting.probe_counts,
+                    volume.probe_counts,
                     s.probe_indices[i],
                     direction,
-                    lighting.texels_per_probe
+                    DDGI_PROBE_NUM_RADIANCE_INTERIOR_TEXELS
                 )).rgb;
 
         probe_irradiance = pow(probe_irradiance, exponent);

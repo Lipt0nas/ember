@@ -1188,17 +1188,12 @@ int main(int argc, char* argv[]) {
 
         if (ImGui::CollapsingHeader("Rendering")) {
             ImGui::SeparatorText("DDGI");
-            ImGui::DragFloat("GI Intensity", &world.renderer.lighting_data.gi_intensity, 0.01);
-            ImGui::DragFloat("Probe Spacing", &world.renderer.lighting_data.probe_spacing, 0.01, 0.1, 10.0);
-            ImGui::DragFloat3("Grid Origin", &world.renderer.lighting_data.grid_origin.x, 0.03, -100.0, 100.0);
             ImGui::Checkbox("Visualize Probes", (bool*)&world.renderer.visualize_probes);
             ImGui::Checkbox(
                 "Cull Innactive Probes", (bool*)&world.renderer.debug_renderer_constants.cull_innactive_probes
             );
 
             ImGui::SeparatorText("Light Pass");
-            ImGui::Checkbox("Disney Diffuse", (bool*)&world.renderer.lighting_data.disney_diffuse);
-
             ImGui::SeparatorText("Bloom");
             ImGui::SliderFloat("Bloom Upscale radius", &world.renderer.bloom_upscale_sample_scale, 0.0, 5.0);
             ImGui::SliderFloat("Bloom Strength", &world.renderer.composite_push_constants.bloom_strength, 0.0, 1.0);

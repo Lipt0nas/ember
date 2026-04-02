@@ -341,6 +341,10 @@ Renderer::DebugRenderer Renderer::create_debug_renderer(
                             .type       = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
                             .write_info = DescriptorInfo(lighting_ubo.handle, 0, lighting_ubo.size / frames_in_flight)
                         },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(ddgi_volume_buffer.handle)
+                        },
                     },
             },
         },
@@ -752,6 +756,7 @@ void Renderer::cleanup() {
     destroy_buffer(light_buffer, device, vma_allocator);
     destroy_buffer(ddgi_ray_buffer, device, vma_allocator);
     destroy_buffer(ddgi_probe_buffer, device, vma_allocator);
+    destroy_buffer(ddgi_volume_buffer, device, vma_allocator);
     destroy_buffer(material_buffer, device, vma_allocator);
     destroy_buffer(drawcall_buffer, device, vma_allocator);
     destroy_buffer(mesh_buffer, device, vma_allocator);
@@ -1775,6 +1780,10 @@ void Renderer::setup_framegraph() {
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                                 )
                             },
+                            DescriptorBinding{
+                                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                .write_info = DescriptorInfo(ddgi_volume_buffer.handle)
+                            },
                         }
                 },
                 draw_data_layout,
@@ -1824,6 +1833,10 @@ void Renderer::setup_framegraph() {
                 .samples_image(ddgi_irradiance_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                 .samples_image(ddgi_depth_atlas_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                 .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                    if (!ddgi_enabled()) {
+                        return;
+                    }
+
                     const Pipeline& pipeline = ddgi_ray_pipeline;
 
                     vkCmdBindPipeline(command_buffer, pipeline.bind_point, pipeline.pipeline_handle);
@@ -1857,11 +1870,9 @@ void Renderer::setup_framegraph() {
                     );
 
                     uint32_t probe_count =
-                        lighting_data.probe_counts.x * lighting_data.probe_counts.y * lighting_data.probe_counts.z;
+                        ddgi_volume.probe_counts.x * ddgi_volume.probe_counts.y * ddgi_volume.probe_counts.z;
 
-                    vkCmdDispatch(
-                        command_buffer, glm::ceil((probe_count * lighting_data.rays_per_probe) / 32.0f), 1, 1
-                    );
+                    vkCmdDispatch(command_buffer, glm::ceil((probe_count * ddgi_volume.rays_per_probe) / 32.0f), 1, 1);
                 });
 
         ddgi_probe_blend_depth_pipeline = create_compute_pipeline(
@@ -1892,6 +1903,10 @@ void Renderer::setup_framegraph() {
                             .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                             .write_info = DescriptorInfo(ddgi_depth_atlas_history.view, VK_IMAGE_LAYOUT_GENERAL)
                         },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(ddgi_volume_buffer.handle)
+                        },
                     },
                 },
             }
@@ -1916,6 +1931,10 @@ void Renderer::setup_framegraph() {
                 .writes_storage_image(ddgi_depth_atlas, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                 .reads_storage_image(ddgi_depth_atlas_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                 .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                    if (!ddgi_enabled()) {
+                        return;
+                    }
+
                     const Pipeline& pipeline = ddgi_probe_blend_depth_pipeline;
 
                     std::array<uint32_t, 1> offsets = {
@@ -1936,9 +1955,9 @@ void Renderer::setup_framegraph() {
 
                     vkCmdDispatch(
                         command_buffer,
-                        lighting_data.probe_counts.x,
-                        lighting_data.probe_counts.y,
-                        lighting_data.probe_counts.z
+                        ddgi_volume.probe_counts.x,
+                        ddgi_volume.probe_counts.y,
+                        ddgi_volume.probe_counts.z
                     );
 
                     image_pipeline_barrier(
@@ -2057,6 +2076,10 @@ void Renderer::setup_framegraph() {
                             .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                             .write_info = DescriptorInfo(ddgi_irradiance_history.view, VK_IMAGE_LAYOUT_GENERAL)
                         },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(ddgi_volume_buffer.handle)
+                        },
                     },
                 },
             }
@@ -2081,6 +2104,10 @@ void Renderer::setup_framegraph() {
                 .writes_storage_image(ddgi_irradiance, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                 .reads_storage_image(ddgi_irradiance_history, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
                 .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                    if (!ddgi_enabled()) {
+                        return;
+                    }
+
                     const Pipeline& pipeline = ddgi_probe_blend_irradiance_pipeline;
 
                     std::array<uint32_t, 1> offsets = {
@@ -2101,9 +2128,9 @@ void Renderer::setup_framegraph() {
 
                     vkCmdDispatch(
                         command_buffer,
-                        lighting_data.probe_counts.x,
-                        lighting_data.probe_counts.y,
-                        lighting_data.probe_counts.z
+                        ddgi_volume.probe_counts.x,
+                        ddgi_volume.probe_counts.y,
+                        ddgi_volume.probe_counts.z
                     );
 
                     image_pipeline_barrier(
@@ -2214,6 +2241,10 @@ void Renderer::setup_framegraph() {
                                 lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
                             )
                         },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(ddgi_volume_buffer.handle)
+                        },
                     },
                 },
             }
@@ -2239,6 +2270,10 @@ void Renderer::setup_framegraph() {
                     lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
                 )
                 .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                    if (!ddgi_enabled()) {
+                        return;
+                    }
+
                     const Pipeline& pipeline = ddgi_probe_relocate_pipeline;
 
                     std::array<uint32_t, 1> offsets = {
@@ -2258,7 +2293,7 @@ void Renderer::setup_framegraph() {
                     );
 
                     uint32_t probe_count =
-                        lighting_data.probe_counts.x * lighting_data.probe_counts.y * lighting_data.probe_counts.z;
+                        ddgi_volume.probe_counts.x * ddgi_volume.probe_counts.y * ddgi_volume.probe_counts.z;
 
                     vkCmdDispatch(command_buffer, (probe_count + 31) / 32, 1, 1);
                 });
@@ -2283,6 +2318,10 @@ void Renderer::setup_framegraph() {
                                 lighting_ubo_buffer.handle, 0, lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
                             )
                         },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(ddgi_volume_buffer.handle)
+                        },
                     },
                 },
             }
@@ -2305,6 +2344,10 @@ void Renderer::setup_framegraph() {
                     lighting_ubo_buffer.size / FRAMES_IN_FLIGHT
                 )
                 .render_func([&](VkCommandBuffer command_buffer, uint32_t frame_index) {
+                    if (!ddgi_enabled()) {
+                        return;
+                    }
+
                     const Pipeline& pipeline = ddgi_probe_classify_pipeline;
 
                     std::array<uint32_t, 1> offsets = {
@@ -2324,7 +2367,7 @@ void Renderer::setup_framegraph() {
                     );
 
                     uint32_t probe_count =
-                        lighting_data.probe_counts.x * lighting_data.probe_counts.y * lighting_data.probe_counts.z;
+                        ddgi_volume.probe_counts.x * ddgi_volume.probe_counts.y * ddgi_volume.probe_counts.z;
 
                     vkCmdDispatch(command_buffer, (probe_count + 31) / 32, 1, 1);
                 });
@@ -2459,6 +2502,10 @@ void Renderer::setup_framegraph() {
                                 .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
                                 .write_info =
                                     DescriptorInfo(light_buffer.handle, 0, light_buffer.size / FRAMES_IN_FLIGHT)
+                            },
+                            DescriptorBinding{
+                                .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                .write_info = DescriptorInfo(ddgi_volume_buffer.handle)
                             },
                         }
                 },
@@ -4556,11 +4603,11 @@ void Renderer::initialize(
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 60,
+            .descriptorCount = 70,
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-            .descriptorCount = 40,
+            .descriptorCount = 70,
         },
         {
             .type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -4637,32 +4684,22 @@ void Renderer::initialize(
     VK_CHECK(vkCreateSampler(device, &sampler_info, nullptr, &nearest_sampler));
 
     lighting_data = {
-        .light_direction  = glm::vec4(-0.2f, -0.7f, -1.0f, 0.0f),
-        .light_color      = glm::vec4(1.0, 0.9, 0.8, 5.0f),
-        .grid_origin      = {0, 10.0f, 0},
-        .probe_spacing    = 2.5f,
-        .probe_counts     = {32, 16, 32},
-        .texels_per_probe = 6,
-        .camera_pos       = {},
-        .frame_index      = {},
+        .light_direction       = glm::vec4(-0.2f, -0.7f, -1.0f, 0.0f),
+        .light_color           = glm::vec4(1.0, 0.9, 0.8, 5.0f),
+        .camera_pos            = {},
+        .frame_index           = {},
+        .sky_hemisphere_top    = {0.3, 0.5, 0.8, 1.0},
+        .sky_hemisphere_bottom = {0.6, 0.7, 0.9, 1.0},
     };
 
-    lighting_data.gi_intensity          = 1.0f;
-    lighting_data.sky_hemisphere_top    = {0.3, 0.5, 0.8, 1.0};
-    lighting_data.sky_hemisphere_bottom = {0.6, 0.7, 0.9, 1.0};
+    int probes_x = DDGI_MAX_PROBE_COUNTS.x * DDGI_MAX_PROBE_COUNTS.y;
+    int probes_y = DDGI_MAX_PROBE_COUNTS.z;
 
-    lighting_data.depth_texels_per_probe  = 14;
-    lighting_data.rays_per_probe          = MAX_RAYS_PER_PROBE;
-    lighting_data.ddgi_probe_ray_rotation = ddgi_random_rotation();
+    int irradiance_atlas_width  = probes_x * (DDGI_TEXELS_PER_PROBE + 2);
+    int irradiance_atlas_height = probes_y * (DDGI_TEXELS_PER_PROBE + 2);
 
-    int probes_x = lighting_data.probe_counts.x * lighting_data.probe_counts.y;
-    int probes_y = lighting_data.probe_counts.z;
-
-    int irradiance_atlas_width  = probes_x * (lighting_data.texels_per_probe + 2);
-    int irradiance_atlas_height = probes_y * (lighting_data.texels_per_probe + 2);
-
-    int depth_atlas_width  = probes_x * (lighting_data.depth_texels_per_probe + 2);
-    int depth_atlas_height = probes_y * (lighting_data.depth_texels_per_probe + 2);
+    int depth_atlas_width  = probes_x * (DDGI_DEPTH_TEXELS_PER_PROBE + 2);
+    int depth_atlas_height = probes_y * (DDGI_DEPTH_TEXELS_PER_PROBE + 2);
 
     staging_buffer = create_buffer(
         1024 * 1024 * 128,
@@ -4738,15 +4775,22 @@ void Renderer::initialize(
         vma_allocator
     );
 
-    uint32_t probe_count = lighting_data.probe_counts.x * lighting_data.probe_counts.y * lighting_data.probe_counts.z;
+    uint32_t probe_count = DDGI_MAX_PROBE_COUNTS.x * DDGI_MAX_PROBE_COUNTS.y * DDGI_MAX_PROBE_COUNTS.z;
     ddgi_ray_buffer      = create_buffer(
-        sizeof(DDGIRay) * probe_count * MAX_RAYS_PER_PROBE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vma_allocator
+        sizeof(DDGIRay) * probe_count * DDGI_MAX_RAYS_PER_PROBE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vma_allocator
     );
     spdlog::info("DDGI Ray buffer size: {}MB", ddgi_ray_buffer.size / 1024 / 1024);
 
     ddgi_probe_buffer =
         create_buffer(sizeof(DDGIProbe) * probe_count, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vma_allocator);
     spdlog::info("DDGI Probe buffer size: {}MB", ddgi_probe_buffer.size / 1024 / 1024);
+
+    ddgi_volume_buffer = create_buffer(
+        sizeof(DDGIVolume),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        vma_allocator,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    );
 
     // NOTE: could maybe reuse the buffer above, but this isn't a big crime (i think)
     // layout - indirect command structure + tile * screen_size / 8
@@ -4971,7 +5015,7 @@ void Renderer::initialize(
     };
 
     ddgi_depth_atlas = create_image(
-        VK_FORMAT_R32G32_SFLOAT,
+        VK_FORMAT_R16G16_SFLOAT,
         depth_atlas_width,
         depth_atlas_height,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -4983,7 +5027,7 @@ void Renderer::initialize(
     );
 
     ddgi_depth_atlas_history = create_image(
-        VK_FORMAT_R32G32_SFLOAT,
+        VK_FORMAT_R16G16_SFLOAT,
         depth_atlas_width,
         depth_atlas_height,
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -6300,6 +6344,10 @@ void Renderer::initialize(
                             .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                             .write_info = DescriptorInfo(ddgi_probe_buffer.handle)
                         },
+                        DescriptorBinding{
+                            .type       = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .write_info = DescriptorInfo(ddgi_volume_buffer.handle)
+                        },
                     }
             },
             scene_data_layout,
@@ -6462,8 +6510,23 @@ void Renderer::render_frame(float delta_time) {
     xegtao_constants.camera_near_far = {camera->near_plane, 10000.0f};
 
     lighting_data.frame_index += 1;
-    lighting_data.camera_pos              = camera->position;
-    lighting_data.ddgi_probe_ray_rotation = ddgi_random_rotation();
+    lighting_data.camera_pos = camera->position;
+
+    {
+        auto volume = world->scene.find_component<components::DDGIVolume>();
+        if (volume != entt::null) {
+
+            auto t = world->scene.get_component<components::Transform>(volume);
+            auto v = world->scene.get_component<components::DDGIVolume>(volume);
+
+            ddgi_volume                    = v->volume;
+            ddgi_volume.grid_origin        = t->world_position;
+            ddgi_volume.rotation           = t->world_rotation;
+            ddgi_volume.probe_ray_rotation = ddgi_random_rotation();
+        } else {
+            ddgi_volume.enabled = 0;
+        }
+    }
 
     {
         auto directional = world->scene.find_component<components::DirectionalLight>();
@@ -6975,6 +7038,15 @@ void Renderer::render_frame(float delta_time) {
         ));
     }
 
+    {
+        void*  ddgi_ptr   = nullptr;
+        size_t ptr_offset = 0;
+        VK_CHECK(vmaMapMemory(vma_allocator, ddgi_volume_buffer.allocation, &ddgi_ptr));
+        memcpy(reinterpret_cast<char*>(ddgi_ptr) + ptr_offset, &ddgi_volume, sizeof(DDGIVolume));
+        vmaUnmapMemory(vma_allocator, ddgi_volume_buffer.allocation);
+        VK_CHECK(vmaFlushAllocation(vma_allocator, ddgi_volume_buffer.allocation, ptr_offset, ddgi_volume_buffer.size));
+    }
+
     int light_count = 0;
     {
         auto view = world->scene.entity_registry.view<components::Transform, components::Light>();
@@ -7086,25 +7158,21 @@ void Renderer::render_frame(float delta_time) {
             }
         }
 
-        glm::vec3 grid_shift =
-            glm::vec3(
-                lighting_data.probe_counts.x - 1, lighting_data.probe_counts.y - 1, lighting_data.probe_counts.z - 1
-            ) *
-            lighting_data.probe_spacing * 0.5f;
+        if (ddgi_enabled()) {
+            glm::vec3 grid_shift =
+                glm::vec3(
+                    ddgi_volume.probe_counts.x - 1, ddgi_volume.probe_counts.y - 1, ddgi_volume.probe_counts.z - 1
+                ) *
+                ddgi_volume.probe_spacing * 0.5f;
 
-        for (int z = 0; z < lighting_data.probe_counts.z; z++) {
-            for (int y = 0; y < lighting_data.probe_counts.y; y++) {
-                for (int x = 0; x < lighting_data.probe_counts.x; x++) {
-                    glm::vec3 probe_grid_pos = glm::vec3(
-                        x * lighting_data.probe_spacing,
-                        y * lighting_data.probe_spacing,
-                        z * lighting_data.probe_spacing
-                    );
+            for (int z = 0; z < ddgi_volume.probe_counts.z; z++) {
+                for (int y = 0; y < ddgi_volume.probe_counts.y; y++) {
+                    for (int x = 0; x < ddgi_volume.probe_counts.x; x++) {
+                        glm::vec3 probe_grid_pos = glm::vec3(x, y, z) * ddgi_volume.probe_spacing;
 
-                    glm::vec3 probe_pos = lighting_data.grid_origin + probe_grid_pos - grid_shift;
-                    debug_renderer_draw_ddgi_sphere(
-                        debug_renderer, probe_pos, lighting_data.probe_spacing / 10.0f, {1, 1, 1, 1}
-                    );
+                        glm::vec3 probe_pos = ddgi_volume.grid_origin + probe_grid_pos - grid_shift;
+                        debug_renderer_draw_ddgi_sphere(debug_renderer, probe_pos, 0.5f, {1, 1, 1, 1});
+                    }
                 }
             }
         }
@@ -7453,4 +7521,8 @@ void SpriteBatcher::render_batch(const Batch& batch, VkCommandBuffer command_buf
 
 bool Renderer::directional_light_enabled() {
     return lighting_data.light_direction.w == 1;
+}
+
+bool Renderer::ddgi_enabled() {
+    return ddgi_volume.enabled == 1;
 }

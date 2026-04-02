@@ -1008,6 +1008,64 @@ template <> bool Editor::render_component_ui<components::Sky>(Entity e) {
     return edited;
 }
 
+template <> bool Editor::render_component_ui<components::DDGIVolume>(Entity e) {
+    bool edited = false;
+
+    auto* v = world->scene.get_component<components::DDGIVolume>(e);
+
+    if (ImGui::Checkbox("Enabled", (bool*)&v->volume.enabled)) {
+        edited |= true;
+    }
+
+    if (ImGui::Checkbox("Scrolling", (bool*)&v->volume.scrolling)) {
+        edited |= true;
+    }
+
+    ImGui::InputInt3("Probe Count", &v->volume.probe_counts.x);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat3("Probe Spacing", &v->volume.probe_spacing.x);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat("Hysteresis", &v->volume.hysteresis);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat("Intensity", &v->volume.intensity);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat("Normal Bias", &v->volume.normal_bias);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat("View Bias", &v->volume.view_bias);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat("Distance Exponent", &v->volume.distance_exponent);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat("Irradiance Encoding Gamma", &v->volume.irradiance_encoding_gamma);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat("Irradiance Threshold", &v->volume.irradiance_threshold);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat("Brigthness Threshold", &v->volume.brightness_threshold);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat("Random Ray Backface Threshold", &v->volume.random_ray_backface_threshold);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat("Fixed Ray Backface Treshold", &v->volume.fixed_ray_backface_threshold);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat("Min Frontface Distance", &v->volume.min_frontface_distance);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::InputFloat("Distance Scale", &v->volume.distance_scale);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    return edited;
+}
+
 Editor::Editor() {
     asset_type_infos = {
         {AssetType::MATERIAL,
