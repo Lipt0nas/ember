@@ -1514,6 +1514,19 @@ void node_get_component(asIScriptGeneric* gen) {
     }
 }
 
+void node_add_component(asIScriptGeneric* gen) {
+    auto type_id = gen->GetEngine()->GetTypeInfoById(gen->GetReturnTypeId())->GetTypeId();
+
+    Entity entity = *reinterpret_cast<Entity*>(gen->GetObject());
+
+    auto world = get_world_from_context();
+    auto it    = world->script.component_create_map.find(type_id);
+
+    if (it != world->script.component_create_map.end()) {
+        gen->SetReturnAddress(it->second(world->scene, entity));
+    }
+}
+
 ScriptSystem::ScriptSystem() {
     spdlog::info("Initializing script system");
 
@@ -1569,13 +1582,14 @@ void ScriptSystem::initialize(class World* world) {
         engine->RegisterEnumValue("GamepadButton", name.c_str(), i);
     }
 
+    register_node_type(engine);
+    register_components(engine);
+
     engine->RegisterObjectType("Mesh", 0, asOBJ_REF | asOBJ_NOCOUNT);
     engine->RegisterObjectProperty("Mesh", "vec3 center", asOFFSET(Mesh, center));
     engine->RegisterObjectProperty("Mesh", "float radius", asOFFSET(Mesh, radius));
     engine->RegisterObjectProperty("Mesh", "vec3 bounds_min", asOFFSET(Mesh, bounds_min));
     engine->RegisterObjectProperty("Mesh", "vec3 bounds_max", asOFFSET(Mesh, bounds_max));
-
-    register_node_type(engine);
 
     engine->SetDefaultNamespace("Log");
     engine->RegisterGlobalFunction("void trace(string &in)", asFUNCTION(script_log_trace), asCALL_CDECL);
@@ -1711,271 +1725,6 @@ void ScriptSystem::initialize(class World* world) {
         asCALL_THISCALL_ASGLOBAL,
         &world->input
     );
-
-    engine->SetDefaultNamespace("Components");
-    {
-        engine->RegisterObjectType("Transform", 0, asOBJ_REF | asOBJ_NOCOUNT);
-        engine->RegisterObjectMethod(
-            "Transform", "vec3 get_position() property", asFUNCTION(node_get_position), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Transform", "void set_position(vec3) property", asFUNCTION(node_set_position), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Transform", "float get_scale() property", asFUNCTION(node_get_scale), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Transform", "void set_scale(float) property", asFUNCTION(node_set_scale), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Transform", "quat get_rotation() property", asFUNCTION(node_get_rotation), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Transform", "void set_rotation(quat) property", asFUNCTION(node_set_rotation), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Transform", "vec3 get_world_position() property", asFUNCTION(node_get_world_position), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Transform", "float get_world_scale() property", asFUNCTION(node_get_world_scale), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Transform", "quat get_world_rotation() property", asFUNCTION(node_get_world_rotation), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Transform",
-            "vec3 transform(vec3)",
-            asFUNCTION(+[](glm::vec3 point, components::Transform* t) {
-                return rotate_quat(point, t->world_rotation) * t->world_scale + t->world_position;
-            }),
-            asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Transform",
-            "vec3 transform_translate(vec3)",
-            asFUNCTION(+[](glm::vec3 point, components::Transform* t) {
-                return point + t->world_position;
-            }),
-            asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Transform",
-            "vec3 transform_scale(vec3)",
-            asFUNCTION(+[](glm::vec3 point, components::Transform* t) {
-                return point * t->world_scale;
-            }),
-            asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Transform",
-            "vec3 transform_rotate(vec3)",
-            asFUNCTION(+[](glm::vec3 point, components::Transform* t) {
-                return rotate_quat(point, t->rotation);
-            }),
-            asCALL_CDECL_OBJLAST
-        );
-
-        auto type = engine->GetTypeInfoByName("Transform");
-        if (!type) {
-            spdlog::error("Failed to get type info for Transform component");
-            return;
-        }
-
-        component_retrieve_map.insert({
-            type->GetTypeId(),
-            [](Scene& scene, Entity e) {
-                return scene.get_component<components::Transform>(e);
-            },
-        });
-    }
-
-    {
-        engine->RegisterObjectType("Name", 0, asOBJ_REF | asOBJ_NOCOUNT);
-        engine->RegisterObjectProperty("Name", "string name", asOFFSET(components::Name, name));
-
-        auto type = engine->GetTypeInfoByName("Name");
-        if (!type) {
-            spdlog::error("Failed to get type info for Name component");
-            return;
-        }
-
-        component_retrieve_map.insert({
-            type->GetTypeId(),
-            [](Scene& scene, Entity e) {
-                return scene.get_component<components::Name>(e);
-            },
-        });
-    }
-
-    {
-        engine->RegisterObjectType("Physics", 0, asOBJ_REF | asOBJ_NOCOUNT);
-        engine->RegisterObjectMethod(
-            "Physics",
-            "void move_kinematic(vec3, quat, float)",
-            asFUNCTION(node_physics_move_kinematic),
-            asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Physics",
-            "void set_linear_velocity(vec3)",
-            asFUNCTION(node_physics_set_linear_velocity),
-            asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Physics",
-            "void set_angular_velocity(vec3)",
-            asFUNCTION(node_physics_set_angular_velocity),
-            asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Physics", "void set_friction(float)", asFUNCTION(node_physics_set_friction), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Physics", "void set_restitution(float)", asFUNCTION(node_physics_set_restitution), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Physics", "void set_active(bool)", asFUNCTION(node_physics_set_active), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Physics",
-            "void set_box_body(vec3, float = 1.0f)",
-            asFUNCTION(node_physics_set_box_body),
-            asCALL_CDECL_OBJLAST
-        );
-
-        auto type = engine->GetTypeInfoByName("Physics");
-        if (!type) {
-            spdlog::error("Failed to get type info for Physics component");
-            return;
-        }
-
-        component_retrieve_map.insert({
-            type->GetTypeId(),
-            [](Scene& scene, Entity e) {
-                return scene.get_component<components::Physics>(e);
-            },
-        });
-    }
-
-    {
-        engine->RegisterObjectType("Mesh", 0, asOBJ_REF | asOBJ_NOCOUNT);
-        engine->RegisterObjectMethod(
-            "Mesh", "::Mesh@ get_mesh()", asFUNCTION(node_mesh_get_mesh), asCALL_CDECL_OBJLAST
-        );
-
-        auto type = engine->GetTypeInfoByName("Mesh");
-        if (!type) {
-            spdlog::error("Failed to get type info for Mesh component");
-            return;
-        }
-
-        component_retrieve_map.insert({
-            type->GetTypeId(),
-            [](Scene& scene, Entity e) {
-                return scene.get_component<components::Mesh>(e);
-            },
-        });
-    }
-
-    {
-        engine->RegisterObjectType("Sprite", 0, asOBJ_REF | asOBJ_NOCOUNT);
-        engine->RegisterObjectProperty("Sprite", "vec4 color", asOFFSET(components::Sprite, color));
-        engine->RegisterObjectProperty("Sprite", "vec2 pivot", asOFFSET(components::Sprite, pivot));
-        engine->RegisterObjectProperty("Sprite", "vec2 size", asOFFSET(components::Sprite, size));
-        engine->RegisterObjectProperty("Sprite", "vec4 uvs", asOFFSET(components::Sprite, uvs));
-
-        auto type = engine->GetTypeInfoByName("Sprite");
-        if (!type) {
-            spdlog::error("Failed to get type info for Sprite component");
-            return;
-        }
-
-        component_retrieve_map.insert({
-            type->GetTypeId(),
-            [](Scene& scene, Entity e) {
-                return scene.get_component<components::Sprite>(e);
-            },
-        });
-    }
-
-    {
-        engine->RegisterObjectType("Text", 0, asOBJ_REF | asOBJ_NOCOUNT);
-        engine->RegisterObjectProperty("Text", "string text", asOFFSET(components::Text, text));
-        engine->RegisterObjectProperty("Text", "vec4 color", asOFFSET(components::Text, color));
-        engine->RegisterObjectProperty("Text", "vec2 pivot", asOFFSET(components::Text, pivot));
-
-        auto type = engine->GetTypeInfoByName("Text");
-        if (!type) {
-            spdlog::error("Failed to get type info for Text component");
-            return;
-        }
-
-        component_retrieve_map.insert({
-            type->GetTypeId(),
-            [](Scene& scene, Entity e) {
-                return scene.get_component<components::Text>(e);
-            },
-        });
-    }
-
-    {
-        engine->RegisterObjectType("Material", 0, asOBJ_REF | asOBJ_NOCOUNT);
-        engine->RegisterObjectMethod(
-            "Material", "vec4 get_albedo() property", asFUNCTION(material_get_albedo), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Material", "void set_albedo(vec4) property", asFUNCTION(material_set_albedo), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Material", "vec3 get_emissive() property", asFUNCTION(material_get_emissive), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Material", "void set_emissive(vec3) property", asFUNCTION(material_set_emissive), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Material", "float get_roughness() property", asFUNCTION(material_get_roughness), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Material", "void set_roughness(float) property", asFUNCTION(material_set_roughness), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Material", "float get_metallic() property", asFUNCTION(material_get_metallic), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Material", "void set_metallic(float) property", asFUNCTION(material_set_metallic), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Material", "float get_normal_scale() property", asFUNCTION(material_get_normal_scale), asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Material",
-            "void set_normal_scale(float) property",
-            asFUNCTION(material_set_normal_scale),
-            asCALL_CDECL_OBJLAST
-        );
-        engine->RegisterObjectMethod(
-            "Material", "void reset_overrides()", asFUNCTION(material_reset_overrides), asCALL_CDECL_OBJLAST
-        );
-
-        auto type = engine->GetTypeInfoByName("Material");
-        if (!type) {
-            spdlog::error("Failed to get type info for Material component");
-            return;
-        }
-
-        component_retrieve_map.insert({
-            type->GetTypeId(),
-            [](Scene& scene, Entity e) {
-                return scene.get_component<components::Material>(e);
-            },
-        });
-    }
-
-    register_camera_component(engine);
-    register_character_controller_component(engine);
-    register_sound_component(engine);
-    register_light_component(engine);
-    register_animation_component(engine);
 
     engine->SetDefaultNamespace("World");
     engine->RegisterGlobalFunction(
@@ -2797,6 +2546,7 @@ void ScriptSystem::register_node_type(class asIScriptEngine* engine) {
     engine->RegisterObjectMethod("Node", "bool is_valid() const", asFUNCTION(node_is_valid), asCALL_CDECL_OBJFIRST);
 
     engine->RegisterObjectMethod("Node", "T@ get_component<T>()", asFUNCTION(node_get_component), asCALL_GENERIC);
+    engine->RegisterObjectMethod("Node", "T@ add_component<T>()", asFUNCTION(node_add_component), asCALL_GENERIC);
     engine->RegisterObjectMethod("Node", "Node clone()", asFUNCTION(clone_node), asCALL_CDECL_OBJFIRST);
 
     engine->RegisterObjectMethod("Node", "Node find_child(string &in)", asFUNCTION(find_child), asCALL_CDECL_OBJFIRST);
@@ -2804,8 +2554,180 @@ void ScriptSystem::register_node_type(class asIScriptEngine* engine) {
     engine->RegisterObjectMethod("Node", "bool has_tag(string &in)", asFUNCTION(node_has_tag), asCALL_CDECL_OBJFIRST);
 }
 
-void ScriptSystem::register_camera_component(class asIScriptEngine* engine) {
-    engine->RegisterObjectType("Camera", 0, asOBJ_REF | asOBJ_NOCOUNT);
+void ScriptSystem::register_components(class asIScriptEngine* engine) {
+    engine->SetDefaultNamespace("Components");
+
+    auto register_component = [&]<typename T>(std::string name) -> bool {
+        engine->RegisterObjectType(name.c_str(), 0, asOBJ_REF | asOBJ_NOCOUNT);
+
+        auto type = engine->GetTypeInfoByName(name.c_str());
+        if (!type) {
+            spdlog::error("Failed to get type info for {} component", name);
+            return false;
+        }
+
+        component_retrieve_map.insert({
+            type->GetTypeId(),
+            [](Scene& scene, Entity e) {
+                return scene.get_component<T>(e);
+            },
+        });
+
+        component_create_map.insert({
+            type->GetTypeId(),
+            [](Scene& scene, Entity e) {
+                scene.add_component<T>(e);
+
+                return scene.get_component<T>(e);
+            },
+        });
+
+        return true;
+    };
+
+    register_component.operator()<components::Transform>("Transform");
+    engine->RegisterObjectMethod(
+        "Transform", "vec3 get_position() property", asFUNCTION(node_get_position), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Transform", "void set_position(vec3) property", asFUNCTION(node_set_position), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Transform", "float get_scale() property", asFUNCTION(node_get_scale), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Transform", "void set_scale(float) property", asFUNCTION(node_set_scale), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Transform", "quat get_rotation() property", asFUNCTION(node_get_rotation), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Transform", "void set_rotation(quat) property", asFUNCTION(node_set_rotation), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Transform", "vec3 get_world_position() property", asFUNCTION(node_get_world_position), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Transform", "float get_world_scale() property", asFUNCTION(node_get_world_scale), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Transform", "quat get_world_rotation() property", asFUNCTION(node_get_world_rotation), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Transform",
+        "vec3 transform(vec3)",
+        asFUNCTION(+[](glm::vec3 point, components::Transform* t) {
+            return rotate_quat(point, t->world_rotation) * t->world_scale + t->world_position;
+        }),
+        asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Transform",
+        "vec3 transform_translate(vec3)",
+        asFUNCTION(+[](glm::vec3 point, components::Transform* t) {
+            return point + t->world_position;
+        }),
+        asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Transform",
+        "vec3 transform_scale(vec3)",
+        asFUNCTION(+[](glm::vec3 point, components::Transform* t) {
+            return point * t->world_scale;
+        }),
+        asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Transform",
+        "vec3 transform_rotate(vec3)",
+        asFUNCTION(+[](glm::vec3 point, components::Transform* t) {
+            return rotate_quat(point, t->rotation);
+        }),
+        asCALL_CDECL_OBJLAST
+    );
+
+    register_component.operator()<components::Name>("Name");
+    engine->RegisterObjectProperty("Name", "string name", asOFFSET(components::Name, name));
+
+    register_component.operator()<components::Physics>("Physics");
+    engine->RegisterObjectMethod(
+        "Physics",
+        "void move_kinematic(vec3, quat, float)",
+        asFUNCTION(node_physics_move_kinematic),
+        asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Physics", "void set_linear_velocity(vec3)", asFUNCTION(node_physics_set_linear_velocity), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Physics",
+        "void set_angular_velocity(vec3)",
+        asFUNCTION(node_physics_set_angular_velocity),
+        asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Physics", "void set_friction(float)", asFUNCTION(node_physics_set_friction), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Physics", "void set_restitution(float)", asFUNCTION(node_physics_set_restitution), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Physics", "void set_active(bool)", asFUNCTION(node_physics_set_active), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Physics", "void set_box_body(vec3, float = 1.0f)", asFUNCTION(node_physics_set_box_body), asCALL_CDECL_OBJLAST
+    );
+
+    register_component.operator()<components::Mesh>("Mesh");
+    engine->RegisterObjectMethod("Mesh", "::Mesh@ get_mesh()", asFUNCTION(node_mesh_get_mesh), asCALL_CDECL_OBJLAST);
+
+    register_component.operator()<components::Sprite>("Sprite");
+    engine->RegisterObjectProperty("Sprite", "vec4 color", asOFFSET(components::Sprite, color));
+    engine->RegisterObjectProperty("Sprite", "vec2 pivot", asOFFSET(components::Sprite, pivot));
+    engine->RegisterObjectProperty("Sprite", "vec2 size", asOFFSET(components::Sprite, size));
+    engine->RegisterObjectProperty("Sprite", "vec4 uvs", asOFFSET(components::Sprite, uvs));
+
+    register_component.operator()<components::Text>("Text");
+    engine->RegisterObjectProperty("Text", "string text", asOFFSET(components::Text, text));
+    engine->RegisterObjectProperty("Text", "vec4 color", asOFFSET(components::Text, color));
+    engine->RegisterObjectProperty("Text", "vec2 pivot", asOFFSET(components::Text, pivot));
+
+    register_component.operator()<components::Material>("Material");
+    engine->RegisterObjectMethod(
+        "Material", "vec4 get_albedo() property", asFUNCTION(material_get_albedo), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Material", "void set_albedo(vec4) property", asFUNCTION(material_set_albedo), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Material", "vec3 get_emissive() property", asFUNCTION(material_get_emissive), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Material", "void set_emissive(vec3) property", asFUNCTION(material_set_emissive), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Material", "float get_roughness() property", asFUNCTION(material_get_roughness), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Material", "void set_roughness(float) property", asFUNCTION(material_set_roughness), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Material", "float get_metallic() property", asFUNCTION(material_get_metallic), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Material", "void set_metallic(float) property", asFUNCTION(material_set_metallic), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Material", "float get_normal_scale() property", asFUNCTION(material_get_normal_scale), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Material", "void set_normal_scale(float) property", asFUNCTION(material_set_normal_scale), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Material", "void reset_overrides()", asFUNCTION(material_reset_overrides), asCALL_CDECL_OBJLAST
+    );
+
+    register_component.operator()<components::Camera>("Camera");
     engine->RegisterObjectProperty("Camera", "float near_plane", asOFFSET(components::Camera, near_plane));
     engine->RegisterObjectProperty("Camera", "float far_plane", asOFFSET(components::Camera, far_plane));
     engine->RegisterObjectProperty("Camera", "float fov", asOFFSET(components::Camera, fov));
@@ -2817,22 +2739,7 @@ void ScriptSystem::register_camera_component(class asIScriptEngine* engine) {
     engine->RegisterObjectProperty("Camera", "CameraType type", asOFFSET(components::Camera, type));
     engine->RegisterObjectProperty("Camera", "bool is_active", asOFFSET(components::Camera, is_active));
 
-    auto type = engine->GetTypeInfoByName("Camera");
-    if (!type) {
-        spdlog::error("Failed to get type info for Camera component");
-        return;
-    }
-
-    component_retrieve_map.insert({
-        type->GetTypeId(),
-        [](Scene& scene, Entity e) {
-            return scene.get_component<components::Camera>(e);
-        },
-    });
-}
-
-void ScriptSystem::register_character_controller_component(class asIScriptEngine* engine) {
-    engine->RegisterObjectType("CharacterController", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    register_component.operator()<components::CharacterController>("CharacterController");
     engine->RegisterObjectProperty(
         "CharacterController", "const float height", asOFFSET(components::CharacterController, height)
     );
@@ -2866,22 +2773,7 @@ void ScriptSystem::register_character_controller_component(class asIScriptEngine
         "CharacterController", "vec3 ground_normal", asOFFSET(components::CharacterController, ground_normal)
     );
 
-    auto type = engine->GetTypeInfoByName("CharacterController");
-    if (!type) {
-        spdlog::error("Failed to get type info for CharacterController component");
-        return;
-    }
-
-    component_retrieve_map.insert({
-        type->GetTypeId(),
-        [](Scene& scene, Entity e) {
-            return scene.get_component<components::CharacterController>(e);
-        },
-    });
-}
-
-void ScriptSystem::register_sound_component(class asIScriptEngine* engine) {
-    engine->RegisterObjectType("Sound", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    register_component.operator()<components::Sound>("Sound");
     engine->RegisterObjectProperty("Sound", "float volume", asOFFSET(components::Sound, volume));
     engine->RegisterObjectProperty("Sound", "float pitch", asOFFSET(components::Sound, pitch));
     engine->RegisterObjectProperty("Sound", "float min_distance", asOFFSET(components::Sound, min_distance));
@@ -2895,22 +2787,7 @@ void ScriptSystem::register_sound_component(class asIScriptEngine* engine) {
     engine->RegisterObjectMethod("Sound", "void play()", asFUNCTION(component_play_sound), asCALL_CDECL_OBJFIRST);
     engine->RegisterObjectMethod("Sound", "void stop()", asFUNCTION(component_stop_sound), asCALL_CDECL_OBJFIRST);
 
-    auto type = engine->GetTypeInfoByName("Sound");
-    if (!type) {
-        spdlog::error("Failed to get type info for Sound component");
-        return;
-    }
-
-    component_retrieve_map.insert({
-        type->GetTypeId(),
-        [](Scene& scene, Entity e) {
-            return scene.get_component<components::Sound>(e);
-        },
-    });
-}
-
-void ScriptSystem::register_light_component(class asIScriptEngine* engine) {
-    engine->RegisterObjectType("Light", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    register_component.operator()<components::Light>("Light");
     engine->RegisterObjectProperty(
         "Light", "float radius", asOFFSET(components::Light, light) + asOFFSET(Light, radius)
     );
@@ -2937,22 +2814,7 @@ void ScriptSystem::register_light_component(class asIScriptEngine* engine) {
         "Light", "bool enabled", asOFFSET(components::Light, light) + asOFFSET(Light, enabled)
     );
 
-    auto type = engine->GetTypeInfoByName("Light");
-    if (!type) {
-        spdlog::error("Failed to get type info for Light component");
-        return;
-    }
-
-    component_retrieve_map.insert({
-        type->GetTypeId(),
-        [](Scene& scene, Entity e) {
-            return scene.get_component<components::Light>(e);
-        },
-    });
-}
-
-void ScriptSystem::register_animation_component(class asIScriptEngine* engine) {
-    engine->RegisterObjectType("SkeletalAnimation", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    register_component.operator()<components::SkeletalAnimation>("SkeletalAnimation");
     engine->RegisterObjectProperty("SkeletalAnimation", "float speed", asOFFSET(components::SkeletalAnimation, speed));
     engine->RegisterObjectProperty(
         "SkeletalAnimation", "bool looping", asOFFSET(components::SkeletalAnimation, looping)
@@ -2971,54 +2833,11 @@ void ScriptSystem::register_animation_component(class asIScriptEngine* engine) {
         "SkeletalAnimation", "bool is_finished()", asFUNCTION(component_is_animation_finished), asCALL_CDECL_OBJFIRST
     );
 
-    auto type = engine->GetTypeInfoByName("SkeletalAnimation");
-    if (!type) {
-        spdlog::error("Failed to get type info for SkeletalAnimation component");
-        return;
-    }
-
-    component_retrieve_map.insert({
-        type->GetTypeId(),
-        [](Scene& scene, Entity e) {
-            return scene.get_component<components::SkeletalAnimation>(e);
-        },
-    });
-}
-
-void ScriptSystem::register_directional_light_component(class asIScriptEngine* engine) {
-    engine->RegisterObjectType("DirectionalLight", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    register_component.operator()<components::DirectionalLight>("DirectionalLight");
     engine->RegisterObjectProperty("DirectionalLight", "bool enabled", asOFFSET(components::DirectionalLight, enabled));
     engine->RegisterObjectProperty("DirectionalLight", "vec4 color", asOFFSET(components::DirectionalLight, color));
 
-    auto type = engine->GetTypeInfoByName("DirectionalLight");
-    if (!type) {
-        spdlog::error("Failed to get type info for Directional Light component");
-        return;
-    }
-
-    component_retrieve_map.insert({
-        type->GetTypeId(),
-        [](Scene& scene, Entity e) {
-            return scene.get_component<components::DirectionalLight>(e);
-        },
-    });
-}
-
-void ScriptSystem::register_sky_component(class asIScriptEngine* engine) {
-    engine->RegisterObjectType("Sky", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    register_component.operator()<components::Sky>("Sky");
     engine->RegisterObjectProperty("Sky", "vec4 top_hemisphere", asOFFSET(components::Sky, top_hemisphere_color));
     engine->RegisterObjectProperty("Sky", "vec4 bottom_hemisphere", asOFFSET(components::Sky, bottom_hemisphere_color));
-
-    auto type = engine->GetTypeInfoByName("Sky");
-    if (!type) {
-        spdlog::error("Failed to get type info for Sky component");
-        return;
-    }
-
-    component_retrieve_map.insert({
-        type->GetTypeId(),
-        [](Scene& scene, Entity e) {
-            return scene.get_component<components::Sky>(e);
-        },
-    });
 }
