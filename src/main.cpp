@@ -762,6 +762,8 @@ int main(int argc, char* argv[]) {
                 // Entering play state
                 editor_overlay = false;
 
+                world.script.reload_scripts();
+
                 if (scene_history.snapshot_count() == 0) {
                     scene_history.create_snapshot(world);
                 }
