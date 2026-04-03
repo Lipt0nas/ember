@@ -67,6 +67,7 @@ public:
     void call_on_fixed_update(const components::Script& script, float delta);
 
     friend void node_get_component(class asIScriptGeneric* gen);
+    friend void node_add_component(class asIScriptGeneric* gen);
 
 private:
     struct EventSubscription {
@@ -104,13 +105,8 @@ private:
     std::string prelude_code;
 
     std::unordered_map<int, std::function<void*(Scene& scene, Entity e)>> component_retrieve_map;
+    std::unordered_map<int, std::function<void*(Scene& scene, Entity e)>> component_create_map;
 
     void register_node_type(class asIScriptEngine* engine);
-    void register_camera_component(class asIScriptEngine* engine);
-    void register_character_controller_component(class asIScriptEngine* engine);
-    void register_sound_component(class asIScriptEngine* engine);
-    void register_light_component(class asIScriptEngine* engine);
-    void register_animation_component(class asIScriptEngine* engine);
-    void register_directional_light_component(class asIScriptEngine* engine);
-    void register_sky_component(class asIScriptEngine* engine);
+    void register_components(class asIScriptEngine* engine);
 };
