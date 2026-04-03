@@ -513,6 +513,18 @@ int main(int argc, char* argv[]) {
                         gameplay_camera.type        = c.type;
                         gameplay_camera.position    = t.world_position;
                         gameplay_camera.orientation = t.world_rotation;
+
+                        world.renderer.composite_push_constants.enable_auto_exposure  = !c.manual_exposure;
+                        world.renderer.composite_push_constants.exposure_compensation = c.ev_compensation;
+                        world.renderer.composite_push_constants.min_ev100             = c.min_ev100;
+                        world.renderer.composite_push_constants.max_ev100             = c.max_ev100;
+                        world.renderer.adaption_speed                                 = c.adaption_speed;
+                        world.renderer.camera_aperture                                = c.aperture;
+                        world.renderer.camera_shutter_time                            = c.shutter_time;
+                        world.renderer.camera_iso                                     = c.iso;
+                        world.renderer.min_log_lum                                    = c.min_log_luminance;
+                        world.renderer.max_log_lum                                    = c.max_log_luminance;
+
                         update_camera(gameplay_camera);
 
                         camera = &gameplay_camera;
@@ -1232,11 +1244,51 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                float shutter_log = -log2f(world.renderer.camera_shutter_time);
-                if (ImGui::SliderFloat(
-                        "Shutter Speed", &shutter_log, 0.0f, 13.0f, "1/%.0f", ImGuiSliderFlags_Logarithmic
+                static const float shutter_speeds[] = {
+                    1 / 4000.f,
+                    1 / 2000.f,
+                    1 / 1000.f,
+                    1 / 500.f,
+                    1 / 250.f,
+                    1 / 125.f,
+                    1 / 60.f,
+                    1 / 30.f,
+                    1 / 15.f,
+                    1 / 8.f,
+                    1 / 4.f,
+                    1 / 2.f,
+                    1.0f
+                };
+                static const char* shutter_labels[] = {
+                    "1/4000",
+                    "1/2000",
+                    "1/1000",
+                    "1/500",
+                    "1/250",
+                    "1/125",
+                    "1/60",
+                    "1/30",
+                    "1/15",
+                    "1/8",
+                    "1/4",
+                    "1/2",
+                    "1\""
+                };
+                static const int shutter_count = 13;
+
+                int   shutter_idx = 0;
+                float min_diff    = FLT_MAX;
+                for (int i = 0; i < shutter_count; i++) {
+                    float diff = fabsf(log2f(shutter_speeds[i]) - log2f(world.renderer.camera_shutter_time));
+                    if (diff < min_diff) {
+                        min_diff    = diff;
+                        shutter_idx = i;
+                    }
+                }
+                if (ImGui::SliderInt(
+                        "Shutter Speed", &shutter_idx, 0, shutter_count - 1, shutter_labels[shutter_idx]
                     )) {
-                    world.renderer.camera_shutter_time = powf(2.0f, -shutter_log);
+                    world.renderer.camera_shutter_time = shutter_speeds[shutter_idx];
                 }
 
                 ImGui::SliderFloat(
@@ -1244,7 +1296,7 @@ int main(int argc, char* argv[]) {
                 );
             } else {
                 ImGui::SliderFloat("Min Log Luminance", &world.renderer.min_log_lum, -16.0f, 0.0f, "%.1f");
-                ImGui::SliderFloat("Max Log Luminance", &world.renderer.max_log_lum, 1.0f, 8.0f, "%.1f");
+                ImGui::SliderFloat("Max Log Luminance", &world.renderer.max_log_lum, 0.0f, 16.0f, "%.1f");
 
                 ImGui::SliderFloat(
                     "Min EV100", &world.renderer.composite_push_constants.min_ev100, -10.0f, 10.0f, "%.1f"

@@ -422,6 +422,10 @@ template <> bool Editor::render_component_ui<components::Camera>(Entity e) {
 
     auto* c = world->scene.get_component<components::Camera>(e);
 
+    if (ImGui::Checkbox("Active", &c->is_active)) {
+        edited = true;
+    }
+
     ImGui::InputFloat("Near Plane", &c->near_plane);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
@@ -446,8 +450,74 @@ template <> bool Editor::render_component_ui<components::Camera>(Entity e) {
     ImGui::InputFloat("Ortho Size", &c->ortho_size);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    if (ImGui::Checkbox("Active", &c->is_active)) {
-        edited = true;
+    if (ImGui::Checkbox("Manual Exposure", (bool*)&c->manual_exposure)) {
+        edited |= true;
+    }
+
+    ImGui::SliderFloat("EV Compensation", &c->ev_compensation, -3.0f, 3.0f, "%.2f EV");
+
+    if (c->manual_exposure) {
+        ImGui::Separator();
+        ImGui::Text("Manual Exposure Settings");
+
+        if (ImGui::SliderFloat("Aperture", &c->aperture, 1.0f, 22.0f, "f/%.1f")) {
+            const float f_stops[] = {1.4f, 2.0f, 2.8f, 4.0f, 5.6f, 8.0f, 11.0f, 16.0f, 22.0f};
+            float       closest   = f_stops[0];
+            float       min_dist  = fabsf(c->aperture - closest);
+            for (float stop : f_stops) {
+                float dist = fabsf(c->aperture - stop);
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    closest  = stop;
+                }
+            }
+            if (min_dist < 0.2f) {
+                c->aperture = closest;
+            }
+        }
+
+        static const float shutter_speeds[] = {
+            1 / 4000.f,
+            1 / 2000.f,
+            1 / 1000.f,
+            1 / 500.f,
+            1 / 250.f,
+            1 / 125.f,
+            1 / 60.f,
+            1 / 30.f,
+            1 / 15.f,
+            1 / 8.f,
+            1 / 4.f,
+            1 / 2.f,
+            1.0f
+        };
+        static const char* shutter_labels[] = {
+            "1/4000", "1/2000", "1/1000", "1/500", "1/250", "1/125", "1/60", "1/30", "1/15", "1/8", "1/4", "1/2", "1\""
+        };
+        static const int shutter_count = 13;
+
+        int   shutter_idx = 0;
+        float min_diff    = FLT_MAX;
+        for (int i = 0; i < shutter_count; i++) {
+            float diff = fabsf(log2f(shutter_speeds[i]) - log2f(c->shutter_time));
+            if (diff < min_diff) {
+                min_diff    = diff;
+                shutter_idx = i;
+            }
+        }
+
+        if (ImGui::SliderInt("Shutter Speed", &shutter_idx, 0, shutter_count - 1, shutter_labels[shutter_idx])) {
+            c->shutter_time = shutter_speeds[shutter_idx];
+        }
+
+        ImGui::SliderFloat("ISO", &c->iso, 100.0f, 6400.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+    } else {
+        ImGui::SliderFloat("Min Log Luminance", &c->min_log_luminance, -16.0f, 0.0f, "%.1f");
+        ImGui::SliderFloat("Max Log Luminance", &c->max_log_luminance, 0.0f, 16.0f, "%.1f");
+
+        ImGui::SliderFloat("Min EV100", &c->min_ev100, -10.0f, 10.0f, "%.1f");
+        ImGui::SliderFloat("Max EV100", &c->max_ev100, -5.0f, 20.0f, "%.1f");
+        ImGui::SliderFloat("Adaptation Speed", &c->adaption_speed, 0.1f, 10.0f, "%.1f");
     }
 
     return edited;

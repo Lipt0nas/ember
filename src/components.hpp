@@ -153,6 +153,22 @@ namespace components {
         CameraType type = CameraType::PERSPECTIVE;
 
         bool is_active = false;
+
+        float ev_compensation = 0.0f;
+        bool  manual_exposure = false;
+
+        // Manual exposure settings
+        float aperture     = 8.0f;
+        float shutter_time = 1.0f / 60.0f;
+        float iso          = 100.0f;
+
+        // Automatic exposure settings
+        float min_log_luminance = 2.0f;
+        float max_log_luminance = 14.0f;
+        float adaption_speed    = 1.24f;
+
+        float min_ev100 = -2.0f;
+        float max_ev100 = 16.0f;
     };
 
     struct CharacterController {
@@ -339,7 +355,17 @@ namespace components {
                 cereal::make_nvp("viewport_height", camera.viewport_height),
                 cereal::make_nvp("ortho_size", camera.ortho_size),
                 cereal::make_nvp("type", camera.type),
-                cereal::make_nvp("is_active", camera.is_active)
+                cereal::make_nvp("is_active", camera.is_active),
+                cereal::make_nvp("ev_compensation", camera.ev_compensation),
+                cereal::make_nvp("manual_exposure", camera.manual_exposure),
+                cereal::make_nvp("aperture", camera.aperture),
+                cereal::make_nvp("shutter_time", camera.shutter_time),
+                cereal::make_nvp("iso", camera.iso),
+                cereal::make_nvp("min_log_luminance", camera.min_log_luminance),
+                cereal::make_nvp("max_log_luminance", camera.max_log_luminance),
+                cereal::make_nvp("adaption_speed", camera.adaption_speed),
+                cereal::make_nvp("min_ev100", camera.min_ev100),
+                cereal::make_nvp("max_ev100", camera.max_ev100)
             );
         } else {
             archive(
@@ -352,7 +378,17 @@ namespace components {
                 camera.viewport_height,
                 camera.ortho_size,
                 camera.type,
-                camera.is_active
+                camera.is_active,
+                camera.ev_compensation,
+                camera.manual_exposure,
+                camera.aperture,
+                camera.shutter_time,
+                camera.iso,
+                camera.min_log_luminance,
+                camera.max_log_luminance,
+                camera.adaption_speed,
+                camera.min_ev100,
+                camera.max_ev100
             );
         }
     }
