@@ -29,25 +29,30 @@ shared uint shared_histogram[256];
 void main() {
     uint local_index = gl_LocalInvocationIndex;
 
-    uint count = luminance[local_index];
-    shared_histogram[local_index] = count * local_index;
+    shared_histogram[local_index] = luminance[local_index];
+    luminance[local_index] = 0;
 
     barrier();
 
-    luminance[local_index] = 0;
-
-    for (uint cutoff = (256 >> 1); cutoff > 0; cutoff >>= 1) {
-        if (uint(local_index) < cutoff) {
-            shared_histogram[local_index] += shared_histogram[local_index + cutoff];
-        }
-        barrier();
-    }
-
     if (local_index == 0) {
-        float weighted_bin_avg = (shared_histogram[0] / max(push.pixel_count - float(count), 1.0)) - 1.0;
+        float total_valid = 0.0;
+        for (uint i = 1; i < 256; i++) {
+            total_valid += float(shared_histogram[i]);
+        }
 
-        float normalized = weighted_bin_avg / 254.0;
+        float target = total_valid * 0.7;
+        float accumulated = 0.0;
+        uint target_bin = 1;
 
+        for (uint i = 1; i < 256; i++) {
+            accumulated += float(shared_histogram[i]);
+            if (accumulated >= target) {
+                target_bin = i;
+                break;
+            }
+        }
+
+        float normalized = float(target_bin - 1) / 254.0;
         float log_luminance = normalized / push.inverse_log2_luminance + push.min_log2_luminance;
         float weighted_avg_lum = exp2(log_luminance);
 

@@ -47,9 +47,14 @@ void main() {
 
     if (gl_GlobalInvocationID.x < dim.x && gl_GlobalInvocationID.y < dim.y) {
         vec3 color = imageLoad(scene, ivec2(gl_GlobalInvocationID.xy)).xyz;
-        uint bin_index = color_to_bin(color, push.min_log2_luminance, push.inverse_log2_luminance);
 
-        atomicAdd(shared_histogram[bin_index], 1);
+        vec2 uv = (vec2(gl_GlobalInvocationID.xy) + 0.5) / vec2(dim);
+        vec2 offset = uv - 0.5;
+        float weight = 1.0 - smoothstep(0.0, 0.5, length(offset));
+        uint weighted_count = max(uint(weight * 255.0 + 0.5), 1u);
+
+        uint bin_index = color_to_bin(color, push.min_log2_luminance, push.inverse_log2_luminance);
+        atomicAdd(shared_histogram[bin_index], weighted_count);
     }
 
     barrier();
