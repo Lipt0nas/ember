@@ -17,6 +17,7 @@
 #include <imgui_impl_vulkan.h>
 #include <imgui_node_editor.h>
 #include <implot.h>
+#include <spdlog/sinks/base_sink.h>
 #include <spdlog/spdlog.h>
 
 #include <meshoptimizer.h>
