@@ -227,3 +227,430 @@ bool imgui_splitter(
         bb, id, split_vertically ? ImGuiAxis_X : ImGuiAxis_Y, size1, size2, min_size1, min_size2, 0.0f
     );
 }
+
+static ImVec4 color_for_level(spdlog::level::level_enum level) {
+    switch (level) {
+    case spdlog::level::trace:
+        return {0.40f, 0.40f, 0.40f, 1.00f};
+    case spdlog::level::debug:
+        return {0.60f, 0.80f, 1.00f, 1.00f};
+    case spdlog::level::info:
+        return {0.50f, 0.90f, 0.40f, 1.00f};
+    case spdlog::level::warn:
+        return {1.00f, 0.80f, 0.00f, 1.00f};
+    case spdlog::level::err:
+        return {1.00f, 0.30f, 0.30f, 1.00f};
+    case spdlog::level::critical:
+        return {1.00f, 0.20f, 0.80f, 1.00f};
+    default:
+        return {0.90f, 0.90f, 0.90f, 1.00f};
+    }
+}
+
+imgui_console::imgui_console() : ring(std::make_shared<log_ring_buffer>()) {
+    register_command("help", "List all registered commands", [this](std::vector<std::string>) {
+        add_log("Available commands:", spdlog::level::info);
+        for (const auto& cmd : commands) {
+            std::string line = "  " + cmd.name;
+            if (!cmd.description.empty()) {
+                line += "  —  " + cmd.description;
+            }
+            add_log(line, spdlog::level::info);
+        }
+    });
+
+    register_command("clear", "Clear the console", [this](std::vector<std::string>) {
+        ring->clear();
+        render_entries.clear();
+        last_fetched_id = 0;
+    });
+
+    register_command("history", "Show command history", [this](std::vector<std::string>) {
+        for (std::size_t i = 0; i < history.size(); ++i) {
+            add_log(std::to_string(i) + ": " + history[i], spdlog::level::info);
+        }
+    });
+}
+
+void imgui_console::attach_logger(std::shared_ptr<spdlog::logger> logger) {
+    auto sink = std::make_shared<imgui_console_sink_mt>(ring);
+    logger->sinks().push_back(std::move(sink));
+}
+
+void imgui_console::register_command(
+    const std::string&                            name,
+    const std::string&                            description,
+    std::function<void(std::vector<std::string>)> callback,
+    arg_completer_fn                              arg_completer
+) {
+    for (auto& cmd : commands) {
+        if (cmd.name == name) {
+            cmd.description   = description;
+            cmd.callback      = std::move(callback);
+            cmd.arg_completer = std::move(arg_completer);
+            return;
+        }
+    }
+    commands.push_back({name, description, std::move(callback), std::move(arg_completer)});
+}
+
+void imgui_console::add_log(const std::string& text, spdlog::level::level_enum level) {
+    ring->push({text, level, 0});
+    scroll_to_bottom = true;
+}
+
+bool imgui_console::draw(const char* title, bool* p_open) {
+    {
+        std::vector<log_entry> fresh;
+        uint64_t               new_id = ring->fetch_since(last_fetched_id, fresh);
+        if (!fresh.empty()) {
+            for (auto& e : fresh) {
+                render_entries.push_back(std::move(e));
+            }
+            last_fetched_id  = new_id;
+            scroll_to_bottom = true;
+        }
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(720, 420), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin(title, p_open)) {
+        ImGui::End();
+        return p_open ? *p_open : true;
+    }
+
+    filter.Draw("Filter", 200.0f);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear")) {
+        ring->clear();
+        render_entries.clear();
+        last_fetched_id = 0;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Scroll to bottom")) {
+        scroll_to_bottom = true;
+    }
+    ImGui::Separator();
+
+    draw_log_region();
+    ImGui::Separator();
+    draw_input_bar();
+
+    ImGui::End();
+    return p_open ? *p_open : true;
+}
+
+void imgui_console::draw_log_region() {
+    const float footer_h = ImGui::GetStyle().ItemSpacing.y + ImGui::GetFrameHeightWithSpacing();
+
+    ImGui::BeginChild("##log", ImVec2(0.0f, -footer_h), false, ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 1.0f));
+
+    static const char* k_level_tags[] = {"[trace]", "[debug]", "[info]", "[warning]", "[error]", "[critical]", "[off]"};
+
+    const ImVec4 col_default = {0.90f, 0.90f, 0.90f, 1.00f};
+
+    for (const auto& entry : render_entries) {
+        if (!filter.PassFilter(entry.text.c_str())) {
+            continue;
+        }
+
+        const char* p = entry.text.c_str();
+
+        while (*p == '[') {
+            const char* close = strchr(p, ']');
+            if (!close) {
+                break;
+            }
+
+            bool is_level_tag = false;
+            for (const char* tag : k_level_tags) {
+                const std::size_t tag_len = strlen(tag);
+                if (strncmp(p, tag, tag_len) == 0) {
+                    is_level_tag = true;
+                    break;
+                }
+            }
+
+            const ImVec4& col = is_level_tag ? color_for_level(entry.level) : col_default;
+            ImGui::PushStyleColor(ImGuiCol_Text, col);
+            ImGui::TextUnformatted(p, close + 1);
+            ImGui::PopStyleColor();
+
+            p = close + 1;
+            while (*p == ' ') {
+                ++p;
+            }
+            ImGui::SameLine(0.0f, *p == '[' ? 4.0f : 4.0f);
+        }
+
+        if (*p != '\0') {
+            ImGui::PushStyleColor(ImGuiCol_Text, col_default);
+            ImGui::TextUnformatted(p);
+            ImGui::PopStyleColor();
+        }
+    }
+
+    if (scroll_to_bottom || ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+        ImGui::SetScrollHereY(1.0f);
+        scroll_to_bottom = false;
+    }
+
+    ImGui::PopStyleVar();
+    ImGui::EndChild();
+}
+
+void imgui_console::draw_input_bar() {
+    bool reclaim_focus = false;
+
+    constexpr ImGuiInputTextFlags input_flags =
+        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_EscapeClearsAll |
+        ImGuiInputTextFlags_CallbackCompletion | ImGuiInputTextFlags_CallbackHistory;
+
+    ImGui::SetNextItemWidth(-1.0f);
+
+    if (ImGui::InputText("##input", input_buf, IM_ARRAYSIZE(input_buf), input_flags, &input_text_callback_stub, this)) {
+        const std::string raw(input_buf);
+        if (!raw.empty()) {
+            add_log("> " + raw, spdlog::level::debug);
+            execute_command(raw);
+
+            if (history.empty() || history.back() != raw) {
+                if (static_cast<int>(history.size()) >= k_history_max) {
+                    history.erase(history.begin());
+                }
+                history.push_back(raw);
+            }
+            history_pos = -1;
+        }
+        input_buf[0]      = '\0';
+        reclaim_focus     = true;
+        autocomplete_open = false;
+    }
+
+    input_rect_min = ImGui::GetItemRectMin();
+
+    ImGui::SetItemDefaultFocus();
+    if (reclaim_focus) {
+        ImGui::SetKeyboardFocusHere(-1);
+    }
+
+    if (autocomplete_open && !candidates.empty()) {
+        draw_autocomplete_popup();
+    }
+
+    if (autocomplete_open && !ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+        autocomplete_open = false;
+    }
+}
+
+void imgui_console::draw_autocomplete_popup() {
+    const int    visible_rows = std::min(static_cast<int>(candidates.size()), 8);
+    const float  row_h        = ImGui::GetTextLineHeightWithSpacing();
+    const float  popup_h      = visible_rows * row_h + ImGui::GetStyle().WindowPadding.y * 2.0f;
+    const ImVec2 popup_pos    = {input_rect_min.x, input_rect_min.y - popup_h - 2.0f};
+
+    ImGui::SetNextWindowPos(popup_pos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({320.0f, popup_h}, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.92f);
+
+    constexpr ImGuiWindowFlags popup_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+                                             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+
+    if (!ImGui::Begin("##autocomplete", nullptr, popup_flags)) {
+        ImGui::End();
+        return;
+    }
+
+    for (int i = 0; i < static_cast<int>(candidates.size()); ++i) {
+        const bool selected = (i == candidate_sel);
+        ImGui::PushID(i);
+        if (ImGui::Selectable(candidates[i].c_str(), selected, ImGuiSelectableFlags_None, {0.0f, row_h})) {
+            strncpy(
+                input_buf + complete_token_start,
+                candidates[i].c_str(),
+                IM_ARRAYSIZE(input_buf) - complete_token_start - 1
+            );
+            input_buf[IM_ARRAYSIZE(input_buf) - 1] = '\0';
+            autocomplete_open                      = false;
+            ImGui::SetKeyboardFocusHere(-1);
+        }
+        if (selected)
+            ImGui::SetScrollHereY();
+        ImGui::PopID();
+    }
+
+    ImGui::End();
+}
+
+void imgui_console::execute_command(const std::string& raw) {
+    auto tokens = tokenise(raw);
+    if (tokens.empty()) {
+        return;
+    }
+
+    for (const auto& cmd : commands) {
+        if (cmd.name == tokens[0]) {
+            std::vector<std::string> args(tokens.begin() + 1, tokens.end());
+            cmd.callback(std::move(args));
+            return;
+        }
+    }
+
+    add_log("Unknown command: '" + tokens[0] + "'", spdlog::level::warn);
+}
+
+std::vector<std::string> imgui_console::tokenise(const std::string& line) {
+    std::vector<std::string> tokens;
+    std::string              token;
+    bool                     in_quotes = false;
+
+    for (char c : line) {
+        if (c == '"') {
+            in_quotes = !in_quotes;
+        } else if (c == ' ' && !in_quotes) {
+            if (!token.empty()) {
+                tokens.push_back(token);
+                token.clear();
+            }
+        } else {
+            token += c;
+        }
+    }
+    if (!token.empty()) {
+        tokens.push_back(token);
+    }
+
+    return tokens;
+}
+
+void imgui_console::refresh_candidates() {
+    candidates.clear();
+    candidate_sel = 0;
+
+    const std::string buf(input_buf);
+
+    const std::size_t space_pos = buf.rfind(' ');
+    const bool        has_space = (space_pos != std::string::npos);
+
+    if (!has_space) {
+        complete_token_start      = 0;
+        const std::string& prefix = buf;
+        if (prefix.empty()) {
+            return;
+        }
+
+        for (const auto& cmd : commands)
+            if (cmd.name.rfind(prefix, 0) == 0) {
+                candidates.push_back(cmd.name);
+            }
+    } else {
+        complete_token_start         = static_cast<int>(space_pos) + 1;
+        const std::string cmd_name   = buf.substr(0, buf.find(' '));
+        const std::string arg_prefix = buf.substr(space_pos + 1);
+
+        const console_command* found_cmd = nullptr;
+        for (const auto& cmd : commands) {
+            if (cmd.name == cmd_name) {
+                found_cmd = &cmd;
+                break;
+            }
+        }
+
+        if (!found_cmd || !found_cmd->arg_completer) {
+            return;
+        }
+
+        candidates = found_cmd->arg_completer(arg_prefix);
+
+        candidates.erase(
+            std::remove_if(
+                candidates.begin(),
+                candidates.end(),
+                [&arg_prefix](const std::string& s) {
+                    return s.rfind(arg_prefix, 0) != 0;
+                }
+            ),
+            candidates.end()
+        );
+    }
+
+    std::sort(candidates.begin(), candidates.end());
+}
+
+void imgui_console::apply_candidate(int index, ImGuiInputTextCallbackData* data) {
+    assert(index >= 0 && index < static_cast<int>(candidates_.size()));
+    const std::string& chosen = candidates[index];
+
+    data->DeleteChars(complete_token_start, data->BufTextLen - complete_token_start);
+    data->InsertChars(complete_token_start, chosen.c_str());
+}
+
+int imgui_console::input_text_callback_stub(ImGuiInputTextCallbackData* data) {
+    return static_cast<imgui_console*>(data->UserData)->input_text_callback(data);
+}
+
+int imgui_console::input_text_callback(ImGuiInputTextCallbackData* data) {
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackCompletion) {
+        if (autocomplete_open && !candidates.empty()) {
+            candidate_sel = (candidate_sel + 1) % static_cast<int>(candidates.size());
+            apply_candidate(candidate_sel, data);
+            return 0;
+        }
+
+        refresh_candidates();
+
+        if (candidates.empty()) {
+        } else if (candidates.size() == 1) {
+            apply_candidate(0, data);
+            autocomplete_open = false;
+        } else {
+            std::string common = candidates[0];
+            for (std::size_t i = 1; i < candidates.size(); ++i) {
+                std::size_t j = 0;
+                while (j < common.size() && j < candidates[i].size() && common[j] == candidates[i][j])
+                    ++j;
+                common = common.substr(0, j);
+            }
+
+            const std::string current_token(data->Buf + complete_token_start, data->BufTextLen - complete_token_start);
+            if (common.size() > current_token.size()) {
+                data->DeleteChars(complete_token_start, data->BufTextLen - complete_token_start);
+                data->InsertChars(complete_token_start, common.c_str());
+            }
+
+            autocomplete_open = true;
+            candidate_sel     = 0;
+        }
+
+        return 0;
+    }
+
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackHistory) {
+        autocomplete_open = false;
+
+        const int prev_pos = history_pos;
+
+        if (data->EventKey == ImGuiKey_UpArrow) {
+            if (history_pos == -1) {
+                history_pos = static_cast<int>(history.size()) - 1;
+            } else if (history_pos > 0) {
+                --history_pos;
+            }
+        } else if (data->EventKey == ImGuiKey_DownArrow) {
+            if (history_pos != -1 && ++history_pos >= static_cast<int>(history.size())) {
+                history_pos = -1;
+            }
+        }
+
+        if (prev_pos != history_pos) {
+            const char* entry = (history_pos >= 0) ? history[history_pos].c_str() : "";
+            data->DeleteChars(0, data->BufTextLen);
+            data->InsertChars(0, entry);
+        }
+
+        return 0;
+    }
+
+    return 0;
+}

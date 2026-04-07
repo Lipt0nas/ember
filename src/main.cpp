@@ -291,6 +291,11 @@ int main(int argc, char* argv[]) {
     std::string project_path = args.get_arg<std::string>("project", "");
 
     spdlog::set_level(debug ? spdlog::level::debug : spdlog::level::info);
+
+    imgui_console console;
+    console.attach_logger(spdlog::default_logger());
+    spdlog::default_logger()->sinks().back()->set_pattern("[%H:%M:%S.%e] [%^%l%$] %v");
+
     spdlog::info("Starting ember");
 
     spdlog::info("Initializing SDL");
@@ -1092,6 +1097,8 @@ int main(int argc, char* argv[]) {
         if (editor.render_performance_window(pass_timings)) {
             scene_history.create_snapshot(world);
         }
+
+        console.draw(ICON_FA_TERMINAL " Console");
 
         ImGui::Begin(ICON_FA_COGS " Configuration");
         ImGui::InputInt("Simulate Target FPS", &simulated_fps);
