@@ -540,7 +540,10 @@ template <> bool Editor::render_component_ui<components::CharacterController>(En
     ImGui::DragFloat("Step Up Height", &c->step_up_height, 0.1f, 0.01f);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::DragFloat("Max Slow Angle", &c->max_slope_angle, 0.1f, 0.01f);
+    ImGui::DragFloat("Max Slope Angle", &c->max_slope_angle, 0.1f, 0.01f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::DragFloat("Gravity Scale", &c->gravity_scale, 0.1f, 0.01f);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     if (ImGui::Checkbox("Enhanced Edge Removal", &c->enhanced_edge_removal)) {

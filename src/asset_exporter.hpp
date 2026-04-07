@@ -3,16 +3,9 @@
 #include "asset.hpp"
 #include "ember.hpp"
 #include "resources.hpp"
+#include "serialization.hpp"
 
 #include "particle_editor.hpp"
-
-template <typename Archive> void serialize(Archive& archive, ImVec2& vec) {
-    if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-        archive(cereal::make_nvp("x", vec.x), cereal::make_nvp("y", vec.y));
-    } else {
-        archive(vec.x, vec.y);
-    }
-}
 
 class AssetExporter {
 public:

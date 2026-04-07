@@ -6,34 +6,12 @@
 #include "geometry.hpp"
 #include "particle_editor.hpp"
 #include "physics.hpp"
+#include "serialization.hpp"
 #include "sound_system.hpp"
 
 #include <memory>
 #include <variant>
 #include <vector>
-
-#include <cereal/cereal.hpp>
-#include <cereal/types/optional.hpp>
-#include <cereal/types/string.hpp>
-#include <cereal/types/unordered_map.hpp>
-#include <cereal/types/variant.hpp>
-#include <cereal/types/vector.hpp>
-
-namespace JPH {
-    template <typename Archive> void serialize(Archive& archive, BodyID& body) {
-        uint32_t id = body.GetIndexAndSequenceNumber();
-
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("id", body.GetIndexAndSequenceNumber()));
-        } else {
-            archive(id);
-        }
-
-        if constexpr (Archive::is_loading::value) {
-            body = JPH::BodyID(id);
-        }
-    }
-} // namespace JPH
 
 struct ScriptProperty {
     std::variant<bool, int, float, std::string, glm::vec2, glm::vec3, glm::vec4, glm::quat> value;
@@ -73,13 +51,9 @@ struct MaterialOverrides {
 };
 
 template <typename Archive> void serialize(Archive& archive, ScriptInstance& script) {
-    if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-        archive(
-            cereal::make_nvp("id", script.script_id), cereal::make_nvp("property_overrides", script.property_overrides)
-        );
-    } else {
-        archive(script.script_id, script.property_overrides);
-    }
+    archive(
+        cereal::make_nvp("id", script.script_id), cereal::make_nvp("property_overrides", script.property_overrides)
+    );
 }
 
 namespace components {
@@ -178,6 +152,7 @@ namespace components {
         float step_down_distance    = 0.5f;
         float step_up_height        = 0.4f;
         float max_slope_angle       = 45.0f;
+        float gravity_scale         = 1.0f;
         bool  enhanced_edge_removal = true;
 
         uint32_t collision_layer = 0;
@@ -266,271 +241,151 @@ namespace components {
     };
 
     template <typename Archive> void serialize(Archive& archive, Transform& transform) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("position", transform.position),
-                cereal::make_nvp("scale", transform.scale),
-                cereal::make_nvp("rotation", transform.rotation)
-            );
-        } else {
-            archive(transform.position, transform.scale, transform.rotation);
-        }
+        archive(
+            cereal::make_nvp("position", transform.position),
+            cereal::make_nvp("scale", transform.scale),
+            cereal::make_nvp("rotation", transform.rotation)
+        );
     }
 
     template <typename Archive> void serialize(Archive& archive, Name& name) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("name", name.name));
-        } else {
-            archive(name.name);
-        }
+        archive(cereal::make_nvp("name", name.name));
     }
 
     template <typename Archive> void serialize(Archive& archive, Material& mat) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("id", mat.id), cereal::make_nvp("overrides", mat.overrides));
-        } else {
-            archive(mat.id, mat.overrides);
-        }
+        archive(cereal::make_nvp("id", mat.id), cereal::make_nvp("overrides", mat.overrides));
     }
 
     template <typename Archive> void serialize(Archive& archive, Mesh& mesh) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("id", mesh.id));
-        } else {
-            archive(mesh.id);
-        }
+        archive(cereal::make_nvp("id", mesh.id));
     }
 
     template <typename Archive> void serialize(Archive& archive, Parent& parent) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("parent", parent.parent));
-        } else {
-            archive(parent.parent);
-        }
+        archive(cereal::make_nvp("parent", parent.parent));
     }
 
     template <typename Archive> void serialize(Archive& archive, Children& children) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("children", children.children));
-        } else {
-            archive(children.children);
-        }
+        archive(cereal::make_nvp("children", children.children));
     }
 
     template <typename Archive> void serialize(Archive& archive, Physics& physics) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("is_static", physics.is_static), cereal::make_nvp("last_scale", physics.last_scale)
-            );
-        } else {
-            archive(physics.body_id, physics.is_static, physics.last_scale);
-        }
+        archive(cereal::make_nvp("is_static", physics.is_static), cereal::make_nvp("last_scale", physics.last_scale));
     }
 
     template <typename Archive> void serialize(Archive& archive, Script& script) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("scripts", script.scripts));
-        } else {
-            archive(script.scripts);
-        }
+        archive(cereal::make_nvp("scripts", script.scripts));
     }
 
     template <typename Archive> void serialize(Archive& archive, Tag& tag) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("tags", tag.tags));
-        } else {
-            archive(tag.tags);
-        }
+        archive(cereal::make_nvp("tags", tag.tags));
     }
 
     template <typename Archive> void serialize(Archive& archive, Camera& camera) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("near_plane", camera.near_plane),
-                cereal::make_nvp("far_plane", camera.far_plane),
-                cereal::make_nvp("fov", camera.fov),
-                cereal::make_nvp("viewport_x", camera.viewport_x),
-                cereal::make_nvp("viewport_y", camera.viewport_y),
-                cereal::make_nvp("viewport_width", camera.viewport_width),
-                cereal::make_nvp("viewport_height", camera.viewport_height),
-                cereal::make_nvp("ortho_size", camera.ortho_size),
-                cereal::make_nvp("type", camera.type),
-                cereal::make_nvp("is_active", camera.is_active),
-                cereal::make_nvp("ev_compensation", camera.ev_compensation),
-                cereal::make_nvp("manual_exposure", camera.manual_exposure),
-                cereal::make_nvp("aperture", camera.aperture),
-                cereal::make_nvp("shutter_time", camera.shutter_time),
-                cereal::make_nvp("iso", camera.iso),
-                cereal::make_nvp("min_log_luminance", camera.min_log_luminance),
-                cereal::make_nvp("max_log_luminance", camera.max_log_luminance),
-                cereal::make_nvp("adaption_speed", camera.adaption_speed),
-                cereal::make_nvp("min_ev100", camera.min_ev100),
-                cereal::make_nvp("max_ev100", camera.max_ev100)
-            );
-        } else {
-            archive(
-                camera.near_plane,
-                camera.far_plane,
-                camera.fov,
-                camera.viewport_x,
-                camera.viewport_y,
-                camera.viewport_width,
-                camera.viewport_height,
-                camera.ortho_size,
-                camera.type,
-                camera.is_active,
-                camera.ev_compensation,
-                camera.manual_exposure,
-                camera.aperture,
-                camera.shutter_time,
-                camera.iso,
-                camera.min_log_luminance,
-                camera.max_log_luminance,
-                camera.adaption_speed,
-                camera.min_ev100,
-                camera.max_ev100
-            );
-        }
+        archive(
+            cereal::make_nvp("near_plane", camera.near_plane),
+            cereal::make_nvp("far_plane", camera.far_plane),
+            cereal::make_nvp("fov", camera.fov),
+            cereal::make_nvp("viewport_x", camera.viewport_x),
+            cereal::make_nvp("viewport_y", camera.viewport_y),
+            cereal::make_nvp("viewport_width", camera.viewport_width),
+            cereal::make_nvp("viewport_height", camera.viewport_height),
+            cereal::make_nvp("ortho_size", camera.ortho_size),
+            cereal::make_nvp("type", camera.type),
+            cereal::make_nvp("is_active", camera.is_active),
+            cereal::make_nvp("ev_compensation", camera.ev_compensation),
+            cereal::make_nvp("manual_exposure", camera.manual_exposure),
+            cereal::make_nvp("aperture", camera.aperture),
+            cereal::make_nvp("shutter_time", camera.shutter_time),
+            cereal::make_nvp("iso", camera.iso),
+            cereal::make_nvp("min_log_luminance", camera.min_log_luminance),
+            cereal::make_nvp("max_log_luminance", camera.max_log_luminance),
+            cereal::make_nvp("adaption_speed", camera.adaption_speed),
+            cereal::make_nvp("min_ev100", camera.min_ev100),
+            cereal::make_nvp("max_ev100", camera.max_ev100)
+        );
     }
 
     template <typename Archive> void serialize(Archive& archive, CharacterController& controller) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("height", controller.height),
-                cereal::make_nvp("radius", controller.radius),
-                cereal::make_nvp("step_down_distance", controller.step_down_distance),
-                cereal::make_nvp("step_up_height", controller.step_up_height),
-                cereal::make_nvp("max_slope_angle", controller.max_slope_angle),
-                cereal::make_nvp("collision_layer", controller.collision_layer)
-            );
-        } else {
-            archive(
-                controller.height,
-                controller.radius,
-                controller.step_down_distance,
-                controller.step_up_height,
-                controller.max_slope_angle,
-                controller.collision_layer
-            );
-        }
+        archive(
+            cereal::make_nvp("height", controller.height),
+            cereal::make_nvp("radius", controller.radius),
+            cereal::make_nvp("step_down_distance", controller.step_down_distance),
+            cereal::make_nvp("step_up_height", controller.step_up_height),
+            cereal::make_nvp("max_slope_angle", controller.max_slope_angle),
+            cereal::make_nvp("gravity_scale", controller.gravity_scale),
+            cereal::make_nvp("collision_layer", controller.collision_layer)
+        );
     }
 
     template <typename Archive> void serialize(Archive& archive, Sprite& sprite) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("size", sprite.size),
-                cereal::make_nvp("anchor", sprite.pivot),
-                cereal::make_nvp("color", sprite.color),
-                cereal::make_nvp("uvs", sprite.uvs),
-                cereal::make_nvp("texture_id", sprite.texture_id)
-            );
-        } else {
-            archive(sprite.size, sprite.pivot, sprite.color, sprite.uvs, sprite.texture_id);
-        }
+        archive(
+            cereal::make_nvp("size", sprite.size),
+            cereal::make_nvp("anchor", sprite.pivot),
+            cereal::make_nvp("color", sprite.color),
+            cereal::make_nvp("uvs", sprite.uvs),
+            cereal::make_nvp("texture_id", sprite.texture_id)
+        );
     }
 
     template <typename Archive> void serialize(Archive& archive, Text& text) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("text", text.text),
-                cereal::make_nvp("color", text.color),
-                cereal::make_nvp("pivot", text.pivot),
-                cereal::make_nvp("font_id", text.font_id)
-            );
-        } else {
-            archive(text.text, text.color, text.pivot, text.font_id);
-        }
+        archive(
+            cereal::make_nvp("text", text.text),
+            cereal::make_nvp("color", text.color),
+            cereal::make_nvp("pivot", text.pivot),
+            cereal::make_nvp("font_id", text.font_id)
+        );
     }
 
     template <typename Archive> void serialize(Archive& archive, Sound& sound) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("id", sound.sound_id),
-                cereal::make_nvp("volume", sound.volume),
-                cereal::make_nvp("pitch", sound.pitch),
-                cereal::make_nvp("min_distance", sound.min_distance),
-                cereal::make_nvp("max_distance", sound.max_distance),
-                cereal::make_nvp("rolloff", sound.rolloff),
-                cereal::make_nvp("spatial", sound.spatial),
-                cereal::make_nvp("autoplay", sound.autoplay),
-                cereal::make_nvp("loop", sound.loop)
-            );
-        } else {
-            archive(
-                sound.sound_id,
-                sound.volume,
-                sound.pitch,
-                sound.min_distance,
-                sound.max_distance,
-                sound.rolloff,
-                sound.spatial,
-                sound.autoplay,
-                sound.loop
-            );
-        }
+        archive(
+            cereal::make_nvp("id", sound.sound_id),
+            cereal::make_nvp("volume", sound.volume),
+            cereal::make_nvp("pitch", sound.pitch),
+            cereal::make_nvp("min_distance", sound.min_distance),
+            cereal::make_nvp("max_distance", sound.max_distance),
+            cereal::make_nvp("rolloff", sound.rolloff),
+            cereal::make_nvp("spatial", sound.spatial),
+            cereal::make_nvp("autoplay", sound.autoplay),
+            cereal::make_nvp("loop", sound.loop)
+        );
     }
 
     template <typename Archive> void serialize(Archive& archive, ParticleEffect& particle) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("effect_id", particle.effect_id),
-                cereal::make_nvp("active", particle.active),
-                cereal::make_nvp("configs", particle.emitter_configs)
-            );
-        } else {
-            archive(particle.effect_id, particle.active, particle.emitter_configs);
-        }
+        archive(
+            cereal::make_nvp("effect_id", particle.effect_id),
+            cereal::make_nvp("active", particle.active),
+            cereal::make_nvp("configs", particle.emitter_configs)
+        );
     }
 
     template <typename Archive> void serialize(Archive& archive, World& world) {
     }
 
     template <typename Archive> void serialize(Archive& archive, Light& light) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("ies_profile", light.ies_profile), cereal::make_nvp("light", light.light));
-        } else {
-            archive(light.ies_profile, light.light);
-        }
+        archive(cereal::make_nvp("ies_profile", light.ies_profile), cereal::make_nvp("light", light.light));
     }
 
     template <typename Archive> void serialize(Archive& archive, SkeletalAnimation& animation) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("skeleton_id", animation.skeleton_id),
-                cereal::make_nvp("animation_id", animation.animation_id),
-                cereal::make_nvp("looping", animation.looping),
-                cereal::make_nvp("speed", animation.speed)
-            );
-        } else {
-            archive(animation.skeleton_id, animation.animation_id, animation.looping, animation.speed);
-        }
+        archive(
+            cereal::make_nvp("skeleton_id", animation.skeleton_id),
+            cereal::make_nvp("animation_id", animation.animation_id),
+            cereal::make_nvp("looping", animation.looping),
+            cereal::make_nvp("speed", animation.speed)
+        );
     }
 
     template <typename Archive> void serialize(Archive& archive, DirectionalLight& directional) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("enabled", directional.enabled), cereal::make_nvp("color", directional.color));
-        } else {
-            archive(directional.enabled, directional.color);
-        }
+        archive(cereal::make_nvp("enabled", directional.enabled), cereal::make_nvp("color", directional.color));
     }
 
     template <typename Archive> void serialize(Archive& archive, Sky& sky) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("top_hemisphere_color", sky.top_hemisphere_color),
-                cereal::make_nvp("bottom_hemisphere_color", sky.bottom_hemisphere_color)
-            );
-        } else {
-            archive(sky.top_hemisphere_color, sky.bottom_hemisphere_color);
-        }
+        archive(
+            cereal::make_nvp("top_hemisphere_color", sky.top_hemisphere_color),
+            cereal::make_nvp("bottom_hemisphere_color", sky.bottom_hemisphere_color)
+        );
     }
 
     template <typename Archive> void serialize(Archive& archive, DDGIVolume& volume) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("volume", volume.volume));
-        } else {
-            archive(volume.volume);
-        }
+        archive(cereal::make_nvp("volume", volume.volume));
     }
-
 } // namespace components
