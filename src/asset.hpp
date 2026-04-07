@@ -1,9 +1,7 @@
 #pragma once
 
 #include "ember.hpp"
-
-#include <cereal/cereal.hpp>
-#include <cereal/types/vector.hpp>
+#include "serialization.hpp"
 
 using AssetID = uint64_t;
 
@@ -31,58 +29,6 @@ struct SamplerDescription {
         return result;
     }
 };
-
-namespace glm {
-    template <class Archive> void serialize(Archive& archive, glm::vec2& v) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("x", v.x), cereal::make_nvp("y", v.y));
-        } else {
-            archive(v.x, v.y);
-        }
-    }
-
-    template <class Archive> void serialize(Archive& archive, glm::vec3& v) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("x", v.x), cereal::make_nvp("y", v.y), cereal::make_nvp("z", v.z));
-        } else {
-            archive(v.x, v.y, v.z);
-        }
-    }
-
-    template <class Archive> void serialize(Archive& archive, glm::ivec3& v) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(cereal::make_nvp("x", v.x), cereal::make_nvp("y", v.y), cereal::make_nvp("z", v.z));
-        } else {
-            archive(v.x, v.y, v.z);
-        }
-    }
-
-    template <class Archive> void serialize(Archive& archive, glm::vec4& v) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("x", v.x),
-                cereal::make_nvp("y", v.y),
-                cereal::make_nvp("z", v.z),
-                cereal::make_nvp("w", v.w)
-            );
-        } else {
-            archive(v.x, v.y, v.z, v.w);
-        }
-    }
-
-    template <class Archive> void serialize(Archive& archive, glm::quat& v) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("x", v.x),
-                cereal::make_nvp("y", v.y),
-                cereal::make_nvp("z", v.z),
-                cereal::make_nvp("w", v.w)
-            );
-        } else {
-            archive(v.x, v.y, v.z, v.w);
-        }
-    }
-} // namespace glm
 
 enum class AssetType {
     UNSUPPORTED,

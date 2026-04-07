@@ -973,7 +973,7 @@ int main(int argc, char* argv[]) {
 
                 if (!c.is_grounded) {
                     JPH::Vec3 gravity = world.physics.system.GetGravity();
-                    c.velocity.y      = c.velocity.y + gravity.GetY() * delta_time;
+                    c.velocity.y      = c.velocity.y + (gravity.GetY() * c.gravity_scale) * delta_time;
                 }
 
                 c.controller->SetLinearVelocity(JPH::Vec3(c.velocity.x, c.velocity.y, c.velocity.z));
