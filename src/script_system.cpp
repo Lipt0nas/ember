@@ -1358,6 +1358,7 @@ namespace {
 
         JPH::BodyID body_id =
             world->physics.system.GetBodyInterface().CreateAndAddBody(body_settings, JPH::EActivation::Activate);
+        world->physics.system.GetBodyInterface().SetUserData(body_id, (uint32_t)entity);
         p->body_id    = body_id;
         p->is_static  = false;
         p->last_scale = t->scale;
@@ -1527,6 +1528,19 @@ void node_add_component(asIScriptGeneric* gen) {
     }
 }
 
+void bind_event(asIScriptGeneric* gen) {
+    auto handler = (*(asIScriptFunction**)gen->GetAddressOfArg(0));
+    handler->AddRef();
+
+    int type_id = 0;
+    handler->GetParam(0, &type_id);
+
+    auto world = get_world_from_context();
+    world->script.engine_event_subscriptions[type_id].push_back({
+        .handler = handler,
+    });
+}
+
 ScriptSystem::ScriptSystem() {
     spdlog::info("Initializing script system");
 
@@ -1598,6 +1612,8 @@ void ScriptSystem::initialize(class World* world) {
     engine->RegisterGlobalFunction("void warn(string &in)", asFUNCTION(script_log_warn), asCALL_CDECL);
     engine->RegisterGlobalFunction("void error(string &in)", asFUNCTION(script_log_error), asCALL_CDECL);
     engine->RegisterGlobalFunction("void critical(string &in)", asFUNCTION(script_log_critical), asCALL_CDECL);
+
+    register_engine_events(engine);
 
     engine->SetDefaultNamespace("Input");
     engine->RegisterGlobalFunction(
@@ -1996,10 +2012,12 @@ void ScriptSystem::load_scripts() {
             }
         }
 
-        asIScriptFunction*                     constructor     = nullptr;
-        asIScriptFunction*                     on_start        = nullptr;
-        asIScriptFunction*                     on_update       = nullptr;
-        asIScriptFunction*                     on_fixed_update = nullptr;
+        asIScriptFunction*                     constructor          = nullptr;
+        asIScriptFunction*                     on_start             = nullptr;
+        asIScriptFunction*                     on_update            = nullptr;
+        asIScriptFunction*                     on_fixed_update      = nullptr;
+        asIScriptFunction*                     on_collision_started = nullptr;
+        asIScriptFunction*                     on_collision_ended   = nullptr;
         std::vector<ScriptPropertyDescription> editable_properties;
 
         if (node_type) {
@@ -2011,9 +2029,11 @@ void ScriptSystem::load_scripts() {
                 continue;
             }
 
-            on_start        = node_type->GetMethodByDecl("void start()");
-            on_update       = node_type->GetMethodByDecl("void update(float)");
-            on_fixed_update = node_type->GetMethodByDecl("void fixed_update(float)");
+            on_start             = node_type->GetMethodByDecl("void start()");
+            on_update            = node_type->GetMethodByDecl("void update(float)");
+            on_fixed_update      = node_type->GetMethodByDecl("void fixed_update(float)");
+            on_collision_started = node_type->GetMethodByDecl("void collision_started(Physics::CollisionStarted)");
+            on_collision_ended   = node_type->GetMethodByDecl("void collision_ended(Physics::CollisionEnded)");
 
             int prop_count = node_type->GetPropertyCount();
             for (int i = 0; i < prop_count; i++) {
@@ -2088,15 +2108,17 @@ void ScriptSystem::load_scripts() {
 
         scripts[id] = {
             Script{
-                .valid               = true,
-                .name                = filename,
-                .source              = source,
-                .module              = script_module,
-                .constructor         = constructor,
-                .on_start            = on_start,
-                .on_update           = on_update,
-                .on_fixed_update     = on_fixed_update,
-                .editable_properties = editable_properties,
+                .valid                = true,
+                .name                 = filename,
+                .source               = source,
+                .module               = script_module,
+                .constructor          = constructor,
+                .on_start             = on_start,
+                .on_update            = on_update,
+                .on_fixed_update      = on_fixed_update,
+                .on_collision_started = on_collision_started,
+                .on_collision_ended   = on_collision_ended,
+                .editable_properties  = editable_properties,
             },
         };
     }
@@ -2141,6 +2163,16 @@ void ScriptSystem::clear() {
         }
     }
     event_subscriptions.clear();
+
+    for (auto& [event_type, subscriptions] : engine_event_subscriptions) {
+        for (auto& sub : subscriptions) {
+            if (sub.handler) {
+                sub.handler->Release();
+            }
+        }
+    }
+    engine_event_subscriptions.clear();
+    engine_event_queue.clear();
 
     auto view = world->scene.entity_registry.view<components::Script>();
     for (auto [e, s] : view.each()) {
@@ -2259,6 +2291,52 @@ void ScriptSystem::call_on_fixed_update(const components::Script& s, float delta
                 context->Prepare(script.on_fixed_update);
                 context->SetObject(instance.object);
                 context->SetArgFloat(0, delta);
+                int r = context->Execute();
+                if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
+                    spdlog::error(
+                        "Exception executing script: {} ({}:{})",
+                        context->GetExceptionString(),
+                        context->GetExceptionFunction()->GetDeclaration(),
+                        context->GetExceptionLineNumber()
+                    );
+                }
+                context->Unprepare();
+            }
+        }
+    }
+}
+
+void ScriptSystem::call_on_collision_started(const components::Script& s, const CollisionStarted& e) {
+    for (const ScriptInstance& instance : s.scripts) {
+        if (scripts.contains(instance.script_id)) {
+            auto& script = scripts.at(instance.script_id);
+            if (script.valid && script.on_collision_started && instance.object) {
+                context->Prepare(script.on_collision_started);
+                context->SetObject(instance.object);
+                context->SetArgObject(0, (void*)&e);
+                int r = context->Execute();
+                if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
+                    spdlog::error(
+                        "Exception executing script: {} ({}:{})",
+                        context->GetExceptionString(),
+                        context->GetExceptionFunction()->GetDeclaration(),
+                        context->GetExceptionLineNumber()
+                    );
+                }
+                context->Unprepare();
+            }
+        }
+    }
+}
+
+void ScriptSystem::call_on_collision_ended(const components::Script& s, const CollisionEnded& e) {
+    for (const ScriptInstance& instance : s.scripts) {
+        if (scripts.contains(instance.script_id)) {
+            auto& script = scripts.at(instance.script_id);
+            if (script.valid && script.on_collision_ended && instance.object) {
+                context->Prepare(script.on_collision_ended);
+                context->SetObject(instance.object);
+                context->SetArgObject(0, (void*)&e);
                 int r = context->Execute();
                 if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
                     spdlog::error(
@@ -2545,13 +2623,15 @@ void ScriptSystem::register_node_type(class asIScriptEngine* engine) {
     engine->RegisterObjectMethod("Node", "uint get_id() const", asFUNCTION(node_to_handle), asCALL_CDECL_OBJFIRST);
     engine->RegisterObjectMethod("Node", "bool is_valid() const", asFUNCTION(node_is_valid), asCALL_CDECL_OBJFIRST);
 
-    engine->RegisterObjectMethod("Node", "T@ get_component<T>()", asFUNCTION(node_get_component), asCALL_GENERIC);
+    engine->RegisterObjectMethod("Node", "T@ get_component<T>() const", asFUNCTION(node_get_component), asCALL_GENERIC);
     engine->RegisterObjectMethod("Node", "T@ add_component<T>()", asFUNCTION(node_add_component), asCALL_GENERIC);
     engine->RegisterObjectMethod("Node", "Node clone()", asFUNCTION(clone_node), asCALL_CDECL_OBJFIRST);
 
     engine->RegisterObjectMethod("Node", "Node find_child(string &in)", asFUNCTION(find_child), asCALL_CDECL_OBJFIRST);
 
-    engine->RegisterObjectMethod("Node", "bool has_tag(string &in)", asFUNCTION(node_has_tag), asCALL_CDECL_OBJFIRST);
+    engine->RegisterObjectMethod(
+        "Node", "bool has_tag(string &in) const", asFUNCTION(node_has_tag), asCALL_CDECL_OBJFIRST
+    );
 }
 
 void ScriptSystem::register_components(class asIScriptEngine* engine) {
@@ -2840,4 +2920,117 @@ void ScriptSystem::register_components(class asIScriptEngine* engine) {
     register_component.operator()<components::Sky>("Sky");
     engine->RegisterObjectProperty("Sky", "vec4 top_hemisphere", asOFFSET(components::Sky, top_hemisphere_color));
     engine->RegisterObjectProperty("Sky", "vec4 bottom_hemisphere", asOFFSET(components::Sky, bottom_hemisphere_color));
+}
+
+void ScriptSystem::register_engine_events(class asIScriptEngine* engine) {
+    engine->SetDefaultNamespace("Input");
+    engine->RegisterObjectType("KeyUpEvent", sizeof(KeyUpEvent), asOBJ_VALUE | asOBJ_POD);
+    engine->RegisterObjectProperty("KeyUpEvent", "int key", asOFFSET(KeyUpEvent, key));
+
+    engine->RegisterObjectType("KeyDownEvent", sizeof(KeyDownEvent), asOBJ_VALUE | asOBJ_POD);
+    engine->RegisterObjectProperty("KeyDownEvent", "int key", asOFFSET(KeyDownEvent, key));
+    engine->RegisterObjectProperty("KeyDownEvent", "bool repeating", asOFFSET(KeyDownEvent, repeating));
+
+    engine->RegisterFuncdef("void KeyUpHandler(const KeyUpEvent& in)");
+    engine->RegisterFuncdef("void KeyDownHandler(const KeyDownEvent& in)");
+
+    engine->SetDefaultNamespace("Physics");
+    engine->RegisterObjectType("ContactAddedEvent", sizeof(ContactAddedEvent), asOBJ_VALUE | asOBJ_POD);
+    engine->RegisterObjectProperty("ContactAddedEvent", "Node node_1", asOFFSET(ContactAddedEvent, body_1));
+    engine->RegisterObjectProperty("ContactAddedEvent", "Node node_2", asOFFSET(ContactAddedEvent, body_2));
+    engine->RegisterObjectProperty("ContactAddedEvent", "vec3 normal", asOFFSET(ContactAddedEvent, normal));
+    engine->RegisterObjectProperty(
+        "ContactAddedEvent", "float penetration_depth", asOFFSET(ContactAddedEvent, penetration_depth)
+    );
+    engine->RegisterObjectProperty(
+        "ContactAddedEvent", "float impact_speed", asOFFSET(ContactAddedEvent, impact_speed)
+    );
+    engine->RegisterObjectProperty(
+        "ContactAddedEvent", "vec3 contact_point", asOFFSET(ContactAddedEvent, contact_point)
+    );
+
+    engine->RegisterObjectType("ContactRemovedEvent", sizeof(ContactRemovedEvent), asOBJ_VALUE | asOBJ_POD);
+    engine->RegisterObjectProperty("ContactRemovedEvent", "Node node_1", asOFFSET(ContactRemovedEvent, body_1));
+    engine->RegisterObjectProperty("ContactRemovedEvent", "Node node_2", asOFFSET(ContactRemovedEvent, body_2));
+
+    engine->RegisterFuncdef("void ContactAddedHandler(const ContactAddedEvent& in)");
+    engine->RegisterFuncdef("void ContactRemovedHandler(const ContactRemovedEvent& in)");
+
+    engine->RegisterObjectType("CollisionStarted", sizeof(CollisionStarted), asOBJ_VALUE | asOBJ_POD);
+    engine->RegisterObjectProperty("CollisionStarted", "Node other", asOFFSET(CollisionStarted, other));
+    engine->RegisterObjectProperty("CollisionStarted", "vec3 normal", asOFFSET(CollisionStarted, normal));
+    engine->RegisterObjectProperty(
+        "CollisionStarted", "float penetration_depth", asOFFSET(CollisionStarted, penetration_depth)
+    );
+    engine->RegisterObjectProperty("CollisionStarted", "float impact_speed", asOFFSET(CollisionStarted, impact_speed));
+    engine->RegisterObjectProperty("CollisionStarted", "vec3 contact_point", asOFFSET(CollisionStarted, contact_point));
+
+    engine->RegisterObjectType("CollisionEnded", sizeof(CollisionEnded), asOBJ_VALUE | asOBJ_POD);
+    engine->RegisterObjectProperty("CollisionEnded", "Node other", asOFFSET(CollisionEnded, other));
+
+    engine->SetDefaultNamespace("Events");
+    engine->RegisterGlobalFunction("void bind_event<T>(T@ handler)", asFUNCTION(bind_event), asCALL_GENERIC);
+}
+
+template <> int ScriptSystem::event_id<KeyUpEvent>() {
+    static int id = engine->GetTypeInfoByDecl("Input::KeyUpEvent")->GetTypeId();
+
+    return id;
+}
+
+template <> int ScriptSystem::event_id<KeyDownEvent>() {
+    static int id = engine->GetTypeInfoByDecl("Input::KeyDownEvent")->GetTypeId();
+
+    return id;
+}
+
+template <> int ScriptSystem::event_id<ContactAddedEvent>() {
+    static int id = engine->GetTypeInfoByDecl("Physics::ContactAddedEvent")->GetTypeId();
+
+    return id;
+}
+
+template <> int ScriptSystem::event_id<ContactRemovedEvent>() {
+    static int id = engine->GetTypeInfoByDecl("Physics::ContactRemovedEvent")->GetTypeId();
+
+    return id;
+}
+
+void ScriptSystem::flush_events() {
+    for (auto& e : engine_event_queue) {
+        auto it = engine_event_subscriptions.find(e.type_id);
+        if (it == engine_event_subscriptions.end()) {
+            continue;
+        }
+
+        for (auto& sub : it->second) {
+            asIScriptContext* ctx = engine->CreateContext();
+            if (!ctx) {
+                spdlog::error("Failed to create script context");
+                return;
+            }
+
+            int r = ctx->Prepare(sub.handler);
+            if (r < 0) {
+                spdlog::error("Failed to prepare callback");
+                ctx->Release();
+                return;
+            }
+
+            ctx->SetArgObject(0, e.data.data());
+
+            r = ctx->Execute();
+            if (r != asEXECUTION_FINISHED) {
+                if (r == asEXECUTION_EXCEPTION) {
+                    spdlog::error("Exception in callback: {}", ctx->GetExceptionString());
+                } else {
+                    spdlog::error("Callback execution failed with code {}", r);
+                }
+            }
+
+            ctx->Release();
+        }
+    }
+
+    engine_event_queue.clear();
 }

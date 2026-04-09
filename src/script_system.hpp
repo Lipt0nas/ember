@@ -2,6 +2,8 @@
 
 #include "components.hpp"
 #include "ember.hpp"
+#include "input_system.hpp"
+#include "physics.hpp"
 #include "scene.hpp"
 
 struct ScriptPropertyDescription {
@@ -43,6 +45,9 @@ struct Script {
     class asIScriptFunction* on_update;
     class asIScriptFunction* on_fixed_update;
 
+    class asIScriptFunction* on_collision_started;
+    class asIScriptFunction* on_collision_ended;
+
     std::vector<ScriptPropertyDescription> editable_properties;
 };
 
@@ -65,11 +70,39 @@ public:
     void call_on_start(const components::Script& script);
     void call_on_update(const components::Script& script, float delta);
     void call_on_fixed_update(const components::Script& script, float delta);
+    void call_on_collision_started(const components::Script& script, const CollisionStarted& e);
+    void call_on_collision_ended(const components::Script& script, const CollisionEnded& e);
 
     friend void node_get_component(class asIScriptGeneric* gen);
     friend void node_add_component(class asIScriptGeneric* gen);
 
+    friend void bind_event(class asIScriptGeneric* gen);
+
+    template <typename T> void issue_event(const T& event) {
+        Event e;
+        e.type_id = event_id<T>();
+        e.data.resize(sizeof(T));
+        memcpy(e.data.data(), &event, sizeof(T));
+
+        engine_event_queue.push_back(std::move(e));
+    }
+
+    void flush_events();
+
 private:
+    struct Event {
+        int                  type_id;
+        std::vector<uint8_t> data;
+    };
+
+    struct EngineEventSubscription {
+        class asIScriptFunction* handler;
+    };
+    std::unordered_map<int, std::vector<EngineEventSubscription>> engine_event_subscriptions;
+
+    std::mutex         event_queue_mutex;
+    std::vector<Event> engine_event_queue;
+
     struct EventSubscription {
         uint32_t                 node;
         class asIScriptFunction* callback;
@@ -109,4 +142,12 @@ private:
 
     void register_node_type(class asIScriptEngine* engine);
     void register_components(class asIScriptEngine* engine);
+    void register_engine_events(class asIScriptEngine* engine);
+
+    template <typename T> int event_id();
 };
+
+template <> int ScriptSystem::event_id<KeyDownEvent>();
+template <> int ScriptSystem::event_id<KeyDownEvent>();
+template <> int ScriptSystem::event_id<ContactAddedEvent>();
+template <> int ScriptSystem::event_id<ContactRemovedEvent>();

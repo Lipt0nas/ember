@@ -362,6 +362,7 @@ set(SOURCES
     "src/particle_editor.cpp"
     "src/particle_effect.cpp"
     "src/asset_exporter.cpp"
+    "src/physics.cpp"
 )
 add_executable(Ember ${SOURCES})
 if(MINGW)

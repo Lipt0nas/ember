@@ -1,5 +1,9 @@
 #pragma once
 
+#include "ember.hpp"
+
+#include <mutex>
+
 #include <Jolt/Jolt.h>
 #include <spdlog/spdlog.h>
 
@@ -21,6 +25,36 @@
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
+
+struct ContactAddedEvent {
+    uint32_t body_1;
+    uint32_t body_2;
+
+    glm::vec3 normal;
+    float     penetration_depth;
+    float     impact_speed;
+
+    glm::vec3 contact_point;
+};
+
+struct ContactRemovedEvent {
+    uint32_t body_1;
+    uint32_t body_2;
+};
+
+struct CollisionStarted {
+    uint32_t other;
+
+    glm::vec3 normal;
+    float     penetration_depth;
+    float     impact_speed;
+
+    glm::vec3 contact_point;
+};
+
+struct CollisionEnded {
+    uint32_t other;
+};
 
 // Layer that objects can be in, determines which other objects it can collide with
 // Typically you at least want to have 1 layer for moving bodies and 1 layer for static bodies, but you can have more
@@ -112,43 +146,40 @@ public:
     }
 };
 
-// An example contact listener
-class MyContactListener : public JPH::ContactListener {
+class PhysicsContactListener : public JPH::ContactListener {
 public:
-    // See: ContactListener
+    class World* world = nullptr;
+
+    std::mutex                                      pair_mutex;
+    std::unordered_set<uint64_t>                    active_pairs;
+    std::unordered_set<uint64_t>                    prev_pairs;
+    std::unordered_map<uint64_t, ContactAddedEvent> pair_data;
+
     virtual JPH::ValidateResult OnContactValidate(
         const JPH::Body&               inBody1,
         const JPH::Body&               inBody2,
         JPH::RVec3Arg                  inBaseOffset,
         const JPH::CollideShapeResult& inCollisionResult
-    ) override {
-        // cout << "Contact validate callback" << endl;
-
-        // Allows you to ignore a contact before it is created (using layers to not make objects collide is cheaper!)
-        return JPH::ValidateResult::AcceptAllContactsForThisBodyPair;
-    }
+    ) override;
 
     virtual void OnContactAdded(
         const JPH::Body&            inBody1,
         const JPH::Body&            inBody2,
         const JPH::ContactManifold& inManifold,
         JPH::ContactSettings&       ioSettings
-    ) override {
-        // cout << "A contact was added" << endl;
-    }
+    ) override;
 
     virtual void OnContactPersisted(
         const JPH::Body&            inBody1,
         const JPH::Body&            inBody2,
         const JPH::ContactManifold& inManifold,
         JPH::ContactSettings&       ioSettings
-    ) override {
-        // cout << "A contact was persisted" << endl;
-    }
+    ) override;
 
-    virtual void OnContactRemoved(const JPH::SubShapeIDPair& inSubShapePair) override {
-        // cout << "A contact was removed" << endl;
-    }
+    virtual void OnContactRemoved(const JPH::SubShapeIDPair& inSubShapePair) override;
+
+private:
+    uint64_t pair_key(uint32_t a, uint32_t b);
 };
 
 // An example activation listener
@@ -172,45 +203,19 @@ public:
     ObjectLayerPairFilterImpl         object_vs_object_layer_filter;
 
     MyBodyActivationListener body_activation_listener;
-    MyContactListener        contact_listener;
+    PhysicsContactListener   contact_listener;
 
     JPH::TempAllocatorImpl*   temp_allocator;
     JPH::JobSystemThreadPool* job_system;
 
     const float frame_time = 1.0f / 60.0f;
 
-    PhysicsSystem() {
-        spdlog::info("Initializing physics system");
-        JPH::RegisterDefaultAllocator();
-        JPH::Factory::sInstance = new JPH::Factory();
-        JPH::RegisterTypes();
+    PhysicsSystem();
 
-        temp_allocator = new JPH::TempAllocatorImpl(10 * 1024 * 1024);
-        job_system     = new JPH::JobSystemThreadPool(
-            JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, std::thread::hardware_concurrency() - 1
-        );
+    void update();
+    void flush_pending_contacts();
 
-        const uint32_t physics_max_bodies             = UINT16_MAX;
-        const uint32_t physics_num_body_mutexes       = 0;
-        const uint32_t physica_max_body_pairs         = UINT16_MAX;
-        const uint32_t physics_max_contact_contraints = 10240;
-
-        system.Init(
-            physics_max_bodies,
-            physics_num_body_mutexes,
-            physica_max_body_pairs,
-            physics_max_contact_contraints,
-            broad_phase_layer_interface,
-            object_vs_broad_phase_layer_filter,
-            object_vs_object_layer_filter
-        );
-        system.SetBodyActivationListener(&body_activation_listener);
-        system.SetContactListener(&contact_listener);
-    }
-
-    void update() {
-        system.Update(frame_time, 1, temp_allocator, job_system);
-    }
+    void initialize(class World* world);
 
 private:
 };

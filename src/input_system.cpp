@@ -1,5 +1,7 @@
 #include "input_system.hpp"
 
+#include "world.hpp"
+
 const std::unordered_map<int, Key> InputSystem::scancode_to_key = {
     {SDL_SCANCODE_A, Key::A},
     {SDL_SCANCODE_B, Key::B},
@@ -269,6 +271,10 @@ const std::vector<std::string> InputSystem::gamepad_button_to_string_map = {
     "DpadRight",
 };
 
+void InputSystem::initialize(class World* world) {
+    this->world = world;
+}
+
 void InputSystem::update_key_states() {
     for (int i = 0; i < pressed_keys.size(); i++) {
         released_keys[i] = !pressed_keys[i];
@@ -337,13 +343,20 @@ Button InputSystem::string_to_button(const std::string& str) {
     return Button::UNKNOWN;
 }
 
-void InputSystem::register_key_press(int scancode) {
+void InputSystem::register_key_press(int scancode, bool repeating) {
     Key key = Key::UNKNOWN;
 
     auto entry = scancode_to_key.find(scancode);
     if (entry != scancode_to_key.end()) {
         key = entry->second;
     }
+
+    world->script.issue_event(
+        KeyDownEvent{
+            .key       = static_cast<int>(key),
+            .repeating = repeating,
+        }
+    );
 
     pressed_keys[static_cast<int>(key)] = true;
 }
@@ -355,6 +368,12 @@ void InputSystem::register_key_release(int scancode) {
     if (entry != scancode_to_key.end()) {
         key = entry->second;
     }
+
+    world->script.issue_event(
+        KeyUpEvent{
+            .key = static_cast<int>(key),
+        }
+    );
 
     pressed_keys[static_cast<int>(key)]  = false;
     released_keys[static_cast<int>(key)] = true;

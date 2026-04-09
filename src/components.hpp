@@ -269,7 +269,13 @@ namespace components {
     }
 
     template <typename Archive> void serialize(Archive& archive, Physics& physics) {
-        archive(cereal::make_nvp("is_static", physics.is_static), cereal::make_nvp("last_scale", physics.last_scale));
+        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
+            archive(
+                cereal::make_nvp("is_static", physics.is_static), cereal::make_nvp("last_scale", physics.last_scale)
+            );
+        } else {
+            archive(physics.body_id, physics.is_static, physics.last_scale);
+        }
     }
 
     template <typename Archive> void serialize(Archive& archive, Script& script) {

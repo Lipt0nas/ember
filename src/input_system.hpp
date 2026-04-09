@@ -146,8 +146,19 @@ struct Gamepad {
     std::array<bool, 24> released_buttons = {1};
 };
 
+struct KeyUpEvent {
+    int key;
+};
+
+struct KeyDownEvent {
+    int  key;
+    bool repeating;
+};
+
 class InputSystem {
 public:
+    void initialize(class World* world);
+
     void update_key_states();
 
     glm::vec2 get_mouse_position();
@@ -165,7 +176,7 @@ public:
     Key    string_to_key(const std::string& str);
     Button string_to_button(const std::string& str);
 
-    void register_key_press(int scancode);
+    void register_key_press(int scancode, bool repeating);
     void register_key_release(int scancode);
 
     void register_button_press(int scancode);
@@ -219,4 +230,6 @@ private:
 
     static const std::unordered_map<int, GamepadButton> scancode_to_gamepad_button;
     static const std::vector<std::string>               gamepad_button_to_string_map;
+
+    class World* world = nullptr;
 };
