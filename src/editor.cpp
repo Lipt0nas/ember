@@ -1289,7 +1289,8 @@ bool Editor::render_main_menu() {
                     JPH::BodyID body_id =
                         body_interface.CreateAndAddBody(body_settings, JPH::EActivation::DontActivate);
 
-                    auto& p      = world->scene.add_component<components::Physics>(e);
+                    auto& p = world->scene.add_component<components::Physics>(e);
+                    body_interface.SetUserData(body_id, (uint32_t)e);
                     p.body_id    = body_id;
                     p.is_static  = true;
                     p.last_scale = scale;

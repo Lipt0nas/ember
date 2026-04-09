@@ -361,8 +361,9 @@ int main(int argc, char* argv[]) {
             );
 
             JPH::BodyID body_id = body_interface.CreateAndAddBody(body_settings, JPH::EActivation::DontActivate);
-            p.body_id           = body_id;
-            p.last_scale        = scale;
+            body_interface.SetUserData(body_id, (uint32_t)e);
+            p.body_id    = body_id;
+            p.last_scale = scale;
         }
     }
     world.renderer.wait_idle();
@@ -583,7 +584,7 @@ int main(int argc, char* argv[]) {
                 running = false;
                 break;
             case SDL_EVENT_KEY_DOWN:
-                world.input.register_key_press(event.key.scancode);
+                world.input.register_key_press(event.key.scancode, event.key.repeat);
                 break;
             case SDL_EVENT_KEY_UP:
                 world.input.register_key_release(event.key.scancode);
@@ -910,6 +911,7 @@ int main(int argc, char* argv[]) {
                 }
 
                 world.physics.update();
+                world.physics.flush_pending_contacts();
                 physics_time_accumulator -= world.physics.frame_time;
             }
 
@@ -1505,6 +1507,10 @@ int main(int argc, char* argv[]) {
         }
 
         world.renderer.end_frame();
+
+        if (world.is_running) {
+            world.script.flush_events();
+        }
 
         {
             auto view = world.scene.entity_registry.view<components::Transform, components::Mesh>();

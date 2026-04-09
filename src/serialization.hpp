@@ -15,7 +15,7 @@ namespace JPH {
     template <typename Archive> void serialize(Archive& archive, BodyID& body) {
         uint32_t id = body.GetIndexAndSequenceNumber();
 
-        archive(cereal::make_nvp("id", body.GetIndexAndSequenceNumber()));
+        archive(cereal::make_nvp("id", id));
 
         if constexpr (Archive::is_loading::value) {
             body = JPH::BodyID(id);
