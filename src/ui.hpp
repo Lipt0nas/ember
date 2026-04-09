@@ -132,13 +132,13 @@ public:
         arg_completer_fn                              arg_completer = nullptr
     );
 
-    bool draw(const char* title = "Console", bool* p_open = nullptr);
+    bool draw(const char* title = "Console", bool allow_input_refocus = false, bool* p_open = nullptr);
 
     void add_log(const std::string& text, spdlog::level::level_enum level = spdlog::level::info);
 
 private:
     void draw_log_region();
-    void draw_input_bar();
+    void draw_input_bar(bool allow_input_refocus);
     void draw_autocomplete_popup();
 
     void                     execute_command(const std::string& raw);
