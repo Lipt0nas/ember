@@ -1,5 +1,6 @@
 #include "renderer.hpp"
 
+#include "cvars.hpp"
 #include "device.hpp"
 #include "framegraph.hpp"
 #include "geometry.hpp"
@@ -13,6 +14,8 @@
 #include <SDL3/SDL.h>
 #include <glm/gtc/random.hpp>
 #include <tracy/TracyVulkan.hpp>
+
+BoolCVar editor_debug_ddgi("debug.show_ddgi_probes", "Render DDGI probes in world", false);
 
 void transition_clear_color_image_subresource(
     const Image&            image,
@@ -7113,6 +7116,23 @@ void Renderer::render_frame(float delta_time) {
     debug_renderer_constants.combined_matrix = camera->combined_matrix;
     debug_renderer_start_frame(debug_renderer, frame_index);
 
+    if (ddgi_enabled() && editor_debug_ddgi.get()) {
+        glm::vec3 grid_shift =
+            glm::vec3(ddgi_volume.probe_counts.x - 1, ddgi_volume.probe_counts.y - 1, ddgi_volume.probe_counts.z - 1) *
+            ddgi_volume.probe_spacing * 0.5f;
+
+        for (int z = 0; z < ddgi_volume.probe_counts.z; z++) {
+            for (int y = 0; y < ddgi_volume.probe_counts.y; y++) {
+                for (int x = 0; x < ddgi_volume.probe_counts.x; x++) {
+                    glm::vec3 probe_grid_pos = glm::vec3(x, y, z) * ddgi_volume.probe_spacing;
+
+                    glm::vec3 probe_pos = ddgi_volume.grid_origin + probe_grid_pos - grid_shift;
+                    debug_renderer_draw_ddgi_sphere(debug_renderer, probe_pos, 0.5f, {1, 1, 1, 1});
+                }
+            }
+        }
+    }
+
     if (visualize_probes) {
         {
             auto view = world->scene.entity_registry.view<components::Transform, components::Camera>();
@@ -7154,25 +7174,6 @@ void Renderer::render_frame(float delta_time) {
                         {1, 1, 1}
                     );
                     break;
-                }
-            }
-        }
-
-        if (ddgi_enabled()) {
-            glm::vec3 grid_shift =
-                glm::vec3(
-                    ddgi_volume.probe_counts.x - 1, ddgi_volume.probe_counts.y - 1, ddgi_volume.probe_counts.z - 1
-                ) *
-                ddgi_volume.probe_spacing * 0.5f;
-
-            for (int z = 0; z < ddgi_volume.probe_counts.z; z++) {
-                for (int y = 0; y < ddgi_volume.probe_counts.y; y++) {
-                    for (int x = 0; x < ddgi_volume.probe_counts.x; x++) {
-                        glm::vec3 probe_grid_pos = glm::vec3(x, y, z) * ddgi_volume.probe_spacing;
-
-                        glm::vec3 probe_pos = ddgi_volume.grid_origin + probe_grid_pos - grid_shift;
-                        debug_renderer_draw_ddgi_sphere(debug_renderer, probe_pos, 0.5f, {1, 1, 1, 1});
-                    }
                 }
             }
         }

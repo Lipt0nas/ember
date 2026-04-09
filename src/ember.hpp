@@ -51,3 +51,26 @@
         VkResult result_ = call;                                                                                       \
         assert(result_ == VK_SUCCESS);                                                                                 \
     } while (0)
+
+#define DEFINE_BITFIELD_STRUCT(x)                                                                                      \
+    inline x operator~(x a) {                                                                                          \
+        return (x) ~(int)a;                                                                                            \
+    }                                                                                                                  \
+    inline x operator|(x a, x b) {                                                                                     \
+        return (x)((int)a | (int)b);                                                                                   \
+    }                                                                                                                  \
+    inline x operator&(x a, x b) {                                                                                     \
+        return (x)((int)a & (int)b);                                                                                   \
+    }                                                                                                                  \
+    inline x operator^(x a, x b) {                                                                                     \
+        return (x)((int)a ^ (int)b);                                                                                   \
+    }                                                                                                                  \
+    inline x& operator|=(x& a, x b) {                                                                                  \
+        return (x&)((int&)a |= (int)b);                                                                                \
+    }                                                                                                                  \
+    inline x& operator&=(x& a, x b) {                                                                                  \
+        return (x&)((int&)a &= (int)b);                                                                                \
+    }                                                                                                                  \
+    inline x& operator^=(x& a, x b) {                                                                                  \
+        return (x&)((int&)a ^= (int)b);                                                                                \
+    }

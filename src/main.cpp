@@ -3,6 +3,7 @@
 #include "args.hpp"
 #include "camera.hpp"
 #include "component_registry.hpp"
+#include "cvars.hpp"
 #include "device.hpp"
 #include "editor.hpp"
 #include "embedded.hpp"
@@ -297,6 +298,9 @@ int main(int argc, char* argv[]) {
     spdlog::default_logger()->sinks().back()->set_pattern("[%H:%M:%S.%e] [%^%l%$] %v");
 
     spdlog::info("Starting ember");
+
+    CVars::get()->load_from_file(std::filesystem::path(project_path) / CVars::FILENAME);
+    CVars::get()->register_console_commands(&console);
 
     spdlog::info("Initializing SDL");
     if (!SDL_Init(SDL_INIT_EVENTS | SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -1100,7 +1104,7 @@ int main(int argc, char* argv[]) {
             scene_history.create_snapshot(world);
         }
 
-        console.draw(ICON_FA_TERMINAL " Console");
+        console.draw(ICON_FA_TERMINAL " Console", !world.is_running);
 
         ImGui::Begin(ICON_FA_COGS " Configuration");
         ImGui::InputInt("Simulate Target FPS", &simulated_fps);

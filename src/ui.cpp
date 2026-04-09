@@ -299,7 +299,7 @@ void imgui_console::add_log(const std::string& text, spdlog::level::level_enum l
     scroll_to_bottom = true;
 }
 
-bool imgui_console::draw(const char* title, bool* p_open) {
+bool imgui_console::draw(const char* title, bool allow_input_refocus, bool* p_open) {
     {
         std::vector<log_entry> fresh;
         uint64_t               new_id = ring->fetch_since(last_fetched_id, fresh);
@@ -333,7 +333,7 @@ bool imgui_console::draw(const char* title, bool* p_open) {
 
     draw_log_region();
     ImGui::Separator();
-    draw_input_bar();
+    draw_input_bar(allow_input_refocus);
 
     ImGui::End();
     return p_open ? *p_open : true;
@@ -399,40 +399,22 @@ void imgui_console::draw_log_region() {
     ImGui::EndChild();
 }
 
-void imgui_console::draw_input_bar() {
-    bool reclaim_focus = false;
-
+void imgui_console::draw_input_bar(bool allow_input_refocus) {
     constexpr ImGuiInputTextFlags input_flags =
-        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_EscapeClearsAll |
-        ImGuiInputTextFlags_CallbackCompletion | ImGuiInputTextFlags_CallbackHistory;
+        ImGuiInputTextFlags_EscapeClearsAll | ImGuiInputTextFlags_CallbackCompletion |
+        ImGuiInputTextFlags_CallbackHistory | ImGuiInputTextFlags_CallbackAlways;
 
     ImGui::SetNextItemWidth(-1.0f);
-
-    if (ImGui::InputText("##input", input_buf, IM_ARRAYSIZE(input_buf), input_flags, &input_text_callback_stub, this)) {
-        const std::string raw(input_buf);
-        if (!raw.empty()) {
-            add_log("> " + raw, spdlog::level::debug);
-            execute_command(raw);
-
-            if (history.empty() || history.back() != raw) {
-                if (static_cast<int>(history.size()) >= k_history_max) {
-                    history.erase(history.begin());
-                }
-                history.push_back(raw);
-            }
-            history_pos = -1;
-        }
-        input_buf[0]      = '\0';
-        reclaim_focus     = true;
-        autocomplete_open = false;
-    }
+    ImGui::InputText("##input", input_buf, IM_ARRAYSIZE(input_buf), input_flags, &input_text_callback_stub, this);
 
     input_rect_min = ImGui::GetItemRectMin();
 
-    ImGui::SetItemDefaultFocus();
-    if (reclaim_focus) {
+    if (!ImGui::IsItemActive() && !autocomplete_open && allow_input_refocus &&
+        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::IsAnyItemActive()) {
         ImGui::SetKeyboardFocusHere(-1);
     }
+
+    ImGui::SetItemDefaultFocus();
 
     if (autocomplete_open && !candidates.empty()) {
         draw_autocomplete_popup();
@@ -473,10 +455,10 @@ void imgui_console::draw_autocomplete_popup() {
             );
             input_buf[IM_ARRAYSIZE(input_buf) - 1] = '\0';
             autocomplete_open                      = false;
-            ImGui::SetKeyboardFocusHere(-1);
         }
-        if (selected)
+        if (selected) {
             ImGui::SetScrollHereY();
+        }
         ImGui::PopID();
     }
 
@@ -579,7 +561,7 @@ void imgui_console::refresh_candidates() {
 }
 
 void imgui_console::apply_candidate(int index, ImGuiInputTextCallbackData* data) {
-    assert(index >= 0 && index < static_cast<int>(candidates_.size()));
+    assert(index >= 0 && index < static_cast<int>(candidates.size()));
     const std::string& chosen = candidates[index];
 
     data->DeleteChars(complete_token_start, data->BufTextLen - complete_token_start);
@@ -591,6 +573,42 @@ int imgui_console::input_text_callback_stub(ImGuiInputTextCallbackData* data) {
 }
 
 int imgui_console::input_text_callback(ImGuiInputTextCallbackData* data) {
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
+            if (autocomplete_open && !candidates.empty()) {
+                data->InsertChars(data->BufTextLen, " ");
+                autocomplete_open = false;
+                candidates.clear();
+                candidate_sel  = 0;
+                data->BufDirty = true;
+            } else {
+                const std::string raw(data->Buf, data->BufTextLen);
+                if (!raw.empty()) {
+                    add_log("> " + raw, spdlog::level::debug);
+                    execute_command(raw);
+
+                    if (history.empty() || history.back() != raw) {
+                        if (static_cast<int>(history.size()) >= k_history_max)
+                            history.erase(history.begin());
+                        history.push_back(raw);
+                    }
+                    history_pos = -1;
+                }
+                data->DeleteChars(0, data->BufTextLen);
+                data->BufDirty    = true;
+                autocomplete_open = false;
+            }
+            return 0;
+        }
+
+        if (autocomplete_open && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            autocomplete_open = false;
+            candidates.clear();
+            candidate_sel = 0;
+        }
+        return 0;
+    }
+
     if (data->EventFlag == ImGuiInputTextFlags_CallbackCompletion) {
         if (autocomplete_open && !candidates.empty()) {
             candidate_sel = (candidate_sel + 1) % static_cast<int>(candidates.size());
@@ -603,6 +621,7 @@ int imgui_console::input_text_callback(ImGuiInputTextCallbackData* data) {
         if (candidates.empty()) {
         } else if (candidates.size() == 1) {
             apply_candidate(0, data);
+            data->InsertChars(data->BufTextLen, " ");
             autocomplete_open = false;
         } else {
             std::string common = candidates[0];
@@ -621,6 +640,7 @@ int imgui_console::input_text_callback(ImGuiInputTextCallbackData* data) {
 
             autocomplete_open = true;
             candidate_sel     = 0;
+            apply_candidate(0, data);
         }
 
         return 0;
