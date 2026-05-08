@@ -24,6 +24,17 @@ layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec3 out_emission;
 layout(location = 3) out uint out_id;
 
+float compute_roughness_adjustment(vec3 normal, float roughness) {
+    vec3 dndx = dFdx(normal);
+    vec3 dndy = dFdy(normal);
+
+    float variance = 0.5 * (dot(dndx, dndx) + dot(dndy, dndy));
+
+    float r2 = roughness * roughness;
+
+    return sqrt(clamp(r2 + variance, 0.0, 1.0));
+}
+
 void main() {
     Material material = materials[in_material_index];
 
@@ -41,7 +52,7 @@ void main() {
 
     vec3 w_normal = normalize(normal.r * in_tangent_sign.xyz + normal.g * B + normal.b * in_normal);
 
-    out_color = vec4(albedo.rgb, rougness_metallic.x);
+    out_color = vec4(albedo.rgb, compute_roughness_adjustment(w_normal, rougness_metallic.x));
     out_normal = vec4(pack_normals(w_normal), rougness_metallic.y);
     out_emission = emissive;
     out_id = in_draw_id;

@@ -29,33 +29,32 @@ layout(set = 0, binding = 3, std430) readonly buffer DDGIVolumeData {
 };
 
 void main() {
-    uint probe_index = gl_GlobalInvocationID.x;
+    uint logical_probe_idx = gl_GlobalInvocationID.x;
 
     uint probe_count = volume.probe_counts.x * volume.probe_counts.y * volume.probe_counts.z;
+    if (logical_probe_idx >= probe_count) return;
 
-    if (probe_index >= probe_count) return;
+    uint physical_probe_idx = ddgi_physical_probe_index(int(logical_probe_idx), volume);
 
     int ray_count = DDGI_NUM_FIXED_RAYS;
     int backface_count = 0;
     float distances[DDGI_NUM_FIXED_RAYS];
 
     for (int i = 0; i < ray_count; i++) {
-        uint global_ray_idx = probe_index * volume.rays_per_probe + i;
-
+        uint global_ray_idx = logical_probe_idx * volume.rays_per_probe + i;
         distances[i] = ray_buffer.rays[global_ray_idx].ray_data.w;
         backface_count += (distances[i] < 0.0) ? 1 : 0;
     }
 
     if (float(backface_count) / float(DDGI_NUM_FIXED_RAYS) > volume.fixed_ray_backface_threshold) {
-        probes[probe_index].state = 0;
+        probes[physical_probe_idx].state = 0;
         return;
     }
 
-    vec3 probe_position = ddgi_get_probe_position(int(probe_index), volume.probe_counts, volume.grid_origin, volume.probe_spacing, probes[probe_index].offset);
+    vec3 probe_position = ddgi_get_probe_position(int(logical_probe_idx), volume.probe_counts, volume, probes[physical_probe_idx].offset);
 
     for (int i = 0; i < ray_count; i++) {
-        uint global_ray_idx = probe_index * volume.rays_per_probe + i;
-
+        uint global_ray_idx = logical_probe_idx * volume.rays_per_probe + i;
         if (distances[i] < 0) continue;
 
         vec3 direction = ddgi_get_probe_ray_direction(i, int(volume.rays_per_probe), volume.probe_ray_rotation);
@@ -89,10 +88,10 @@ void main() {
         float max_dist = min(plane_distances.x, min(plane_distances.y, plane_distances.z));
 
         if (distances[i] <= max_dist) {
-            probes[probe_index].state = 1;
+            probes[physical_probe_idx].state = 1;
             return;
         }
     }
 
-    probes[probe_index].state = 0;
+    probes[physical_probe_idx].state = 0;
 }

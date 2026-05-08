@@ -76,14 +76,15 @@ void main() {
 
     if (global_ray_idx >= total_rays) return;
 
-    uint probe_idx = global_ray_idx / volume.rays_per_probe;
+    uint logical_probe_idx = global_ray_idx / volume.rays_per_probe;
     uint ray_idx = global_ray_idx % volume.rays_per_probe;
+    int physical_probe_idx = ddgi_physical_probe_index(int(logical_probe_idx), volume);
 
-    if (probes[probe_idx].state == 0 && ray_idx >= DDGI_NUM_FIXED_RAYS) {
+    if (probes[physical_probe_idx].state == 0 && ray_idx >= DDGI_NUM_FIXED_RAYS) {
         return;
     }
 
-    vec3 origin = ddgi_get_probe_position(int(probe_idx), volume.probe_counts, volume.grid_origin, volume.probe_spacing, probes[probe_idx].offset);
+    vec3 origin = ddgi_get_probe_position(int(logical_probe_idx), volume.probe_counts, volume, probes[physical_probe_idx].offset);
     vec3 ray_dir = ddgi_get_probe_ray_direction(int(ray_idx), int(volume.rays_per_probe), volume.probe_ray_rotation);
 
     float t_min = 0.0;

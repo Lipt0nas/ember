@@ -30,6 +30,8 @@ PhysicsSystem::PhysicsSystem() {
 
     system.SetBodyActivationListener(&body_activation_listener);
     system.SetContactListener(&contact_listener);
+
+    debug_renderer = new PhysicsDebugRenderer();
 }
 
 void PhysicsSystem::update() {
@@ -38,6 +40,7 @@ void PhysicsSystem::update() {
 
 void PhysicsSystem::initialize(class World* world) {
     contact_listener.world = world;
+    debug_renderer->world  = world;
 }
 
 JPH::ValidateResult PhysicsContactListener::OnContactValidate(
@@ -205,4 +208,43 @@ uint64_t PhysicsContactListener::pair_key(uint32_t a, uint32_t b) {
     }
 
     return (uint64_t(a) << 32) | b;
+}
+
+void PhysicsDebugRenderer::DrawLine(JPH::RVec3Arg inFrom, JPH::RVec3Arg inTo, JPH::ColorArg inColor) {
+    world->renderer.debug_renderer_draw_line(
+        world->renderer.debug_renderer,
+        {inFrom.GetX(), inFrom.GetY(), inFrom.GetZ()},
+        {inTo.GetX(), inTo.GetY(), inTo.GetZ()},
+        {inColor.r, inColor.g, inColor.b}
+    );
+}
+
+void PhysicsDebugRenderer::DrawTriangle(
+    JPH::RVec3Arg inV1, JPH::RVec3Arg inV2, JPH::RVec3Arg inV3, JPH::ColorArg inColor, ECastShadow inCastShadow
+) {
+    world->renderer.debug_renderer_draw_line(
+        world->renderer.debug_renderer,
+        {inV1.GetX(), inV1.GetY(), inV1.GetZ()},
+        {inV2.GetX(), inV2.GetY(), inV2.GetZ()},
+        {inColor.r, inColor.g, inColor.b}
+    );
+
+    world->renderer.debug_renderer_draw_line(
+        world->renderer.debug_renderer,
+        {inV2.GetX(), inV2.GetY(), inV2.GetZ()},
+        {inV3.GetX(), inV3.GetY(), inV3.GetZ()},
+        {inColor.r, inColor.g, inColor.b}
+    );
+
+    world->renderer.debug_renderer_draw_line(
+        world->renderer.debug_renderer,
+        {inV3.GetX(), inV3.GetY(), inV3.GetZ()},
+        {inV1.GetX(), inV1.GetY(), inV1.GetZ()},
+        {inColor.r, inColor.g, inColor.b}
+    );
+}
+
+void PhysicsDebugRenderer::DrawText3D(
+    JPH::RVec3Arg inPosition, const std::string_view& inString, JPH::ColorArg inColor, float inHeight
+) {
 }

@@ -75,6 +75,10 @@ template <> bool Editor::render_component_ui<components::Transform>(Entity e) {
     temp_rotation = glm::vec3(t->world_rotation.x, t->world_rotation.y, t->world_rotation.z);
     draw_vec3_controls("World Rotation", temp_rotation);
 
+    if (ImGui::Button("Reset Rotation")) {
+        t->rotation = glm::quat(0, 0, 0, 1);
+    }
+
     return edited;
 }
 

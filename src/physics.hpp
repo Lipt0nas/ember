@@ -25,6 +25,7 @@
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
+#include <Jolt/Renderer/DebugRendererSimple.h>
 
 struct ContactAddedEvent {
     uint32_t body_1;
@@ -194,6 +195,21 @@ public:
     }
 };
 
+class PhysicsDebugRenderer : public JPH::DebugRendererSimple {
+public:
+    class World* world = nullptr;
+
+    virtual void DrawLine(JPH::RVec3Arg inFrom, JPH::RVec3Arg inTo, JPH::ColorArg inColor) override;
+
+    virtual void DrawTriangle(
+        JPH::RVec3Arg inV1, JPH::RVec3Arg inV2, JPH::RVec3Arg inV3, JPH::ColorArg inColor, ECastShadow inCastShadow
+    ) override;
+
+    virtual void DrawText3D(
+        JPH::RVec3Arg inPosition, const std::string_view& inString, JPH::ColorArg inColor, float inHeight
+    ) override;
+};
+
 class PhysicsSystem {
 public:
     JPH::PhysicsSystem system;
@@ -204,6 +220,8 @@ public:
 
     MyBodyActivationListener body_activation_listener;
     PhysicsContactListener   contact_listener;
+
+    PhysicsDebugRenderer* debug_renderer;
 
     JPH::TempAllocatorImpl*   temp_allocator;
     JPH::JobSystemThreadPool* job_system;

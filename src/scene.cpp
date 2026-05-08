@@ -77,6 +77,19 @@ void Scene::set_node_parent(Entity child, Entity parent) {
     }
 
     entity_registry.get<components::Children>(parent).children.push_back(child);
+
+    auto c_t = get_component<components::Transform>(child);
+    auto p_t = get_component<components::Transform>(parent);
+
+    auto pos_diff    = c_t->world_position - p_t->world_position;
+    auto parent_rot  = p_t->world_rotation;
+    auto inverse_rot = glm::quat(parent_rot.x, parent_rot.y, parent_rot.z, -parent_rot.w);
+
+    pos_diff = (inverse_rot * pos_diff) / p_t->world_scale;
+
+    c_t->position = pos_diff;
+    c_t->rotation = c_t->rotation * inverse_rot;
+    c_t->scale /= p_t->world_scale;
 }
 
 void Scene::remove_node_parent(Entity child) {
