@@ -23,6 +23,10 @@ layout(set = 0, binding = 3, std430) readonly buffer ProbeBuffer {
     DDGIProbe probes[];
 };
 
+layout(set = 0, binding = 5, std430) readonly buffer DDGIVolumeData {
+    DDGIVolume volume;
+};
+
 layout(push_constant, std430) uniform pc {
     mat4 combined_matrix;
     vec3 camera_pos;
@@ -30,16 +34,18 @@ layout(push_constant, std430) uniform pc {
 } push;
 
 void main() {
+    int physical_idx = ddgi_physical_probe_index(gl_InstanceIndex, volume);
+
     // NOTE: Poor mans vertex culling, may or may not work everywhere
-    if (probes[gl_InstanceIndex].state == 0 && push.cull_innactive_probes == 1) {
+    if (probes[physical_idx].state == 0 && push.cull_innactive_probes == 1) {
         gl_Position = vec4(0.0 / 0.0);
         return;
     }
 
-    vec4 pos = vec4((in_position * draw_data[gl_InstanceIndex].w) + draw_data[gl_InstanceIndex].xyz + probes[gl_InstanceIndex].offset, 1.0);
+    vec4 pos = vec4((in_position * draw_data[gl_InstanceIndex].w) + draw_data[gl_InstanceIndex].xyz + probes[physical_idx].offset, 1.0);
     gl_Position = push.combined_matrix * pos;
 
     out_pos = pos.xyz;
     out_normal = in_normal;
-    out_probe_index = gl_InstanceIndex;
+    out_probe_index = physical_idx;
 }

@@ -1356,7 +1356,8 @@ bool AssetImporter::process_texture(
         ktxBasisParams basis_params   = {0};
         basis_params.structSize       = sizeof(basis_params);
         basis_params.compressionLevel = KTX_ETC1S_DEFAULT_COMPRESSION_LEVEL;
-        basis_params.uastc            = KTX_FALSE;
+        basis_params.uastc            = KTX_TRUE;
+        basis_params.uastcFlags       = KTX_PACK_UASTC_LEVEL_DEFAULT;
         basis_params.threadCount      = std::max(1u, std::thread::hardware_concurrency() - 1);
         basis_params.normalMap        = import_options.is_normal_map;
 

@@ -21,8 +21,9 @@ DDGIWeights compute_ddgi_weights(
 
     vec3 biased_pos = surface_pos + (surface_normal * volume.normal_bias) + (view_dir * volume.view_bias);
 
+    vec3 effective_origin = volume.grid_origin + vec3(volume.scroll_offsets) * volume.probe_spacing;
     vec3 grid_shift = vec3(volume.probe_counts - ivec3(1)) * 0.5;
-    vec3 grid_pos_float = ((biased_pos - volume.grid_origin) / volume.probe_spacing) + grid_shift;
+    vec3 grid_pos_float = ((biased_pos - effective_origin) / volume.probe_spacing) + grid_shift;
 
     ivec3 base_grid_coord = ivec3(floor(grid_pos_float));
     vec3 alpha = clamp(grid_pos_float - vec3(base_grid_coord), vec3(0.0), vec3(1.0));
@@ -31,25 +32,24 @@ DDGIWeights compute_ddgi_weights(
         ivec3 offset = ivec3((i >> 0) & 1, (i >> 1) & 1, (i >> 2) & 1);
         ivec3 probe_grid_coord = clamp(base_grid_coord + offset, ivec3(0), volume.probe_counts - ivec3(1));
 
-        int probe_idx = probe_grid_coord.z * (volume.probe_counts.x * volume.probe_counts.y)
+        ivec3 scrolled_coord = ddgi_scrolled_coord(probe_grid_coord, volume.probe_counts, volume.scroll_offsets);
+        int physical_idx = scrolled_coord.z * (volume.probe_counts.x * volume.probe_counts.y)
+                + scrolled_coord.y * volume.probe_counts.x
+                + scrolled_coord.x;
+
+        int logical_idx = probe_grid_coord.z * (volume.probe_counts.x * volume.probe_counts.y)
                 + probe_grid_coord.y * volume.probe_counts.x
                 + probe_grid_coord.x;
 
-        result.probe_indices[i] = probe_idx;
-
-        DDGIProbe probe = probes[probe_idx];
+        result.probe_indices[i] = physical_idx;
+        DDGIProbe probe = probes[physical_idx];
         if (probe.state == 0) {
             result.weights[i] = 0.0;
             continue;
         }
 
-        vec3 probe_pos = ddgi_get_probe_position(
-                probe_idx,
-                volume.probe_counts,
-                volume.grid_origin,
-                volume.probe_spacing,
-                probe.offset
-            );
+        vec3 grid_shift_pos = (volume.probe_spacing * vec3(volume.probe_counts - ivec3(1))) * 0.5;
+        vec3 probe_pos = effective_origin + vec3(probe_grid_coord) * volume.probe_spacing - grid_shift_pos + probe.offset;
 
         vec3 to_probe_biased = biased_pos - probe_pos;
         float dist_to_probe = length(to_probe_biased);
@@ -65,7 +65,7 @@ DDGIWeights compute_ddgi_weights(
 
         // Chebyshev visibility
         vec2 depth_data = 2.0 * texture(ddgi_depth, ddgi_probe_uv(
-                        volume.probe_counts, probe_idx, probe_to_surface,
+                        volume, physical_idx, probe_to_surface,
                         DDGI_PROBE_NUM_DEPTH_INTERIOR_TEXELS)).rg;
         float mean_dist = depth_data.x;
         float mean_dist_sq = depth_data.y;
@@ -113,7 +113,7 @@ vec3 sample_ddgi(
         if (s.weights[i] == 0.0) continue;
 
         vec3 probe_irradiance = texture(ddgi_atlas, ddgi_probe_uv(
-                    volume.probe_counts,
+                    volume,
                     s.probe_indices[i],
                     direction,
                     DDGI_PROBE_NUM_RADIANCE_INTERIOR_TEXELS

@@ -141,11 +141,16 @@ void main() {
         vec3 kS_ibl = F_ibl;
         vec3 kD_ibl = (vec3(1.0) - kS_ibl) * (1.0 - metallic);
 
+        float volume_weight = ddgi_get_volume_blend_weight(world_pos, volume);
+
         DDGIWeights ddgi_weights = compute_ddgi_weights(
                 volume, world_pos, normal, V, ddgi_depth
             );
 
-        vec3 irradiance = sample_ddgi(ddgi_weights, volume, bent_normal, ddgi_atlas);
+        vec3 irradiance = get_sky_color(normal, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, vec4(0.0), 0.0f);
+        if (volume_weight > 0.0f) {
+            irradiance = sample_ddgi(ddgi_weights, volume, bent_normal, ddgi_atlas);
+        }
         vec3 diffuse_ibl = kD_ibl * irradiance * albedo / PI;
 
         vec3 R = reflect(-V, normal);
@@ -175,7 +180,7 @@ void main() {
 
         vec3 ambient = diffuse_ibl * ao + specular_ibl;
         #else
-        vec3 ambient = ao * get_sky_color(V, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, vec4(0.0), 0.0f) * albedo / PI;
+        vec3 ambient = ao * get_sky_color(normal, -lighting.light_direction.xyz, lighting.sky_hemisphere_top, lighting.sky_hemisphere_bottom, vec4(0.0), 0.0f) * albedo / PI;
         #endif
         vec3 color = Lo + ambient + emissive;
 

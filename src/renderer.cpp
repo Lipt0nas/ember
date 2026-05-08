@@ -367,7 +367,7 @@ Renderer::DebugRenderer Renderer::create_debug_renderer(
     instances.resize(max_instances);
 
     std::vector<DebugLineVertex> line_vertices;
-    line_vertices.resize((1 << 16));
+    line_vertices.resize((1 << 24));
 
     Buffer line_vertex_buffer = create_buffer(
         sizeof(DebugLineVertex) * line_vertices.size() * frames_in_flight,
@@ -452,6 +452,10 @@ Renderer::DebugRenderer Renderer::create_debug_renderer(
 }
 
 void Renderer::debug_renderer_draw_line(DebugRenderer& r, glm::vec3 p1, glm::vec3 p2, glm::vec3 color) {
+    if (r.line_renderer.vertex_count >= r.line_renderer.vertices.size() - 2) {
+        return;
+    }
+
     r.line_renderer.vertices[r.line_renderer.vertex_count++] = {p1, color};
     r.line_renderer.vertices[r.line_renderer.vertex_count++] = {p2, color};
 }
@@ -4745,7 +4749,7 @@ void Renderer::initialize(
     );
 
     global_index_buffer = create_buffer(
-        1024 * 1024 * 184,
+        1024 * 1024 * 356,
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
             (this->hardware_rt_enabled ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
@@ -6518,14 +6522,66 @@ void Renderer::render_frame(float delta_time) {
     {
         auto volume = world->scene.find_component<components::DDGIVolume>();
         if (volume != entt::null) {
-
             auto t = world->scene.get_component<components::Transform>(volume);
             auto v = world->scene.get_component<components::DDGIVolume>(volume);
 
             ddgi_volume                    = v->volume;
-            ddgi_volume.grid_origin        = t->world_position;
             ddgi_volume.rotation           = t->world_rotation;
             ddgi_volume.probe_ray_rotation = ddgi_random_rotation();
+
+            if (v->volume.scrolling == 1) {
+                ddgi_volume.scrolling    = 1;
+                ddgi_volume.scroll_clear = glm::ivec4(0, 0, 0, 0);
+
+                for (int i = 0; i < 3; i++) {
+                    if (ddgi_volume.scroll_offsets[i] != 0 &&
+                        (ddgi_volume.scroll_offsets[i] % ddgi_volume.probe_counts[i] == 0)) {
+                        ddgi_volume.grid_origin[i] +=
+                            ((float)ddgi_volume.probe_counts[i] * ddgi_volume.probe_spacing[i]) *
+                            (float)ddgi_volume.scroll_directions[i];
+                        ddgi_volume.scroll_offsets[i] = 0;
+                    }
+                }
+
+                glm::vec3 offset_origin = glm::vec3(
+                    ddgi_volume.grid_origin.x + ((float)ddgi_volume.scroll_offsets.x * ddgi_volume.probe_spacing.x),
+                    ddgi_volume.grid_origin.y + ((float)ddgi_volume.scroll_offsets.y * ddgi_volume.probe_spacing.y),
+                    ddgi_volume.grid_origin.z + ((float)ddgi_volume.scroll_offsets.z * ddgi_volume.probe_spacing.z)
+                );
+
+                glm::vec3 translation = t->world_position - offset_origin;
+                ddgi_volume.scroll_directions =
+                    glm::ivec4(glm::sign(translation.x), glm::sign(translation.y), glm::sign(translation.z), 0);
+
+                auto abs_floor = [](const float value) {
+                    return value >= 0.f ? int(floor(value)) : int(ceil(value));
+                };
+
+                glm::ivec3 scroll = glm::ivec3(
+                    abs_floor(translation.x / ddgi_volume.probe_spacing.x),
+                    abs_floor(translation.y / ddgi_volume.probe_spacing.y),
+                    abs_floor(translation.z / ddgi_volume.probe_spacing.z)
+                );
+
+                if (scroll.x != 0) {
+                    ddgi_volume.scroll_offsets.x += scroll.x;
+                    ddgi_volume.scroll_clear[0] = true;
+                }
+
+                if (scroll.y != 0) {
+                    ddgi_volume.scroll_offsets.y += scroll.y;
+                    ddgi_volume.scroll_clear[1] = true;
+                }
+
+                if (scroll.z != 0) {
+                    ddgi_volume.scroll_offsets.z += scroll.z;
+                    ddgi_volume.scroll_clear[2] = true;
+                }
+            } else {
+                ddgi_volume.grid_origin = t->world_position;
+            }
+
+            v->volume = ddgi_volume;
         } else {
             ddgi_volume.enabled = 0;
         }
@@ -7116,6 +7172,12 @@ void Renderer::render_frame(float delta_time) {
     debug_renderer_constants.combined_matrix = camera->combined_matrix;
     debug_renderer_start_frame(debug_renderer, frame_index);
 
+    if (debug_physics) {
+        JPH::BodyManager::DrawSettings draw_settings = {};
+        draw_settings.mDrawShapeWireframe            = true;
+        world->physics.system.DrawBodies(draw_settings, world->physics.debug_renderer);
+    }
+
     if (ddgi_enabled() && editor_debug_ddgi.get()) {
         glm::vec3 grid_shift =
             glm::vec3(ddgi_volume.probe_counts.x - 1, ddgi_volume.probe_counts.y - 1, ddgi_volume.probe_counts.z - 1) *
@@ -7126,7 +7188,13 @@ void Renderer::render_frame(float delta_time) {
                 for (int x = 0; x < ddgi_volume.probe_counts.x; x++) {
                     glm::vec3 probe_grid_pos = glm::vec3(x, y, z) * ddgi_volume.probe_spacing;
 
-                    glm::vec3 probe_pos = ddgi_volume.grid_origin + probe_grid_pos - grid_shift;
+                    glm::vec3 scroll_offset = glm::vec3(
+                        ddgi_volume.scroll_offsets.x * ddgi_volume.probe_spacing.x,
+                        ddgi_volume.scroll_offsets.y * ddgi_volume.probe_spacing.y,
+                        ddgi_volume.scroll_offsets.z * ddgi_volume.probe_spacing.z
+                    );
+
+                    glm::vec3 probe_pos = ddgi_volume.grid_origin + scroll_offset + probe_grid_pos - grid_shift;
                     debug_renderer_draw_ddgi_sphere(debug_renderer, probe_pos, 0.5f, {1, 1, 1, 1});
                 }
             }

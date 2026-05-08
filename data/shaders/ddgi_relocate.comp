@@ -30,13 +30,14 @@ layout(set = 0, binding = 3, std430) readonly buffer DDGIVolumeData {
 };
 
 void main() {
-    uint probe_index = gl_GlobalInvocationID.x;
+    uint logical_probe_idx = gl_GlobalInvocationID.x;
 
     uint probe_count = volume.probe_counts.x * volume.probe_counts.y * volume.probe_counts.z;
+    if (logical_probe_idx >= probe_count) return;
 
-    if (probe_index >= probe_count) return;
+    uint physical_probe_idx = ddgi_physical_probe_index(int(logical_probe_idx), volume);
 
-    vec3 current_offset = probes[probe_index].offset;
+    vec3 current_offset = probes[physical_probe_idx].offset;
 
     // debugPrintfEXT("index: %d, offset: %v3f\n", probe_index, current_offset);
 
@@ -52,7 +53,7 @@ void main() {
     int ray_count = DDGI_NUM_FIXED_RAYS;
 
     for (int i = 0; i < ray_count; i++) {
-        uint global_ray_idx = probe_index * volume.rays_per_probe + i;
+        uint global_ray_idx = logical_probe_idx * volume.rays_per_probe + i;
 
         float hit_distance = ray_buffer.rays[global_ray_idx].ray_data.w;
         if (hit_distance < 0.0) {
@@ -102,5 +103,5 @@ void main() {
         current_offset = full_offset;
     }
 
-    probes[probe_index].offset = current_offset;
+    probes[physical_probe_idx].offset = current_offset;
 }

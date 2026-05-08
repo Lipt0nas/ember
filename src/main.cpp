@@ -785,6 +785,9 @@ int main(int argc, char* argv[]) {
                 for (auto [e, c, t] : controller_view.each()) {
                     JPH::Ref<JPH::CharacterVirtualSettings> character_settings = new JPH::CharacterVirtualSettings();
                     character_settings->mShape = new JPH::CapsuleShape(c.height / 2.0f - c.radius, c.radius);
+                    character_settings->mInnerBodyShape =
+                        new JPH::CapsuleShape((c.height / 2.0f - c.radius) * 1.2f, c.radius * 1.2f);
+                    character_settings->mInnerBodyLayer = Layers::MOVING;
 
                     c.controller = new JPH::CharacterVirtual(
                         character_settings,
@@ -793,7 +796,16 @@ int main(int argc, char* argv[]) {
                         0,
                         &world.physics.system
                     );
+                    c.controller->SetUserData((uint64_t)e);
                     c.controller->SetEnhancedInternalEdgeRemoval(c.enhanced_edge_removal);
+
+                    JPH::BodyLockWrite lock(
+                        world.physics.system.GetBodyLockInterface(), c.controller->GetInnerBodyID()
+                    );
+                    if (lock.Succeeded()) {
+                        auto& body = lock.GetBody();
+                        body.SetCollideKinematicVsNonDynamic(true);
+                    }
                 }
 
                 auto sound_view = world.scene.entity_registry.view<components::Sound>();
@@ -1109,6 +1121,9 @@ int main(int argc, char* argv[]) {
         ImGui::Begin(ICON_FA_COGS " Configuration");
         ImGui::InputInt("Simulate Target FPS", &simulated_fps);
         ImGui::Checkbox("Simulate FPS", &simulate_lower_fps);
+
+        ImGui::Checkbox("Debug Physics", &world.renderer.debug_physics);
+
         if (ImGui::CollapsingHeader("Renderer Info", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Text("Rendering path: %s", world.renderer.meshlets_enabled ? "Meshlets" : "Indirect");
             ImGui::Text("Raytracing enabled: %s", world.renderer.hardware_rt_enabled ? "Yes" : "No");
@@ -1377,9 +1392,14 @@ int main(int argc, char* argv[]) {
                 ImGuizmo::DecomposeMatrixToComponents(&delta_mat[0].x, &position.x, &rotation.x, &scale.x);
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
-                    t->position +=
-                        position * (p ? world.scene.get_component<components::Transform>(p->parent)->world_rotation
-                                      : glm::quat(0, 0, 0, 1));
+                    glm::quat parent_world_rot =
+                        p ? world.scene.get_component<components::Transform>(p->parent)->world_rotation
+                          : glm::quat(0, 0, 0, 1);
+
+                    float parent_world_scale =
+                        p ? world.scene.get_component<components::Transform>(p->parent)->world_scale : 1.0f;
+
+                    t->position += (position * parent_world_rot) / parent_world_scale;
                 }
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {

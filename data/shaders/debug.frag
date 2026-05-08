@@ -45,7 +45,7 @@ void main() {
         bool valid_probe = probe.state == 1;
 
         if (valid_probe) {
-            irradiance = texture(ddgi_irradiance, ddgi_probe_uv(volume.probe_counts, in_probe_index, normalize(in_normal), DDGI_PROBE_NUM_RADIANCE_INTERIOR_TEXELS)).rgb;
+            irradiance = texture(ddgi_irradiance, ddgi_probe_uv(volume, in_probe_index, normalize(in_normal), DDGI_PROBE_NUM_RADIANCE_INTERIOR_TEXELS)).rgb;
 
             vec3 exponent = vec3(volume.irradiance_encoding_gamma * 0.5);
             irradiance = pow(irradiance, exponent);

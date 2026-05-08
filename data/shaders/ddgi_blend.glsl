@@ -142,18 +142,19 @@ void main() {
         return;
     }
 
-    if (probes[probe_idx].state == 0) {
+    int physical_probe_idx = ddgi_physical_probe_index(int(probe_idx), volume);
+    if (probes[physical_probe_idx].state == 0) {
         return;
     }
 
     load_shared_memory(int(probe_idx), group_index);
 
     uint max_probes_per_row = DDGI_MAX_PROBE_COUNTS.x * DDGI_MAX_PROBE_COUNTS.y;
-
     uint actual_per_row = volume.probe_counts.x * volume.probe_counts.y;
-    uint grid_z = probe_idx / actual_per_row;
-    uint grid_y = (probe_idx % actual_per_row) / volume.probe_counts.x;
-    uint grid_x = probe_idx % volume.probe_counts.x;
+
+    uint grid_z = physical_probe_idx / actual_per_row;
+    uint grid_y = (physical_probe_idx % actual_per_row) / volume.probe_counts.x;
+    uint grid_x = physical_probe_idx % volume.probe_counts.x;
 
     uint atlas_idx = grid_z * max_probes_per_row
             + grid_y * DDGI_MAX_PROBE_COUNTS.x
@@ -260,6 +261,6 @@ void main() {
     memoryBarrier();
     barrier();
 
-    update_border_texel(group_thread_id, group_thread_id, probe_idx, probes_per_row);
+    update_border_texel(group_thread_id, group_thread_id, physical_probe_idx, probes_per_row);
 }
 #endif
