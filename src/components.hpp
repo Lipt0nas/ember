@@ -17,8 +17,8 @@ struct ScriptProperty {
     std::variant<bool, int, float, std::string, glm::vec2, glm::vec3, glm::vec4, glm::quat> value;
 };
 
-template <typename Archive> void serialize(Archive& archive, ScriptProperty& prop) {
-    archive(prop.value);
+template <typename Archive> void serialize(Archive& archive, ScriptProperty& prop, const uint32_t version) {
+    archive(cereal::make_nvp("value0", prop.value));
 }
 
 struct ScriptInstance {
@@ -39,7 +39,7 @@ struct MaterialOverrides {
                metallic_factor.has_value() || normal_scale.has_value();
     }
 
-    template <class Archive> void serialize(Archive& archive) {
+    template <class Archive> void serialize(Archive& archive, const uint32_t version) {
         archive(
             CEREAL_NVP(albedo_factor),
             CEREAL_NVP(emissive_factor),
@@ -50,7 +50,7 @@ struct MaterialOverrides {
     }
 };
 
-template <typename Archive> void serialize(Archive& archive, ScriptInstance& script) {
+template <typename Archive> void serialize(Archive& archive, ScriptInstance& script, const uint32_t version) {
     archive(
         cereal::make_nvp("id", script.script_id), cereal::make_nvp("property_overrides", script.property_overrides)
     );
@@ -240,7 +240,7 @@ namespace components {
         ::DDGIVolume volume;
     };
 
-    template <typename Archive> void serialize(Archive& archive, Transform& transform) {
+    template <typename Archive> void serialize(Archive& archive, Transform& transform, const uint32_t version) {
         archive(
             cereal::make_nvp("position", transform.position),
             cereal::make_nvp("scale", transform.scale),
@@ -248,27 +248,27 @@ namespace components {
         );
     }
 
-    template <typename Archive> void serialize(Archive& archive, Name& name) {
+    template <typename Archive> void serialize(Archive& archive, Name& name, const uint32_t version) {
         archive(cereal::make_nvp("name", name.name));
     }
 
-    template <typename Archive> void serialize(Archive& archive, Material& mat) {
+    template <typename Archive> void serialize(Archive& archive, Material& mat, const uint32_t version) {
         archive(cereal::make_nvp("id", mat.id), cereal::make_nvp("overrides", mat.overrides));
     }
 
-    template <typename Archive> void serialize(Archive& archive, Mesh& mesh) {
+    template <typename Archive> void serialize(Archive& archive, Mesh& mesh, const uint32_t version) {
         archive(cereal::make_nvp("id", mesh.id));
     }
 
-    template <typename Archive> void serialize(Archive& archive, Parent& parent) {
+    template <typename Archive> void serialize(Archive& archive, Parent& parent, const uint32_t version) {
         archive(cereal::make_nvp("parent", parent.parent));
     }
 
-    template <typename Archive> void serialize(Archive& archive, Children& children) {
+    template <typename Archive> void serialize(Archive& archive, Children& children, const uint32_t version) {
         archive(cereal::make_nvp("children", children.children));
     }
 
-    template <typename Archive> void serialize(Archive& archive, Physics& physics) {
+    template <typename Archive> void serialize(Archive& archive, Physics& physics, const uint32_t version) {
         if constexpr (cereal::traits::is_text_archive<Archive>::value) {
             archive(
                 cereal::make_nvp("is_static", physics.is_static), cereal::make_nvp("last_scale", physics.last_scale)
@@ -278,15 +278,15 @@ namespace components {
         }
     }
 
-    template <typename Archive> void serialize(Archive& archive, Script& script) {
+    template <typename Archive> void serialize(Archive& archive, Script& script, const uint32_t version) {
         archive(cereal::make_nvp("scripts", script.scripts));
     }
 
-    template <typename Archive> void serialize(Archive& archive, Tag& tag) {
+    template <typename Archive> void serialize(Archive& archive, Tag& tag, const uint32_t version) {
         archive(cereal::make_nvp("tags", tag.tags));
     }
 
-    template <typename Archive> void serialize(Archive& archive, Camera& camera) {
+    template <typename Archive> void serialize(Archive& archive, Camera& camera, const uint32_t version) {
         archive(
             cereal::make_nvp("near_plane", camera.near_plane),
             cereal::make_nvp("far_plane", camera.far_plane),
@@ -311,7 +311,8 @@ namespace components {
         );
     }
 
-    template <typename Archive> void serialize(Archive& archive, CharacterController& controller) {
+    template <typename Archive>
+    void serialize(Archive& archive, CharacterController& controller, const uint32_t version) {
         archive(
             cereal::make_nvp("height", controller.height),
             cereal::make_nvp("radius", controller.radius),
@@ -323,7 +324,7 @@ namespace components {
         );
     }
 
-    template <typename Archive> void serialize(Archive& archive, Sprite& sprite) {
+    template <typename Archive> void serialize(Archive& archive, Sprite& sprite, const uint32_t version) {
         archive(
             cereal::make_nvp("size", sprite.size),
             cereal::make_nvp("anchor", sprite.pivot),
@@ -333,7 +334,7 @@ namespace components {
         );
     }
 
-    template <typename Archive> void serialize(Archive& archive, Text& text) {
+    template <typename Archive> void serialize(Archive& archive, Text& text, const uint32_t version) {
         archive(
             cereal::make_nvp("text", text.text),
             cereal::make_nvp("color", text.color),
@@ -342,7 +343,7 @@ namespace components {
         );
     }
 
-    template <typename Archive> void serialize(Archive& archive, Sound& sound) {
+    template <typename Archive> void serialize(Archive& archive, Sound& sound, const uint32_t version) {
         archive(
             cereal::make_nvp("id", sound.sound_id),
             cereal::make_nvp("volume", sound.volume),
@@ -356,7 +357,7 @@ namespace components {
         );
     }
 
-    template <typename Archive> void serialize(Archive& archive, ParticleEffect& particle) {
+    template <typename Archive> void serialize(Archive& archive, ParticleEffect& particle, const uint32_t version) {
         archive(
             cereal::make_nvp("effect_id", particle.effect_id),
             cereal::make_nvp("active", particle.active),
@@ -364,14 +365,14 @@ namespace components {
         );
     }
 
-    template <typename Archive> void serialize(Archive& archive, World& world) {
+    template <typename Archive> void serialize(Archive& archive, World& world, const uint32_t version) {
     }
 
-    template <typename Archive> void serialize(Archive& archive, Light& light) {
+    template <typename Archive> void serialize(Archive& archive, Light& light, const uint32_t version) {
         archive(cereal::make_nvp("ies_profile", light.ies_profile), cereal::make_nvp("light", light.light));
     }
 
-    template <typename Archive> void serialize(Archive& archive, SkeletalAnimation& animation) {
+    template <typename Archive> void serialize(Archive& archive, SkeletalAnimation& animation, const uint32_t version) {
         archive(
             cereal::make_nvp("skeleton_id", animation.skeleton_id),
             cereal::make_nvp("animation_id", animation.animation_id),
@@ -380,18 +381,44 @@ namespace components {
         );
     }
 
-    template <typename Archive> void serialize(Archive& archive, DirectionalLight& directional) {
+    template <typename Archive>
+    void serialize(Archive& archive, DirectionalLight& directional, const uint32_t version) {
         archive(cereal::make_nvp("enabled", directional.enabled), cereal::make_nvp("color", directional.color));
     }
 
-    template <typename Archive> void serialize(Archive& archive, Sky& sky) {
+    template <typename Archive> void serialize(Archive& archive, Sky& sky, const uint32_t version) {
         archive(
             cereal::make_nvp("top_hemisphere_color", sky.top_hemisphere_color),
             cereal::make_nvp("bottom_hemisphere_color", sky.bottom_hemisphere_color)
         );
     }
 
-    template <typename Archive> void serialize(Archive& archive, DDGIVolume& volume) {
+    template <typename Archive> void serialize(Archive& archive, DDGIVolume& volume, const uint32_t version) {
         archive(cereal::make_nvp("volume", volume.volume));
     }
 } // namespace components
+
+CEREAL_CLASS_VERSION(ScriptProperty, 0)
+CEREAL_CLASS_VERSION(MaterialOverrides, 0)
+CEREAL_CLASS_VERSION(ScriptInstance, 0)
+CEREAL_CLASS_VERSION(components::Transform, 0)
+CEREAL_CLASS_VERSION(components::Name, 0)
+CEREAL_CLASS_VERSION(components::Material, 0)
+CEREAL_CLASS_VERSION(components::Mesh, 0)
+CEREAL_CLASS_VERSION(components::Parent, 0)
+CEREAL_CLASS_VERSION(components::Children, 0)
+CEREAL_CLASS_VERSION(components::Physics, 0)
+CEREAL_CLASS_VERSION(components::Script, 0)
+CEREAL_CLASS_VERSION(components::Tag, 0)
+CEREAL_CLASS_VERSION(components::Camera, 0)
+CEREAL_CLASS_VERSION(components::CharacterController, 0)
+CEREAL_CLASS_VERSION(components::Sprite, 0)
+CEREAL_CLASS_VERSION(components::Text, 0)
+CEREAL_CLASS_VERSION(components::Sound, 0)
+CEREAL_CLASS_VERSION(components::ParticleEffect, 0)
+CEREAL_CLASS_VERSION(components::World, 0)
+CEREAL_CLASS_VERSION(components::Light, 0)
+CEREAL_CLASS_VERSION(components::SkeletalAnimation, 0)
+CEREAL_CLASS_VERSION(components::DirectionalLight, 0)
+CEREAL_CLASS_VERSION(components::Sky, 0)
+CEREAL_CLASS_VERSION(components::DDGIVolume, 0)

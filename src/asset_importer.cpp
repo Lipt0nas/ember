@@ -495,7 +495,6 @@ AssetID AssetImporter::import_model(
             }
 
             SkeletonAssetHeader header;
-            header.version     = 1;
             header.joint_count = skeleton.joints.size();
 
             std::ofstream               asset_file(skeleton_destination, std::ios::binary);
@@ -610,7 +609,6 @@ AssetID AssetImporter::import_model(
 
         {
             AnimationAssetHeader header;
-            header.version          = 1;
             header.duration         = result.duration;
             header.skeleton_id      = skeleton_asset_id;
             header.channel_count    = channel_descs.size();
@@ -1112,7 +1110,6 @@ AssetID AssetImporter::import_model(
             }
 
             MeshAssetHeader header = {
-                .version                             = 1,
                 .vertex_buffer_size                  = vertices.size() * sizeof(Vertex),
                 .index_buffer_size                   = all_indices.size() * sizeof(uint32_t),
                 .meshlet_buffer_size                 = all_meshlets.size() * sizeof(meshopt_Meshlet),

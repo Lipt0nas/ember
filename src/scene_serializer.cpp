@@ -41,10 +41,7 @@ void SceneSerializer::load(const std::filesystem::path& path, World& world) {
 
         auto node = world.scene.entity_registry.create(id);
 
-        archive.setNextName("components");
-        archive.startNode();
         ComponentRegistry::load_node(world, node, archive);
-        archive.finishNode();
 
         archive.finishNode();
     }
@@ -87,10 +84,7 @@ void SceneSerializer::save(const std::filesystem::path& path, World& world) {
         archive.startNode();
         archive(cereal::make_nvp("id", e));
 
-        archive.setNextName("components");
-        archive.startNode();
         ComponentRegistry::save_node(world, e, archive);
-        archive.finishNode();
 
         archive.finishNode();
     }

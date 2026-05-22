@@ -255,26 +255,41 @@ void ComponentRegistry::register_components(Editor* editor) {
 }
 
 void ComponentRegistry::save_node(World& world, Entity e, cereal::JSONOutputArchive& archive) {
+    std::vector<std::string> names;
     for (auto& [name, info] : components_by_name) {
-        if (info.description.save_to_disk) {
-            info.save_func(world, e, archive);
+        if (info.description.save_to_disk && info.has_component(world, e)) {
+            names.push_back(name);
         }
     }
+
+    archive(cereal::make_nvp("component_names", names));
+
+    archive.setNextName("components");
+    archive.startNode();
+    for (const auto& name : names) {
+        components_by_name.at(name).save_func(world, e, archive);
+    }
+    archive.finishNode();
 }
 
 void ComponentRegistry::load_node(World& world, Entity e, cereal::JSONInputArchive& archive) {
-    for (auto& [name, info] : components_by_name) {
-        if (info.description.save_to_disk) {
-            try {
-                archive.setNextName(name.c_str());
-                info.load_func(world, e, archive);
-            } catch (const cereal::Exception&) {
+    std::vector<std::string> names;
+    archive(cereal::make_nvp("component_names", names));
 
-            } catch (const std::exception& ex) {
-                spdlog::warn("Failed to load component: {}: {}", name, ex.what());
-            }
+    archive.setNextName("components");
+    archive.startNode();
+    for (const auto& name : names) {
+        auto* info = get_by_name(name);
+        if (!info || !info->description.save_to_disk) {
+            archive.setNextName(name.c_str());
+            archive.startNode();
+            archive.finishNode();
+            continue;
         }
+        archive.setNextName(name.c_str());
+        info->load_func(world, e, archive);
     }
+    archive.finishNode();
 }
 
 void ComponentRegistry::save_snapshot(entt::snapshot& snapphot, cereal::BinaryOutputArchive& archive) {

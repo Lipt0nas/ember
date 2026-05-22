@@ -476,11 +476,6 @@ int World::load_skeleton(AssetID id) {
     SkeletonAssetHeader header;
     archive(header);
 
-    if (header.version != 1) {
-        spdlog::error("Skeleton asset {} has outdated version", metadata->asset_path);
-        return -1;
-    }
-
     std::vector<SkeletonAssetHeader::JointDescription> joint_descs(header.joint_count);
     archive.loadBinary(joint_descs.data(), header.joint_count * sizeof(SkeletonAssetHeader::JointDescription));
 
@@ -522,11 +517,6 @@ int World::load_animation(AssetID id) {
 
     AnimationAssetHeader header;
     archive(header);
-
-    if (header.version != 1) {
-        spdlog::error("Animation asset {} has outdated version", metadata->asset_path);
-        return -1;
-    }
 
     std::vector<AnimationAssetHeader::ChannelDescriptor> channel_descs(header.channel_count);
     archive.loadBinary(channel_descs.data(), header.channel_count * sizeof(AnimationAssetHeader::ChannelDescriptor));

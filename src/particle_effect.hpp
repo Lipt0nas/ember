@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ember.hpp"
+#include <cereal/cereal.hpp>
 
 enum class ParticleOp : int8_t {
     LOAD_ATTRIB  = 0,
@@ -29,7 +30,7 @@ struct ParticleInstruction {
     uint16_t   srcs[5];
     uint16_t   imm;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(op, dst, srcs, imm);
     }
 };
@@ -42,15 +43,16 @@ struct ParticleEmitterConfig {
     bool     additive         = true;
     bool     attached         = false;
 
-    template <class Archive> void serialize(Archive& ar) {
-        ar(max_particles, emission_rate, emitter_lifetime, loop, additive, attached);
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        ar(CEREAL_NVP(max_particles), CEREAL_NVP(emission_rate), CEREAL_NVP(emitter_lifetime),
+           CEREAL_NVP(loop), CEREAL_NVP(additive), CEREAL_NVP(attached));
     }
 };
 
 struct ParticleEffectHeader {
     uint32_t emmiter_count;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(emmiter_count);
     }
 };
@@ -61,7 +63,7 @@ struct ParticleEmitterHeader {
     uint64_t spawn_instruction_size;
     uint64_t update_instruction_size;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(spawn_register_count, update_register_count, spawn_instruction_size, update_instruction_size);
     }
 };
@@ -75,7 +77,7 @@ struct ParticleEmitterAsset {
     std::vector<glm::vec4>           update_register_state;
     std::vector<ParticleInstruction> update_instructions;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(name, spawn_register_state, spawn_instructions, update_register_state, update_instructions);
     }
 };
@@ -83,10 +85,17 @@ struct ParticleEmitterAsset {
 struct ParticleEffectAsset {
     std::vector<ParticleEmitterAsset> emitters;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(emitters);
     }
 };
+
+CEREAL_CLASS_VERSION(ParticleInstruction, 0);
+CEREAL_CLASS_VERSION(ParticleEmitterConfig, 0);
+CEREAL_CLASS_VERSION(ParticleEffectHeader, 0);
+CEREAL_CLASS_VERSION(ParticleEmitterHeader, 0);
+CEREAL_CLASS_VERSION(ParticleEmitterAsset, 0);
+CEREAL_CLASS_VERSION(ParticleEffectAsset, 0);
 
 struct Particle {
     glm::vec3 position     = {0.0f, 0.0f, 0.0f};

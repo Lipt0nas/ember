@@ -71,7 +71,7 @@ struct ParticleEffectSaveData {
         glm::vec4   constant;
         int         connected_to;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(CEREAL_NVP(id), CEREAL_NVP(slot), CEREAL_NVP(name), CEREAL_NVP(constant), CEREAL_NVP(connected_to));
         }
     };
@@ -83,7 +83,7 @@ struct ParticleEffectSaveData {
         std::vector<SavedPin> inputs;
         std::vector<SavedPin> outputs;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(CEREAL_NVP(id), CEREAL_NVP(type), CEREAL_NVP(position), CEREAL_NVP(inputs), CEREAL_NVP(outputs));
         }
     };
@@ -92,7 +92,7 @@ struct ParticleEffectSaveData {
         std::string            name;
         std::vector<SavedNode> nodes;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(CEREAL_NVP(name), CEREAL_NVP(nodes));
         }
     };
@@ -100,10 +100,15 @@ struct ParticleEffectSaveData {
     std::vector<SavedEmitter> emitters;
     std::string               editor_state;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(CEREAL_NVP(emitters), CEREAL_NVP(editor_state));
     }
 };
+
+CEREAL_CLASS_VERSION(ParticleEffectSaveData::SavedPin, 0)
+CEREAL_CLASS_VERSION(ParticleEffectSaveData::SavedNode, 0)
+CEREAL_CLASS_VERSION(ParticleEffectSaveData::SavedEmitter, 0)
+CEREAL_CLASS_VERSION(ParticleEffectSaveData, 0)
 
 class ParticleEditor {
 public:

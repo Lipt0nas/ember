@@ -7,7 +7,7 @@ struct IESProfile {
     AssetID texture_id;
     float   authored_lumens;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(CEREAL_NVP(texture_id), CEREAL_NVP(authored_lumens));
     }
 };
@@ -32,7 +32,7 @@ struct Font {
         float width;
         float height;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(CEREAL_NVP(codepoint),
                CEREAL_NVP(uvs),
                CEREAL_NVP(advance_x),
@@ -50,7 +50,7 @@ struct Font {
     float ascender;
     float descender;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(CEREAL_NVP(atlas_texture_id),
            CEREAL_NVP(glyphs),
            CEREAL_NVP(font_size),
@@ -73,7 +73,7 @@ struct MaterialDescription {
     float metallic_factor;
     float normal_scale;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(CEREAL_NVP(albedo),
            CEREAL_NVP(normals),
            CEREAL_NVP(material),
@@ -95,14 +95,12 @@ struct TextureAssetHeader {
     bool               compressed;
     SamplerDescription sampler_description;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(format, width, height, mip_levels, size, compressed, sampler_description);
     }
 };
 
 struct MeshAssetHeader {
-    uint64_t version;
-
     uint64_t vertex_buffer_size;
     uint64_t index_buffer_size;
     uint64_t meshlet_buffer_size;
@@ -130,19 +128,18 @@ struct MeshAssetHeader {
 
             float error;
 
-            template <class Archive> void serialize(Archive& ar) {
+            template <class Archive> void serialize(Archive& ar, const uint32_t version) {
                 ar(index_count, index_offset, meshlet_count, meshlet_offset, error);
             }
         } lods[8];
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(center, radius, bounds_min, bounds_max, vertex_count, lod_count, lods);
         }
     } mesh;
 
-    template <class Archive> void serialize(Archive& ar) {
-        ar(version,
-           vertex_buffer_size,
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        ar(vertex_buffer_size,
            index_buffer_size,
            meshlet_buffer_size,
            meshlet_vertex_indicies_buffer_size,
@@ -154,7 +151,6 @@ struct MeshAssetHeader {
 };
 
 struct SkeletonAssetHeader {
-    uint64_t version = 1;
     uint32_t joint_count;
 
     struct JointDescription {
@@ -164,18 +160,17 @@ struct SkeletonAssetHeader {
         glm::vec3 bind_scale;
         glm::mat4 inverse_bind_matrix;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(parent_index, bind_translation, bind_rotation, bind_scale, inverse_bind_matrix);
         }
     };
 
-    template <class Archive> void serialize(Archive& ar) {
-        ar(version, joint_count);
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        ar(joint_count);
     }
 };
 
 struct AnimationAssetHeader {
-    uint64_t version = 1;
     float    duration;
     AssetID  skeleton_id;
     uint32_t channel_count;
@@ -190,13 +185,13 @@ struct AnimationAssetHeader {
         uint32_t time_offset;
         uint32_t value_offset;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(joint_index, path, keyframe_count, time_offset, value_offset);
         }
     };
 
-    template <class Archive> void serialize(Archive& ar) {
-        ar(version, duration, skeleton_id, channel_count, time_buffer_size, vec3_buffer_size, quat_buffer_size);
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        ar(duration, skeleton_id, channel_count, time_buffer_size, vec3_buffer_size, quat_buffer_size);
     }
 };
 
@@ -440,7 +435,7 @@ struct Light {
     float authored_lumens = 0;
     int   _pad            = 0;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(CEREAL_NVP(position),
            CEREAL_NVP(radius),
            CEREAL_NVP(color),
@@ -497,7 +492,7 @@ struct DDGIVolume {
 
     glm::quat probe_ray_rotation = {0, 0, 0, 1};
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(CEREAL_NVP(grid_origin),
            CEREAL_NVP(enabled),
            CEREAL_NVP(probe_counts),
@@ -519,3 +514,18 @@ struct DDGIVolume {
            CEREAL_NVP(distance_scale));
     }
 };
+
+CEREAL_CLASS_VERSION(IESProfile, 0)
+CEREAL_CLASS_VERSION(Font::GlyphInfo, 0)
+CEREAL_CLASS_VERSION(Font, 0)
+CEREAL_CLASS_VERSION(MaterialDescription, 0)
+CEREAL_CLASS_VERSION(TextureAssetHeader, 0)
+CEREAL_CLASS_VERSION(MeshAssetHeader::MeshDescription::LOD, 0)
+CEREAL_CLASS_VERSION(MeshAssetHeader::MeshDescription, 0)
+CEREAL_CLASS_VERSION(MeshAssetHeader, 0)
+CEREAL_CLASS_VERSION(SkeletonAssetHeader::JointDescription, 0)
+CEREAL_CLASS_VERSION(SkeletonAssetHeader, 0)
+CEREAL_CLASS_VERSION(AnimationAssetHeader::ChannelDescriptor, 0)
+CEREAL_CLASS_VERSION(AnimationAssetHeader, 0)
+CEREAL_CLASS_VERSION(Light, 0)
+CEREAL_CLASS_VERSION(DDGIVolume, 0)

@@ -11,7 +11,7 @@ struct SamplerDescription {
     VkSamplerMipmapMode  mipmap_mode  = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     float                anisotropy   = 16.0f;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(CEREAL_NVP(filter), CEREAL_NVP(address_mode), CEREAL_NVP(mipmap_mode), CEREAL_NVP(anisotropy));
     }
 
@@ -62,7 +62,7 @@ public:
 
     bool is_valid() const;
 
-    template <class Archive> void serialize(Archive& ar) {
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
         ar(CEREAL_NVP(id),
            CEREAL_NVP(source_path),
            CEREAL_NVP(asset_path),
@@ -88,7 +88,7 @@ struct TextureMetadata : AssetMetadata {
 
         SamplerDescription sampler_description;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(CEREAL_NVP(is_srgb),
                CEREAL_NVP(is_normal_map),
                CEREAL_NVP(generate_mipmaps),
@@ -97,8 +97,8 @@ struct TextureMetadata : AssetMetadata {
         }
     } import_options;
 
-    template <class Archive> void serialize(Archive& ar) {
-        AssetMetadata::serialize(ar);
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        AssetMetadata::serialize(ar, 0);
         ar(CEREAL_NVP(import_options));
     }
 };
@@ -108,13 +108,13 @@ struct MeshMetadata : AssetMetadata {
         bool generate_lods     = true;
         bool generate_meshlets = true;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(CEREAL_NVP(generate_lods), CEREAL_NVP(generate_meshlets));
         }
     } import_options;
 
-    template <class Archive> void serialize(Archive& ar) {
-        AssetMetadata::serialize(ar);
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        AssetMetadata::serialize(ar, 0);
         ar(CEREAL_NVP(import_options));
     }
 };
@@ -124,7 +124,7 @@ struct ModelMetadata : AssetMetadata {
         TextureMetadata::TextureImportOptions texture_import_options;
         MeshMetadata::MeshImportOptions       mesh_import_options;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(CEREAL_NVP(texture_import_options), CEREAL_NVP(mesh_import_options));
         }
     } import_options;
@@ -144,7 +144,7 @@ struct ModelMetadata : AssetMetadata {
 
         std::vector<NodeDescription> children;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(CEREAL_NVP(name),
                CEREAL_NVP(position),
                CEREAL_NVP(scale),
@@ -158,13 +158,13 @@ struct ModelMetadata : AssetMetadata {
     struct SceneDescription {
         std::vector<NodeDescription> nodes;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(CEREAL_NVP(nodes));
         }
     } scene_description;
 
-    template <class Archive> void serialize(Archive& ar) {
-        AssetMetadata::serialize(ar);
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        AssetMetadata::serialize(ar, 0);
         ar(CEREAL_NVP(import_options), CEREAL_NVP(mesh_ids), CEREAL_NVP(texture_ids), CEREAL_NVP(scene_description));
     }
 };
@@ -175,13 +175,13 @@ struct SoundMetadata : AssetMetadata {
     struct SoundImportOptions {
         bool stream = false;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(CEREAL_NVP(stream));
         }
     } import_options;
 
-    template <class Archive> void serialize(Archive& ar) {
-        AssetMetadata::serialize(ar);
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        AssetMetadata::serialize(ar, 0);
         ar(CEREAL_NVP(import_options));
     }
 };
@@ -193,7 +193,7 @@ struct FontMetadata : AssetMetadata {
         uint32_t first_codepoint;
         uint32_t last_codepoint;
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(CEREAL_NVP(first_codepoint), CEREAL_NVP(last_codepoint));
         }
     };
@@ -205,42 +205,62 @@ struct FontMetadata : AssetMetadata {
             {32, 126},
         };
 
-        template <class Archive> void serialize(Archive& ar) {
+        template <class Archive> void serialize(Archive& ar, const uint32_t version) {
             ar(CEREAL_NVP(is_sdf), CEREAL_NVP(font_size), CEREAL_NVP(character_ranges));
         }
     } import_options;
 
     AssetID atlas_texture_id;
 
-    template <class Archive> void serialize(Archive& ar) {
-        AssetMetadata::serialize(ar);
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        AssetMetadata::serialize(ar, 0);
         ar(CEREAL_NVP(import_options), CEREAL_NVP(atlas_texture_id));
     }
 };
 
 struct ParticleEffectMetadata : AssetMetadata {
-    template <class Archive> void serialize(Archive& ar) {
-        AssetMetadata::serialize(ar);
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        AssetMetadata::serialize(ar, 0);
     }
 };
 
 struct SkeletonMetadata : AssetMetadata {
-    template <class Archive> void serialize(Archive& ar) {
-        AssetMetadata::serialize(ar);
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        AssetMetadata::serialize(ar, 0);
     }
 };
 
 struct AnimationMetadata : AssetMetadata {
     AssetID skeleton_id;
 
-    template <class Archive> void serialize(Archive& ar) {
-        AssetMetadata::serialize(ar);
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        AssetMetadata::serialize(ar, 0);
         ar(skeleton_id);
     }
 };
 
 struct IESProfileMetadata : AssetMetadata {
-    template <class Archive> void serialize(Archive& ar) {
-        AssetMetadata::serialize(ar);
+    template <class Archive> void serialize(Archive& ar, const uint32_t version) {
+        AssetMetadata::serialize(ar, 0);
     }
 };
+
+CEREAL_CLASS_VERSION(SamplerDescription, 0)
+CEREAL_CLASS_VERSION(AssetMetadata, 0)
+CEREAL_CLASS_VERSION(TextureMetadata::TextureImportOptions, 0)
+CEREAL_CLASS_VERSION(TextureMetadata, 0)
+CEREAL_CLASS_VERSION(MeshMetadata::MeshImportOptions, 0)
+CEREAL_CLASS_VERSION(MeshMetadata, 0)
+CEREAL_CLASS_VERSION(ModelMetadata::ModelImportOptions, 0)
+CEREAL_CLASS_VERSION(ModelMetadata::NodeDescription, 0)
+CEREAL_CLASS_VERSION(ModelMetadata::SceneDescription, 0)
+CEREAL_CLASS_VERSION(ModelMetadata, 0)
+CEREAL_CLASS_VERSION(SoundMetadata::SoundImportOptions, 0)
+CEREAL_CLASS_VERSION(SoundMetadata, 0)
+CEREAL_CLASS_VERSION(FontMetadata::GlyphRange, 0)
+CEREAL_CLASS_VERSION(FontMetadata::FontImportOptions, 0)
+CEREAL_CLASS_VERSION(FontMetadata, 0)
+CEREAL_CLASS_VERSION(ParticleEffectMetadata, 0)
+CEREAL_CLASS_VERSION(SkeletonMetadata, 0)
+CEREAL_CLASS_VERSION(AnimationMetadata, 0)
+CEREAL_CLASS_VERSION(IESProfileMetadata, 0)
