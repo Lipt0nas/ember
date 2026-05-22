@@ -1375,6 +1375,12 @@ int main(int argc, char* argv[]) {
 
             ImGuizmo::SetRect(viewport_pos_size.x, viewport_pos_size.y, viewport_pos_size.z, viewport_pos_size.w);
             ImGuizmo::SetAlternativeWindow(ImGui::FindWindowByName(ICON_FA_VIDEO " Scene Viewport"));
+
+            bool enable_snap = enable_transform_snap;
+            if (world.input.is_key_pressed(Key::LEFT_SHIFT)) {
+                enable_snap = true;
+            }
+
             if (ImGuizmo::Manipulate(
                     &view[0].x,
                     &projection[0].x,
@@ -1382,7 +1388,7 @@ int main(int argc, char* argv[]) {
                     ImGuizmo::MODE::WORLD,
                     &transform[0].x,
                     &delta_mat[0].x,
-                    enable_transform_snap ? &transform_snap.x : nullptr
+                    enable_snap ? &transform_snap.x : nullptr
                 )) {
                 using_gizmo = true;
 
