@@ -61,7 +61,7 @@ void Scene::delete_node(Entity node, bool delete_children) {
 void Scene::cleanup() {
 }
 
-void Scene::set_node_parent(Entity child, Entity parent) {
+void Scene::set_node_parent(Entity child, Entity parent, bool keep_local) {
     if (entity_registry.all_of<components::Parent>(child)) {
         auto old_parent = entity_registry.get<components::Parent>(child).parent;
         if (entity_registry.valid(old_parent) && entity_registry.all_of<components::Children>(old_parent)) {
@@ -78,18 +78,15 @@ void Scene::set_node_parent(Entity child, Entity parent) {
 
     entity_registry.get<components::Children>(parent).children.push_back(child);
 
-    auto c_t = get_component<components::Transform>(child);
-    auto p_t = get_component<components::Transform>(parent);
+    if (!keep_local) {
+        auto c_t = get_component<components::Transform>(child);
+        auto p_t = get_component<components::Transform>(parent);
 
-    auto pos_diff    = c_t->world_position - p_t->world_position;
-    auto parent_rot  = p_t->world_rotation;
-    auto inverse_rot = glm::quat(parent_rot.x, parent_rot.y, parent_rot.z, -parent_rot.w);
-
-    pos_diff = (inverse_rot * pos_diff) / p_t->world_scale;
-
-    c_t->position = pos_diff;
-    c_t->rotation = c_t->rotation * inverse_rot;
-    c_t->scale /= p_t->world_scale;
+        auto inverse_rot = glm::inverse(p_t->world_rotation);
+        c_t->position    = (inverse_rot * (c_t->world_position - p_t->world_position)) / p_t->world_scale;
+        c_t->rotation    = inverse_rot * c_t->world_rotation;
+        c_t->scale       = c_t->world_scale / p_t->world_scale;
+    }
 }
 
 void Scene::remove_node_parent(Entity child) {
@@ -175,16 +172,16 @@ Entity Scene::clone_node_internal(Entity base, Entity cloned_parent) {
     if (src_children) {
         for (Entity child : src_children->children) {
             Entity new_child = clone_node_internal(child, new_entity);
-            set_node_parent(new_child, new_entity);
+            set_node_parent(new_child, new_entity, true);
         }
     }
 
-    Entity parent     = cloned_parent == entt::null ? base : cloned_parent;
-    auto   src_parent = get_component<components::Parent>(parent);
-    if (src_parent) {
-        set_node_parent(new_entity, src_parent->parent);
+    if (cloned_parent == entt::null) {
+        auto src_parent = get_component<components::Parent>(base);
+        if (src_parent) {
+            set_node_parent(new_entity, src_parent->parent, false);
+        }
     }
-
     auto src_script = get_component<components::Script>(base);
     if (src_script) {
         auto& script   = add_component<components::Script>(new_entity);

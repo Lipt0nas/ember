@@ -23,7 +23,7 @@ public:
     bool                node_has_tag(Entity e, const std::string tag);
     std::vector<Entity> find_nodes_with_tag(const std::string tag);
 
-    void set_node_parent(Entity child, Entity parent);
+    void set_node_parent(Entity child, Entity parent, bool keep_local = false);
     void remove_node_parent(Entity child);
 
     template <typename T, typename... Args> T& add_component(Entity entity, Args&&... args) {

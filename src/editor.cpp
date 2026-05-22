@@ -12,11 +12,6 @@
 void append_node(World* world, const ModelMetadata::NodeDescription& desc, Entity parent) {
     auto node = world->scene.create_node(desc.name);
 
-    auto t      = world->scene.get_component<components::Transform>(node);
-    t->position = desc.position;
-    t->scale    = desc.scale;
-    t->rotation = desc.rotation;
-
     if (desc.material_id != AssetMetadata::INVALID_METADATA) {
         auto& mat = world->scene.add_component<components::Material>(node);
         mat.id    = desc.material_id;
@@ -34,6 +29,11 @@ void append_node(World* world, const ModelMetadata::NodeDescription& desc, Entit
     for (auto& child : desc.children) {
         append_node(world, child, node);
     }
+
+    auto t      = world->scene.get_component<components::Transform>(node);
+    t->position = desc.position;
+    t->scale    = desc.scale;
+    t->rotation = desc.rotation;
 }
 
 template <> bool Editor::render_component_ui<components::Transform>(Entity e) {
