@@ -36,8 +36,8 @@ layout(set = 0, binding = 2, std430) readonly uniform LightingData {
 };
 
 #if defined(DDGI_BLEND_IRRADIANCE)
-layout(set = 0, binding = 3, rgba16f) uniform image2D out_irradiance;
-layout(set = 0, binding = 4, rgba16f) uniform image2D irradiance_history;
+layout(set = 0, binding = 3, rgba32f) uniform image2D out_irradiance;
+layout(set = 0, binding = 4, rgba32f) uniform image2D irradiance_history;
 #endif
 
 #if defined(DDGI_BLEND_DEPTH)

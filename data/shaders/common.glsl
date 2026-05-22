@@ -6,7 +6,7 @@
 
 #define MESHLETS_PER_TASK 32
 
-#define EFFECT_RADIUS 1.0
+#define EFFECT_RADIUS 0.5
 #define EFFECT_FALLOFF_RANGE 0.615
 
 #define XE_GTAO_DEFAULT_RADIUS_MULTIPLIER           1.457       // Allows us to use different value as compared to ground truth radius to counter inherent screen space biases
