@@ -287,7 +287,11 @@ void ComponentRegistry::load_node(World& world, Entity e, cereal::JSONInputArchi
             continue;
         }
         archive.setNextName(name.c_str());
-        info->load_func(world, e, archive);
+        try {
+            info->load_func(world, e, archive);
+        } catch (...) {
+            spdlog::warn("Failed to load {} component", name);
+        }
     }
     archive.finishNode();
 }

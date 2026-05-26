@@ -12,6 +12,8 @@
 #include "skeletal_animation.hpp"
 #include "sound_system.hpp"
 
+#include <VHACD.h>
+
 class World {
 public:
     Renderer      renderer;
@@ -79,7 +81,11 @@ public:
     std::string load_script(AssetID id);
     std::string load_script(const std::string& path);
 
-    bool load_collision_mesh(AssetID id, JPH::TriangleList& triangles);
+    bool           load_collision_mesh(AssetID id, JPH::TriangleList& triangles);
+    bool           load_bottom_lod_mesh(AssetID id, std::vector<glm::vec3>& vertices, std::vector<uint32_t>& indices);
+    JPH::ShapeRefC get_vhacd_shape(AssetID id);
+
+    bool rebuild_physics_body(Entity e);
 
     int  load_particle_effect(AssetID id);
     int  load_particle_effect(const std::string& path);
@@ -98,6 +104,8 @@ public:
     std::unordered_map<AssetID, int> skeleton_map;
     std::unordered_map<AssetID, int> animation_map;
     std::unordered_map<AssetID, int> ies_profile_map;
+
+    std::unordered_map<AssetID, JPH::ShapeRefC> vhacd_shapes;
 
     void cleanup();
 

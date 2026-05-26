@@ -131,6 +131,9 @@ private:
     class CScriptArray* find_nodes_with_tag(const std::string& tag);
 
     bool cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance, float& t, uint32_t& entity);
+    bool cast_ray_hit_point(
+        glm::vec3 origin, glm::vec3 dir, float max_distance, glm::vec3& out_pos, glm::vec3& out_normal, uint32_t& entity
+    );
 
     int      node_id_property_index = -1;
     uint32_t get_node_id_from_object(class asIScriptObject* object);

@@ -13,6 +13,21 @@
 #include <variant>
 #include <vector>
 
+enum class PhysicsColliderType : uint32_t {
+    NONE = 0,
+    MESH,
+    VHACD,
+    BOX,
+    CAPSULE,
+    SPHERE,
+};
+
+enum class PhysicsMotionType : uint32_t {
+    STATIC = 0,
+    KINEMATIC,
+    DYNAMIC,
+};
+
 struct ScriptProperty {
     std::variant<bool, int, float, std::string, glm::vec2, glm::vec3, glm::vec4, glm::quat> value;
 };
@@ -96,13 +111,31 @@ namespace components {
 
     struct Physics {
         JPH::BodyID body_id;
-        bool        is_static;
+        glm::vec3   pivot_offset = {};
+
+        // NOTE: technically shouldn't serialize this
+        float last_scale = 1.0f;
+
+        PhysicsColliderType collider_type = PhysicsColliderType::BOX;
+
+        glm::vec3 box_half_extent     = {1.0f, 1.0f, 1.0f};
+        float     capsule_radius      = 1.0f;
+        float     capsule_half_height = 1.0f;
+        float     sphere_radius       = 1.0f;
+
+        float friction        = 0.5f;
+        float restitution     = 0.0f;
+        float linear_damping  = 0.05f;
+        float angular_damping = 0.05f;
+        float mass_override   = 0.0f;
+        float density         = 1000.0f;
+
+        PhysicsMotionType motion_type = PhysicsMotionType::STATIC;
+        uint16_t          layer       = Layers::NON_MOVING;
 
         // NOTE: used for interpolation, though maybe this could be moved to transform?
-        JPH::Vec3 last_position;
-        JPH::Quat last_rotation;
-
-        float last_scale = 1.0f;
+        JPH::Vec3 last_position = {};
+        JPH::Quat last_rotation = {};
     };
 
     struct Script {
@@ -154,6 +187,10 @@ namespace components {
         float max_slope_angle       = 45.0f;
         float gravity_scale         = 1.0f;
         bool  enhanced_edge_removal = true;
+
+        float mass     = 70.0f;
+        float strength = 170.0f;
+        float padding  = 0.05f;
 
         uint32_t collision_layer = 0;
 
@@ -269,13 +306,27 @@ namespace components {
     }
 
     template <typename Archive> void serialize(Archive& archive, Physics& physics, const uint32_t version) {
-        if constexpr (cereal::traits::is_text_archive<Archive>::value) {
-            archive(
-                cereal::make_nvp("is_static", physics.is_static), cereal::make_nvp("last_scale", physics.last_scale)
-            );
-        } else {
-            archive(physics.body_id, physics.is_static, physics.last_scale);
+        if constexpr (!cereal::traits::is_text_archive<Archive>::value) {
+            archive(cereal::make_nvp("body_id", physics.body_id));
+            archive(cereal::make_nvp("pivot_offset", physics.pivot_offset));
         }
+
+        archive(
+            cereal::make_nvp("last_scale", physics.last_scale),
+            cereal::make_nvp("collider_type", physics.collider_type),
+            cereal::make_nvp("box_half_extent", physics.box_half_extent),
+            cereal::make_nvp("capsule_radius", physics.capsule_radius),
+            cereal::make_nvp("capsule_half_height", physics.capsule_half_height),
+            cereal::make_nvp("sphere_radius", physics.sphere_radius),
+            cereal::make_nvp("friction", physics.friction),
+            cereal::make_nvp("restitution", physics.restitution),
+            cereal::make_nvp("linear_damping", physics.linear_damping),
+            cereal::make_nvp("angular_damping", physics.angular_damping),
+            cereal::make_nvp("mass_override", physics.mass_override),
+            cereal::make_nvp("density", physics.density),
+            cereal::make_nvp("motion_type", physics.motion_type),
+            cereal::make_nvp("layer", physics.layer)
+        );
     }
 
     template <typename Archive> void serialize(Archive& archive, Script& script, const uint32_t version) {
@@ -322,6 +373,14 @@ namespace components {
             cereal::make_nvp("gravity_scale", controller.gravity_scale),
             cereal::make_nvp("collision_layer", controller.collision_layer)
         );
+
+        if (version > 0) {
+            archive(
+                cereal::make_nvp("mass", controller.mass),
+                cereal::make_nvp("strength", controller.strength),
+                cereal::make_nvp("padding", controller.padding)
+            );
+        }
     }
 
     template <typename Archive> void serialize(Archive& archive, Sprite& sprite, const uint32_t version) {
@@ -411,7 +470,7 @@ CEREAL_CLASS_VERSION(components::Physics, 0)
 CEREAL_CLASS_VERSION(components::Script, 0)
 CEREAL_CLASS_VERSION(components::Tag, 0)
 CEREAL_CLASS_VERSION(components::Camera, 0)
-CEREAL_CLASS_VERSION(components::CharacterController, 0)
+CEREAL_CLASS_VERSION(components::CharacterController, 1)
 CEREAL_CLASS_VERSION(components::Sprite, 0)
 CEREAL_CLASS_VERSION(components::Text, 0)
 CEREAL_CLASS_VERSION(components::Sound, 0)

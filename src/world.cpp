@@ -710,6 +710,303 @@ bool World::load_collision_mesh(AssetID id, JPH::TriangleList& triangles) {
     return true;
 }
 
+bool World::load_bottom_lod_mesh(AssetID id, std::vector<glm::vec3>& out_vertices, std::vector<uint32_t>& out_indices) {
+    auto metadata = asset_registry.get_metadata<MeshMetadata>(id);
+    if (!metadata) {
+        spdlog::error("Failed to load mesh {}", id);
+        return false;
+    }
+
+    std::ifstream asset_file(metadata->asset_path, std::ios::binary);
+    if (!asset_file.is_open()) {
+        spdlog::error("Failed to open mesh {} for reading", metadata->asset_path);
+        return false;
+    }
+
+    cereal::BinaryInputArchive archive(asset_file);
+
+    MeshAssetHeader header;
+    archive(header);
+
+    std::vector<Vertex> vertices(header.vertex_buffer_size / sizeof(Vertex));
+    archive.loadBinary(vertices.data(), header.vertex_buffer_size);
+
+    std::vector<uint32_t> indices(header.index_buffer_size / sizeof(uint32_t));
+    archive.loadBinary(indices.data(), header.index_buffer_size);
+
+    auto lowest_lod = header.mesh.lods[header.mesh.lod_count - 1];
+    auto count      = lowest_lod.index_count;
+
+    for (size_t i = 0; i < vertices.size(); i++) {
+        out_vertices.push_back(
+            glm::vec3(
+                meshopt_dequantizeHalf(vertices[i].px),
+                meshopt_dequantizeHalf(vertices[i].py),
+                meshopt_dequantizeHalf(vertices[i].pz)
+            )
+        );
+    }
+
+    for (size_t i = 0; i < count; i += 3) {
+        auto i0 = indices[i + 0 + lowest_lod.index_offset];
+        auto i1 = indices[i + 1 + lowest_lod.index_offset];
+        auto i2 = indices[i + 2 + lowest_lod.index_offset];
+
+        out_indices.push_back(i0);
+        out_indices.push_back(i1);
+        out_indices.push_back(i2);
+    }
+
+    return true;
+}
+
+JPH::ShapeRefC World::get_vhacd_shape(AssetID id) {
+    auto it = vhacd_shapes.find(id);
+    if (it != vhacd_shapes.end()) {
+        return it->second;
+    }
+
+    std::vector<glm::vec3> vertices;
+    std::vector<uint32_t>  indices;
+    if (!load_bottom_lod_mesh(id, vertices, indices)) {
+        spdlog::warn("Failed to load bottom level LOD for VHACD");
+        return nullptr;
+    }
+
+    auto                      vhacd = VHACD::CreateVHACD();
+    VHACD::IVHACD::Parameters params;
+    params.m_maxConvexHulls                   = 32;
+    params.m_resolution                       = 100000;
+    params.m_minimumVolumePercentErrorAllowed = 1.0;
+    params.m_maxNumVerticesPerCH              = 64;
+
+    vhacd->Compute((float*)vertices.data(), vertices.size(), indices.data(), indices.size() / 3, params);
+
+    JPH::StaticCompoundShapeSettings compound;
+    for (uint32_t i = 0; i < vhacd->GetNConvexHulls(); i++) {
+        VHACD::IVHACD::ConvexHull hull;
+        if (!vhacd->GetConvexHull(i, hull)) {
+            continue;
+        }
+
+        JPH::Array<JPH::Vec3> pts;
+        for (auto& pt : hull.m_points) {
+            pts.push_back(JPH::Vec3(pt.mX, pt.mY, pt.mZ));
+        }
+
+        auto* hull_settings             = new JPH::ConvexHullShapeSettings(pts);
+        hull_settings->mMaxConvexRadius = 0.01f;
+        compound.AddShape(JPH::Vec3::sZero(), JPH::Quat::sIdentity(), hull_settings);
+    }
+
+    vhacd->Clean();
+    vhacd->Release();
+
+    auto result = compound.Create();
+    if (result.HasError()) {
+        spdlog::warn("Failed to create VHACD compound shape: {}", result.GetError());
+        return nullptr;
+    }
+
+    JPH::ShapeRefC shape = result.Get();
+    vhacd_shapes[id]     = shape;
+
+    return shape;
+}
+
+bool World::rebuild_physics_body(Entity e) {
+    auto p = scene.get_component<components::Physics>(e);
+    auto t = scene.get_component<components::Transform>(e);
+
+    if (!p) {
+        return false;
+    }
+
+    if (!p->body_id.IsInvalid()) {
+        JPH::BodyInterface& body_interface = physics.system.GetBodyInterface();
+        body_interface.RemoveBody(p->body_id);
+        body_interface.DestroyBody(p->body_id);
+
+        p->body_id = JPH::BodyID(JPH::BodyID::cInvalidBodyID);
+    }
+
+    if (p->collider_type == PhysicsColliderType::NONE) {
+        return true;
+    }
+
+    JPH::EMotionType motion_type = JPH::EMotionType::Static;
+    switch (p->motion_type) {
+    case PhysicsMotionType::STATIC:
+        motion_type = JPH::EMotionType::Static;
+        break;
+    case PhysicsMotionType::KINEMATIC:
+        motion_type = JPH::EMotionType::Kinematic;
+        break;
+    case PhysicsMotionType::DYNAMIC:
+        motion_type = JPH::EMotionType::Dynamic;
+        break;
+    }
+
+    JPH::EActivation activation =
+        p->motion_type == PhysicsMotionType::DYNAMIC ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
+
+    float scale = t->world_scale;
+
+    JPH::ShapeRefC shape;
+
+    switch (p->collider_type) {
+    case PhysicsColliderType::BOX: {
+        auto                  he = p->box_half_extent;
+        JPH::BoxShapeSettings settings(JPH::Vec3(he.x, he.y, he.z) * scale);
+        auto                  result = settings.Create();
+        if (result.HasError()) {
+            spdlog::warn("Failed to create box shape: {}", result.GetError());
+            return false;
+        }
+        shape = result.Get();
+        break;
+    }
+    case PhysicsColliderType::CAPSULE: {
+        JPH::CapsuleShapeSettings settings(p->capsule_half_height * scale, p->capsule_radius * scale);
+        auto                      result = settings.Create();
+        if (result.HasError()) {
+            spdlog::warn("Failed to create capsule shape: {}", result.GetError());
+            return false;
+        }
+        shape = result.Get();
+
+        break;
+    }
+    case PhysicsColliderType::SPHERE: {
+        JPH::SphereShapeSettings settings(p->sphere_radius * scale);
+        auto                     result = settings.Create();
+        if (result.HasError()) {
+            spdlog::warn("Failed to create sphere shape: {}", result.GetError());
+            return false;
+        }
+        shape = result.Get();
+        break;
+    }
+    case PhysicsColliderType::MESH: {
+        auto m = scene.get_component<components::Mesh>(e);
+        if (!m) {
+            spdlog::warn("No source mesh component for Mesh collider");
+            return false;
+        }
+
+        if (p->motion_type == PhysicsMotionType::DYNAMIC) {
+            spdlog::warn("Mesh collider body can't be dynamic");
+            return false;
+        }
+
+        JPH::TriangleList triangles;
+        if (!load_collision_mesh(m->id, triangles)) {
+            spdlog::warn("Failed to load bottom level LOD for Mesh");
+            return false;
+        }
+
+        JPH::MeshShapeSettings mesh_settings(triangles);
+
+        auto result = mesh_settings.Create();
+        if (result.HasError()) {
+            spdlog::warn("Failed to create Mesh compound shape: {}", result.GetError());
+            return false;
+        }
+
+        if (scale != 1.0f) {
+            JPH::ScaledShapeSettings scaled(result.Get(), JPH::Vec3::sReplicate(scale));
+            auto                     scaled_result = scaled.Create();
+            if (scaled_result.HasError()) {
+                spdlog::warn("Failed to create scaled Mesh shape: {}", scaled_result.GetError());
+                return false;
+            }
+            shape = scaled_result.Get();
+        } else {
+            shape = result.Get();
+        }
+
+        break;
+    }
+    case PhysicsColliderType::VHACD: {
+        auto m = scene.get_component<components::Mesh>(e);
+
+        if (!m) {
+            spdlog::warn("No source mesh component for VHACD");
+            return false;
+        }
+
+        JPH::ShapeRefC result = get_vhacd_shape(m->id);
+        if (!result) {
+            return false;
+        }
+
+        if (scale != 1.0f) {
+            JPH::ScaledShapeSettings scaled(result, JPH::Vec3::sReplicate(scale));
+            auto                     scaled_result = scaled.Create();
+            if (scaled_result.HasError()) {
+                spdlog::warn("Failed to create scaled VHACD shape: {}", scaled_result.GetError());
+                return false;
+            }
+            shape = scaled_result.Get();
+        } else {
+            shape = result;
+        }
+        break;
+    }
+    default:
+        return false;
+    }
+
+    auto pos = t->world_position;
+    auto rot = t->world_rotation;
+
+    glm::vec3 pivot = p->pivot_offset * scale;
+    JPH::Vec3 shape_offset(-pivot.x, -pivot.y, -pivot.z);
+
+    if (shape_offset.Length() > 0.001f) {
+        JPH::OffsetCenterOfMassShapeSettings offset_settings(shape_offset, shape);
+        auto                                 offset_result = offset_settings.Create();
+        if (offset_result.HasError()) {
+            spdlog::warn("Failed to offset shape: {}", offset_result.GetError());
+            return false;
+        }
+        shape = offset_result.Get();
+    }
+
+    JPH::RVec3 body_pos = JPH::RVec3(pos.x, pos.y, pos.z);
+    JPH::Quat  body_rot = JPH::Quat(rot.x, rot.y, rot.z, rot.w);
+
+    JPH::BodyCreationSettings body_settings(shape, body_pos, body_rot, motion_type, p->layer);
+
+    body_settings.mAllowDynamicOrKinematic = true;
+    body_settings.mFriction                = p->friction;
+    body_settings.mRestitution             = p->restitution;
+    body_settings.mLinearDamping           = p->linear_damping;
+    body_settings.mAngularDamping          = p->angular_damping;
+
+    if (p->mass_override > 0.0f) {
+        body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
+        body_settings.mMassPropertiesOverride.mMass = p->mass_override;
+    } else {
+        body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateMassAndInertia;
+        body_settings.mMassPropertiesOverride.mMass = p->density;
+    }
+
+    JPH::BodyInterface& bi      = physics.system.GetBodyInterface();
+    JPH::BodyID         body_id = bi.CreateAndAddBody(body_settings, activation);
+
+    if (body_id.IsInvalid()) {
+        spdlog::warn("Failed to create physics body");
+        return false;
+    }
+
+    bi.SetUserData(body_id, (uint64_t)e);
+    p->body_id    = body_id;
+    p->last_scale = scale;
+
+    return true;
+}
+
 int World::load_particle_effect(AssetID id) {
     auto it = particle_effect_map.find(id);
     if (it != particle_effect_map.end()) {

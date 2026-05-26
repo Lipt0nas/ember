@@ -9,6 +9,8 @@
 #include <imgui_internal.h>
 #include <imgui_stdlib.h>
 
+#include <VHACD.h>
+
 void append_node(World* world, const ModelMetadata::NodeDescription& desc, Entity parent) {
     auto node = world->scene.create_node(desc.name);
 
@@ -348,14 +350,175 @@ template <> bool Editor::render_component_ui<components::Script>(Entity e) {
 template <> bool Editor::render_component_ui<components::Physics>(Entity e) {
     auto* p = world->scene.get_component<components::Physics>(e);
 
+    bool edited = false;
+
+    static std::vector<std::string> collider_types = {"NONE", "MESH", "VHACD", "BOX", "CAPSULE", "SPHERE"};
+    static std::vector<std::string> motion_types   = {"STATIC", "KINEMATIC", "DYNAMIC"};
+
     if (p->body_id.IsInvalid()) {
-        ImGui::Text("Invalid");
+        ImGui::Text("No Physics Body");
     } else {
         ImGui::Text("BodyID: %u", p->body_id.GetIndex());
-        ImGui::Text("Static : %u", p->is_static);
     }
 
-    return false;
+    ImGui::Spacing();
+
+    int collider_idx = (int)p->collider_type;
+    if (ImGui::BeginCombo("Collider", collider_types[collider_idx].c_str())) {
+        for (int i = 0; i < (int)collider_types.size(); i++) {
+            bool selected = (i == collider_idx);
+            if (ImGui::Selectable(collider_types[i].c_str(), selected)) {
+                p->collider_type = (PhysicsColliderType)i;
+                edited           = true;
+
+                world->rebuild_physics_body(e);
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    switch (p->collider_type) {
+    case PhysicsColliderType::BOX:
+        ImGui::DragFloat3("Half Extent", &p->box_half_extent.x, 0.01f, 0.001f, FLT_MAX);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            world->rebuild_physics_body(e);
+            edited = true;
+        }
+        break;
+    case PhysicsColliderType::CAPSULE:
+        ImGui::DragFloat("Radius##capsule", &p->capsule_radius, 0.01f, 0.001f, FLT_MAX);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            world->rebuild_physics_body(e);
+            edited = true;
+        }
+        ImGui::DragFloat("Half Height", &p->capsule_half_height, 0.01f, 0.001f, FLT_MAX);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            world->rebuild_physics_body(e);
+            edited = true;
+        }
+        break;
+    case PhysicsColliderType::SPHERE:
+        ImGui::DragFloat("Radius##sphere", &p->sphere_radius, 0.01f, 0.001f, FLT_MAX);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            world->rebuild_physics_body(e);
+            edited = true;
+        }
+        break;
+    default:
+        break;
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    int motion_idx = (int)p->motion_type;
+    if (ImGui::BeginCombo("Motion", motion_types[motion_idx].c_str())) {
+        for (int i = 0; i < (int)motion_types.size(); i++) {
+            bool selected = (i == motion_idx);
+            if (ImGui::Selectable(motion_types[i].c_str(), selected)) {
+                p->motion_type = (PhysicsMotionType)i;
+                if (!p->body_id.IsInvalid()) {
+                    world->physics.system.GetBodyInterface().SetMotionType(
+                        p->body_id,
+                        i == 0   ? JPH::EMotionType::Static
+                        : i == 1 ? JPH::EMotionType::Kinematic
+                                 : JPH::EMotionType::Dynamic,
+                        JPH::EActivation::Activate
+                    );
+                }
+                edited = true;
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    // TODO: layer naming
+    int layer = (int)p->layer;
+    if (ImGui::InputInt("Layer", &layer)) {
+        p->layer = (uint16_t)std::clamp(layer, 0, 65535);
+        if (!p->body_id.IsInvalid()) {
+            world->physics.system.GetBodyInterface().SetObjectLayer(p->body_id, p->layer);
+        }
+        edited = true;
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Friction", &p->friction, 0.0f, 1.0f);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            if (!p->body_id.IsInvalid()) {
+                world->physics.system.GetBodyInterface().SetFriction(p->body_id, p->friction);
+            }
+            edited = true;
+        }
+
+        ImGui::SliderFloat("Restitution", &p->restitution, 0.0f, 1.0f);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            if (!p->body_id.IsInvalid()) {
+                world->physics.system.GetBodyInterface().SetRestitution(p->body_id, p->restitution);
+            }
+            edited = true;
+        }
+
+        ImGui::SliderFloat("Linear Damping", &p->linear_damping, 0.0f, 1.0f);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            if (!p->body_id.IsInvalid()) {
+                JPH::BodyLockWrite lock(world->physics.system.GetBodyLockInterface(), p->body_id);
+                if (lock.Succeeded()) {
+                    JPH::MotionProperties* mp = lock.GetBody().GetMotionProperties();
+                    mp->SetLinearDamping(p->linear_damping);
+                }
+            }
+            edited = true;
+        }
+
+        ImGui::SliderFloat("Angular Damping", &p->angular_damping, 0.0f, 1.0f);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            if (!p->body_id.IsInvalid()) {
+                JPH::BodyLockWrite lock(world->physics.system.GetBodyLockInterface(), p->body_id);
+                if (lock.Succeeded()) {
+                    JPH::MotionProperties* mp = lock.GetBody().GetMotionProperties();
+                    mp->SetAngularDamping(p->angular_damping);
+                }
+            }
+            edited = true;
+        }
+
+        ImGui::Spacing();
+
+        bool use_override = p->mass_override > 0.0f;
+        if (ImGui::Checkbox("Override Mass", &use_override)) {
+            p->mass_override = use_override ? 1.0f : 0.0f;
+            world->rebuild_physics_body(e);
+            edited = true;
+        }
+
+        if (use_override) {
+            ImGui::DragFloat("Mass kg", &p->mass_override, 0.5f, 0.001f, FLT_MAX);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                world->rebuild_physics_body(e);
+                edited = true;
+            }
+        } else {
+            ImGui::DragFloat("Density kg/m", &p->density, 1.0f, 0.001f, FLT_MAX);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                world->rebuild_physics_body(e);
+                edited = true;
+            }
+        }
+    }
+
+    return edited;
 }
 
 template <> bool Editor::render_component_ui<components::Tag>(Entity e) {
@@ -545,6 +708,15 @@ template <> bool Editor::render_component_ui<components::CharacterController>(En
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     ImGui::DragFloat("Max Slope Angle", &c->max_slope_angle, 0.1f, 0.01f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::DragFloat("Padding", &c->padding, 0.1f, 0.01f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::DragFloat("Mass", &c->mass, 0.1f, 0.01f);
+    edited |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::DragFloat("Strength", &c->strength, 0.1f, 0.01f);
     edited |= ImGui::IsItemDeactivatedAfterEdit();
 
     ImGui::DragFloat("Gravity Scale", &c->gravity_scale, 0.1f, 0.01f);
@@ -1254,52 +1426,6 @@ bool Editor::render_main_menu() {
             if (ImGui::MenuItem("Generate predefined script file")) {
                 world->script.generate_predefined_file();
             }
-
-            if (ImGui::MenuItem("Bake Static Collision Shapes")) {
-                auto view = world->scene.entity_registry.view<components::Transform, components::Mesh>(
-                    entt::exclude_t<components::Physics>()
-                );
-
-                for (auto [e, t, m] : view.each()) {
-                    JPH::TriangleList triangles;
-                    if (!world->load_collision_mesh(m.id, triangles)) {
-                        continue;
-                    }
-
-                    JPH::MeshShapeSettings mesh_settings(triangles);
-                    JPH::ShapeRefC         collision_shape = mesh_settings.Create().Get();
-
-                    JPH::ShapeRefC final_shape;
-                    float          scale = t.world_scale;
-                    if (scale != 1.0f) {
-                        JPH::ScaledShapeSettings scaled(collision_shape, JPH::Vec3::sReplicate(scale));
-                        final_shape = scaled.Create().Get();
-                    } else {
-                        final_shape = collision_shape;
-                    }
-
-                    JPH::BodyInterface& body_interface = world->physics.system.GetBodyInterface();
-
-                    auto                      pos = t.world_position;
-                    auto                      rot = t.world_rotation;
-                    JPH::BodyCreationSettings body_settings(
-                        final_shape,
-                        JPH::RVec3(pos.x, pos.y, pos.z),
-                        JPH::Quat(rot.x, rot.y, rot.z, rot.w),
-                        JPH::EMotionType::Static,
-                        Layers::NON_MOVING
-                    );
-
-                    JPH::BodyID body_id =
-                        body_interface.CreateAndAddBody(body_settings, JPH::EActivation::DontActivate);
-
-                    auto& p = world->scene.add_component<components::Physics>(e);
-                    body_interface.SetUserData(body_id, (uint32_t)e);
-                    p.body_id    = body_id;
-                    p.is_static  = true;
-                    p.last_scale = scale;
-                }
-            }
             ImGui::EndMenu();
         }
 
@@ -1841,8 +1967,16 @@ bool Editor::render_asset_explorer() {
 
         bool open_new_particle_effect_popup = false;
 
+        static std::string filter = "";
+        ImGui::InputText("Filter", &filter);
+
         if (ImGui::BeginTable("asset_explorer_grid_inner", colum_count)) {
             for (const auto asset : assets[selected_type]) {
+                bool should_draw = filter.empty() || asset->source_path.contains(filter);
+                if (!should_draw) {
+                    continue;
+                }
+
                 ImGui::TableNextColumn();
 
                 bool selected = selected_asset == asset->id;

@@ -136,7 +136,14 @@ private:
     int newest_snapshot = 0;
 };
 
-void update_transform_hierarchy(World& world) {
+void update_transform_hierarchy(World& world, bool force_dirty = false) {
+    if (force_dirty) {
+        auto view = world.scene.entity_registry.view<components::Transform>();
+        for (auto [e, t] : view.each()) {
+            t.dirty = true;
+        }
+    }
+
     ZoneScopedN("Update Transforms");
     auto root_view = world.scene.entity_registry.view<components::Transform>(entt::exclude<components::Parent>);
     for (auto [e, t] : root_view.each()) {
@@ -170,7 +177,7 @@ void update_transform_hierarchy(World& world) {
             ct.world_rotation = parent_transform.world_rotation * ct.rotation;
             ct.world_scale    = parent_transform.world_scale * ct.scale;
             ct.world_position = parent_transform.world_position +
-                                (parent_transform.world_rotation * (ct.position * parent_transform.scale));
+                                (parent_transform.world_rotation * (ct.position * parent_transform.world_scale));
 
             processed.insert(e);
             has_updates = true;
@@ -327,47 +334,11 @@ int main(int argc, char* argv[]) {
     editor.initialize(&world);
 
     SceneSerializer::load(world.asset_registry.root_path(), world);
-    update_transform_hierarchy(world);
+    update_transform_hierarchy(world, true);
     {
-        auto view = world.scene.entity_registry.view<components::Transform, components::Mesh, components::Physics>();
-        for (auto [e, t, m, p] : view.each()) {
-            if (p.is_static == false) {
-                continue;
-            }
-
-            JPH::TriangleList triangles;
-            if (!world.load_collision_mesh(m.id, triangles)) {
-                continue;
-            }
-
-            JPH::MeshShapeSettings mesh_settings(triangles);
-            JPH::ShapeRefC         collision_shape = mesh_settings.Create().Get();
-
-            JPH::ShapeRefC final_shape;
-            float          scale = t.world_scale;
-            if (scale != 1.0f) {
-                JPH::ScaledShapeSettings scaled(collision_shape, JPH::Vec3::sReplicate(scale));
-                final_shape = scaled.Create().Get();
-            } else {
-                final_shape = collision_shape;
-            }
-
-            JPH::BodyInterface& body_interface = world.physics.system.GetBodyInterface();
-
-            auto                      pos = t.world_position;
-            auto                      rot = t.world_rotation;
-            JPH::BodyCreationSettings body_settings(
-                final_shape,
-                JPH::RVec3(pos.x, pos.y, pos.z),
-                JPH::Quat(rot.x, rot.y, rot.z, rot.w),
-                JPH::EMotionType::Static,
-                Layers::NON_MOVING
-            );
-
-            JPH::BodyID body_id = body_interface.CreateAndAddBody(body_settings, JPH::EActivation::DontActivate);
-            body_interface.SetUserData(body_id, (uint32_t)e);
-            p.body_id    = body_id;
-            p.last_scale = scale;
+        auto view = world.scene.entity_registry.view<components::Physics>();
+        for (auto [e, p] : view.each()) {
+            world.rebuild_physics_body(e);
         }
     }
     world.renderer.wait_idle();
@@ -504,46 +475,6 @@ int main(int argc, char* argv[]) {
 
             accumulated_fps = 0;
             time_passed -= 1.0f;
-        }
-
-        {
-            if (!editor_mode || !use_editor_camera) {
-                auto view = world.scene.entity_registry.view<components::Camera, components::Transform>();
-                for (auto [e, c, t] : view.each()) {
-                    if (c.is_active) {
-                        gameplay_camera.near_plane = c.near_plane;
-                        gameplay_camera.far_plane  = c.far_plane;
-
-                        gameplay_camera.viewport_width  = c.viewport_width * world.renderer.swapchain.width;
-                        gameplay_camera.viewport_height = c.viewport_height * world.renderer.swapchain.height;
-
-                        gameplay_camera.fov        = c.fov;
-                        gameplay_camera.ortho_size = c.ortho_size;
-
-                        gameplay_camera.type        = c.type;
-                        gameplay_camera.position    = t.world_position;
-                        gameplay_camera.orientation = t.world_rotation;
-
-                        world.renderer.composite_push_constants.enable_auto_exposure  = !c.manual_exposure;
-                        world.renderer.composite_push_constants.exposure_compensation = c.ev_compensation;
-                        world.renderer.composite_push_constants.min_ev100             = c.min_ev100;
-                        world.renderer.composite_push_constants.max_ev100             = c.max_ev100;
-                        world.renderer.adaption_speed                                 = c.adaption_speed;
-                        world.renderer.camera_aperture                                = c.aperture;
-                        world.renderer.camera_shutter_time                            = c.shutter_time;
-                        world.renderer.camera_iso                                     = c.iso;
-                        world.renderer.min_log_lum                                    = c.min_log_luminance;
-                        world.renderer.max_log_lum                                    = c.max_log_luminance;
-
-                        update_camera(gameplay_camera);
-
-                        camera = &gameplay_camera;
-                        break;
-                    }
-                }
-            } else {
-                camera = &editor_camera;
-            }
         }
 
         static std::queue<std::string> dropped_filenames;
@@ -737,24 +668,15 @@ int main(int argc, char* argv[]) {
 
             if (editor_mode) {
                 // Entering editor state
-                editor_overlay   = true;
-                world.is_running = false;
+                editor_overlay           = true;
+                world.is_running         = false;
+                physics_time_accumulator = 0.0f;
 
                 auto sound_view = world.scene.entity_registry.view<components::Sound>();
                 for (auto [e, s] : sound_view.each()) {
                     s.instance_id = SoundSystem::INVALID_SOUND_INSTANCE;
                 }
                 world.sound.stop_all_sounds();
-
-                auto physics_view = world.scene.entity_registry.view<components::Physics>();
-                for (auto [e, p] : physics_view.each()) {
-                    if (!p.body_id.IsInvalid()) {
-                        if (!p.is_static) {
-                            world.physics.system.GetBodyInterface().RemoveBody(p.body_id);
-                            world.physics.system.GetBodyInterface().DestroyBody(p.body_id);
-                        }
-                    }
-                }
 
                 auto controller_view = world.scene.entity_registry.view<components::CharacterController>();
                 for (auto [e, c] : controller_view.each()) {
@@ -765,14 +687,56 @@ int main(int argc, char* argv[]) {
                 world.resources.runtime_materials.clear();
                 scene_history.load_snapshot(world);
 
+                update_transform_hierarchy(world, true);
+                JPH::BodyInterface& bi = world.physics.system.GetBodyInterface();
+                auto physics_view      = world.scene.entity_registry.view<components::Physics, components::Transform>();
+                for (auto [e, p, t] : physics_view.each()) {
+                    if (p.body_id.IsInvalid()) {
+                        continue;
+                    }
+
+                    bi.SetPosition(
+                        p.body_id,
+                        JPH::RVec3(t.world_position.x, t.world_position.y, t.world_position.z),
+                        JPH::EActivation::DontActivate
+                    );
+                    bi.SetRotation(
+                        p.body_id,
+                        JPH::Quat(t.world_rotation.x, t.world_rotation.y, t.world_rotation.z, t.world_rotation.w),
+                        JPH::EActivation::DontActivate
+                    );
+                    bi.SetLinearVelocity(p.body_id, JPH::Vec3::sZero());
+                    bi.SetAngularVelocity(p.body_id, JPH::Vec3::sZero());
+                    bi.DeactivateBody(p.body_id);
+                }
+
                 SDL_SetWindowMouseGrab(window, false);
                 SDL_SetWindowRelativeMouseMode(window, false);
                 capturing_mouse = false;
             } else {
                 // Entering play state
-                editor_overlay = false;
+                editor_overlay           = false;
+                physics_time_accumulator = 0.0f;
 
                 world.script.reload_scripts();
+
+                JPH::BodyInterface& bi           = world.physics.system.GetBodyInterface();
+                auto                physics_view = world.scene.entity_registry.view<components::Physics>();
+                for (auto [e, p] : physics_view.each()) {
+                    if (p.body_id.IsInvalid()) {
+                        continue;
+                    }
+
+                    if (p.motion_type == PhysicsMotionType::DYNAMIC) {
+                        bi.ActivateBody(p.body_id);
+                    }
+
+                    JPH::Vec3 pos;
+                    JPH::Quat rot;
+                    bi.GetPositionAndRotation(p.body_id, pos, rot);
+                    p.last_position = pos;
+                    p.last_rotation = rot;
+                }
 
                 if (scene_history.snapshot_count() == 0) {
                     scene_history.create_snapshot(world);
@@ -784,10 +748,9 @@ int main(int argc, char* argv[]) {
                     world.scene.entity_registry.view<components::CharacterController, components::Transform>();
                 for (auto [e, c, t] : controller_view.each()) {
                     JPH::Ref<JPH::CharacterVirtualSettings> character_settings = new JPH::CharacterVirtualSettings();
-                    character_settings->mShape = new JPH::CapsuleShape(c.height / 2.0f - c.radius, c.radius);
-                    character_settings->mInnerBodyShape =
-                        new JPH::CapsuleShape((c.height / 2.0f - c.radius) * 1.2f, c.radius * 1.2f);
-                    character_settings->mInnerBodyLayer = Layers::MOVING;
+                    character_settings->mShape            = new JPH::CapsuleShape(c.height / 2.0f - c.radius, c.radius);
+                    character_settings->mCharacterPadding = c.padding;
+                    character_settings->mMaxSlopeAngle    = c.max_slope_angle;
 
                     c.controller = new JPH::CharacterVirtual(
                         character_settings,
@@ -796,16 +759,10 @@ int main(int argc, char* argv[]) {
                         0,
                         &world.physics.system
                     );
+                    c.controller->SetMaxStrength(c.strength);
+                    c.controller->SetMass(c.mass);
                     c.controller->SetUserData((uint64_t)e);
                     c.controller->SetEnhancedInternalEdgeRemoval(c.enhanced_edge_removal);
-
-                    JPH::BodyLockWrite lock(
-                        world.physics.system.GetBodyLockInterface(), c.controller->GetInnerBodyID()
-                    );
-                    if (lock.Succeeded()) {
-                        auto& body = lock.GetBody();
-                        body.SetCollideKinematicVsNonDynamic(true);
-                    }
                 }
 
                 auto sound_view = world.scene.entity_registry.view<components::Sound>();
@@ -858,8 +815,9 @@ int main(int argc, char* argv[]) {
                     continue;
                 }
 
-                JPH::EActivation activation =
-                    physics.is_static ? JPH::EActivation::DontActivate : JPH::EActivation::Activate;
+                JPH::EActivation activation = (world.is_running && physics.motion_type == PhysicsMotionType::DYNAMIC)
+                                                  ? JPH::EActivation::Activate
+                                                  : JPH::EActivation::DontActivate;
 
                 if (transform.world_scale != physics.last_scale && transform.world_scale != 0.0f) {
                     float scale_delta = transform.world_scale / physics.last_scale;
@@ -874,7 +832,7 @@ int main(int argc, char* argv[]) {
                     physics.last_scale = transform.world_scale;
                 }
 
-                if (!physics.is_static && !transform.dirty) {
+                if (physics.motion_type == PhysicsMotionType::DYNAMIC && !transform.dirty) {
                     continue;
                 }
 
@@ -895,13 +853,13 @@ int main(int argc, char* argv[]) {
                     activation
                 );
 
-                if (!physics.is_static && transform.dirty) {
+                if (physics.motion_type == PhysicsMotionType::DYNAMIC && transform.dirty) {
                     transform.dirty = false;
                 }
             }
         }
 
-        {
+        if (world.is_running) {
             ZoneScopedN("Physics Update");
             auto update_view = world.scene.entity_registry.view<components::Transform, components::Physics>();
 
@@ -933,11 +891,10 @@ int main(int argc, char* argv[]) {
 
             {
                 ZoneScopedN("Interpolate Physics Objects");
-                auto interpolate_view =
-                    world.scene.entity_registry.view<components::Transform, components::Physics, components::Mesh>();
-                float physics_alpha = physics_time_accumulator / world.physics.frame_time;
-                for (auto [entity, transform, physics, m] : interpolate_view.each()) {
-                    if (physics.is_static || physics.body_id.IsInvalid()) {
+                auto  interpolate_view = world.scene.entity_registry.view<components::Transform, components::Physics>();
+                float physics_alpha    = physics_time_accumulator / world.physics.frame_time;
+                for (auto [entity, transform, physics] : interpolate_view.each()) {
+                    if (physics.motion_type != PhysicsMotionType::DYNAMIC || physics.body_id.IsInvalid()) {
                         continue;
                     }
 
@@ -958,24 +915,24 @@ int main(int argc, char* argv[]) {
                         physics.last_rotation.GetW()
                     );
 
-                    int mesh_index = m.instance.mesh_id;
-                    if (mesh_index != -1) {
-                        Mesh& geometry = world.resources.meshes[mesh_index];
+                    glm::vec3 interp_pos = glm::mix(old_pos, new_pos, physics_alpha);
+                    glm::quat interp_rot = glm::slerp(old_rot, new_rot, physics_alpha);
 
-                        glm::vec3 center = (geometry.bounds_max + geometry.bounds_min) * 0.5f;
-                        glm::vec3 offset = new_rot * (center * m.instance.scale);
+                    auto* parent = world.scene.get_component<components::Parent>(entity);
+                    if (parent) {
+                        auto* pt = world.scene.get_component<components::Transform>(parent->parent);
 
-                        transform.position = glm::mix(old_pos, new_pos, physics_alpha) - offset;
-                        transform.rotation = glm::slerp(old_rot, new_rot, physics_alpha);
+                        glm::quat parent_inv_rot = glm::inverse(pt->world_rotation);
+                        transform.position       = parent_inv_rot * (interp_pos - pt->world_position) / pt->world_scale;
+                        transform.rotation       = parent_inv_rot * interp_rot;
+                    } else {
+                        transform.position = interp_pos;
+                        transform.rotation = interp_rot;
                     }
-                }
-            }
-        }
 
-        if (!editor_mode) {
-            auto script_view = world.scene.entity_registry.view<components::Script>();
-            for (auto [e, s] : script_view.each()) {
-                world.script.call_on_update(s, delta_time);
+                    transform.world_position = interp_pos;
+                    transform.world_rotation = interp_rot;
+                }
             }
         }
 
@@ -1002,8 +959,12 @@ int main(int argc, char* argv[]) {
                 c.controller->SetLinearVelocity(JPH::Vec3(c.velocity.x, c.velocity.y, c.velocity.z));
 
                 JPH::CharacterVirtual::ExtendedUpdateSettings update_settings;
-                update_settings.mStickToFloorStepDown = JPH::Vec3(0, -c.step_down_distance, 0);
-                update_settings.mWalkStairsStepUp     = JPH::Vec3(0, c.step_up_height, 0);
+                if (c.velocity.y > 0.0f) {
+                    update_settings.mStickToFloorStepDown = JPH::Vec3::sZero();
+                } else {
+                    update_settings.mStickToFloorStepDown = JPH::Vec3(0, -c.step_down_distance, 0);
+                }
+                update_settings.mWalkStairsStepUp = JPH::Vec3(0, c.step_up_height, 0);
 
                 c.controller->ExtendedUpdate(
                     delta_time,
@@ -1024,7 +985,54 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        update_transform_hierarchy(world);
+        if (!editor_mode) {
+            auto script_view = world.scene.entity_registry.view<components::Script>();
+            for (auto [e, s] : script_view.each()) {
+                world.script.call_on_update(s, delta_time);
+            }
+        }
+
+        update_transform_hierarchy(world, false);
+
+        {
+            if (!editor_mode || !use_editor_camera) {
+                auto view = world.scene.entity_registry.view<components::Camera, components::Transform>();
+                for (auto [e, c, t] : view.each()) {
+                    if (c.is_active) {
+                        gameplay_camera.near_plane = c.near_plane;
+                        gameplay_camera.far_plane  = c.far_plane;
+
+                        gameplay_camera.viewport_width  = c.viewport_width * world.renderer.swapchain.width;
+                        gameplay_camera.viewport_height = c.viewport_height * world.renderer.swapchain.height;
+
+                        gameplay_camera.fov        = c.fov;
+                        gameplay_camera.ortho_size = c.ortho_size;
+
+                        gameplay_camera.type        = c.type;
+                        gameplay_camera.position    = t.world_position;
+                        gameplay_camera.orientation = t.world_rotation;
+
+                        world.renderer.composite_push_constants.enable_auto_exposure  = !c.manual_exposure;
+                        world.renderer.composite_push_constants.exposure_compensation = c.ev_compensation;
+                        world.renderer.composite_push_constants.min_ev100             = c.min_ev100;
+                        world.renderer.composite_push_constants.max_ev100             = c.max_ev100;
+                        world.renderer.adaption_speed                                 = c.adaption_speed;
+                        world.renderer.camera_aperture                                = c.aperture;
+                        world.renderer.camera_shutter_time                            = c.shutter_time;
+                        world.renderer.camera_iso                                     = c.iso;
+                        world.renderer.min_log_lum                                    = c.min_log_luminance;
+                        world.renderer.max_log_lum                                    = c.max_log_luminance;
+
+                        update_camera(gameplay_camera);
+
+                        camera = &gameplay_camera;
+                        break;
+                    }
+                }
+            } else {
+                camera = &editor_camera;
+            }
+        }
 
         if (world.renderer.frame_count == pick_frame) {
             void* ptr;
@@ -1391,6 +1399,7 @@ int main(int argc, char* argv[]) {
                     enable_snap ? &transform_snap.x : nullptr
                 )) {
                 using_gizmo = true;
+                t->dirty    = true;
 
                 glm::vec3 position;
                 glm::vec3 rotation;
@@ -1423,40 +1432,6 @@ int main(int argc, char* argv[]) {
 
                 if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
                     t->scale *= scale.x;
-                }
-
-                auto p = world.scene.get_component<components::Physics>(editor.get_selected_entity());
-                if (p && !p->is_static && !p->body_id.IsInvalid()) {
-                    JPH::EActivation activation = JPH::EActivation::Activate;
-
-                    auto last_position = world.physics.system.GetBodyInterface().GetPosition(p->body_id);
-                    auto new_position  = JPH::Vec3(
-                        last_position.GetX() + position.x,
-                        last_position.GetY() + position.y,
-                        last_position.GetZ() + position.z
-                    );
-
-                    if (tranform_gizmo_op == ImGuizmo::OPERATION::TRANSLATE) {
-                        world.physics.system.GetBodyInterface().SetPosition(p->body_id, new_position, activation);
-                    }
-
-                    if (tranform_gizmo_op == ImGuizmo::OPERATION::ROTATE) {
-                        world.physics.system.GetBodyInterface().SetRotation(
-                            p->body_id,
-                            JPH::Quat(t->rotation.x, t->rotation.y, t->rotation.z, t->rotation.w),
-                            activation
-                        );
-                    }
-
-                    if (tranform_gizmo_op == ImGuizmo::OPERATION::SCALEU) {
-                        auto shape     = world.physics.system.GetBodyInterface().GetShape(p->body_id);
-                        auto new_shape = shape->ScaleShape(JPH::Vec3(scale.x, scale.x, scale.x));
-                        if (new_shape.IsValid()) {
-                            world.physics.system.GetBodyInterface().SetShape(
-                                p->body_id, new_shape.Get(), false, activation
-                            );
-                        }
-                    }
                 }
             } else {
                 if (!world.input.is_button_pressed(Button::LEFT) && using_gizmo) {

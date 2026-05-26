@@ -16,6 +16,7 @@ template <> void Scene::remove_component_internal<components::Physics>(Entity no
 
     if (!p->body_id.IsInvalid()) {
         world->physics.system.GetBodyInterface().RemoveBody(p->body_id);
+        world->physics.system.GetBodyInterface().DestroyBody(p->body_id);
     }
 
     entity_registry.remove<components::Physics>(node);
@@ -119,41 +120,6 @@ Entity Scene::clone_node_internal(Entity base, Entity cloned_parent) {
 
     auto src_transform                                = get_component<components::Transform>(base);
     *get_component<components::Transform>(new_entity) = *src_transform;
-
-    auto src_physics = get_component<components::Physics>(base);
-    if (src_physics && !src_physics->body_id.IsInvalid()) {
-        auto& p              = add_component<components::Physics>(new_entity);
-        auto& body_interface = world->physics.system.GetBodyInterface();
-
-        JPH::EMotionType motion_type = body_interface.GetMotionType(src_physics->body_id);
-        JPH::Vec3        position    = body_interface.GetPosition(src_physics->body_id);
-        JPH::Quat        rotation    = body_interface.GetRotation(src_physics->body_id);
-
-        const JPH::Shape* shape = body_interface.GetShape(src_physics->body_id);
-
-        JPH::BodyCreationSettings settings(
-            shape,
-            JPH::RVec3(position),
-            rotation,
-            motion_type,
-            motion_type == JPH::EMotionType::Static ? Layers::NON_MOVING : Layers::MOVING
-        );
-
-        settings.mFriction      = body_interface.GetFriction(src_physics->body_id);
-        settings.mGravityFactor = body_interface.GetGravityFactor(src_physics->body_id);
-
-        JPH::Body*  new_body = body_interface.CreateBody(settings);
-        JPH::BodyID new_id   = new_body->GetID();
-
-        body_interface.AddBody(
-            new_id,
-            motion_type == JPH::EMotionType::Static ? JPH::EActivation::Activate : JPH::EActivation::DontActivate
-        );
-
-        p.body_id    = new_id;
-        p.is_static  = motion_type == JPH::EMotionType::Static;
-        p.last_scale = src_transform->scale;
-    }
 
     auto src_mesh = get_component<components::Mesh>(base);
     if (src_mesh) {
@@ -282,6 +248,16 @@ Entity Scene::clone_node_internal(Entity base, Entity cloned_parent) {
         animation.time         = src_animation->time;
     }
 
+    auto src_physics = get_component<components::Physics>(base);
+    if (src_physics && !src_physics->body_id.IsInvalid()) {
+        auto& p      = add_component<components::Physics>(new_entity);
+        p            = *src_physics;
+        p.body_id    = JPH::BodyID(JPH::BodyID::cInvalidBodyID);
+        p.last_scale = src_transform->scale;
+
+        world->rebuild_physics_body(new_entity);
+    }
+
     return new_entity;
 }
 
@@ -332,4 +308,22 @@ void Scene::remove_all_components(Entity node) {
         },
         AllComponents{}
     );
+}
+
+Scene::Scene() {
+    entity_registry.on_construct<components::Mesh>().connect<&::Scene::on_mesh_component_added>(this);
+}
+
+void Scene::on_mesh_component_added(entt::registry& registry, entt::entity e) {
+    auto* m = registry.try_get<components::Mesh>(e);
+    auto* p = registry.try_get<components::Physics>(e);
+    if (!m || !p) {
+        return;
+    }
+
+    if (m->instance.mesh_id != -1) {
+        Mesh& geometry  = world->resources.meshes[m->instance.mesh_id];
+        p->pivot_offset = (geometry.bounds_min + geometry.bounds_max) * 0.5f;
+        world->rebuild_physics_body(e);
+    }
 }

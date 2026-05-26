@@ -43,8 +43,8 @@ struct alignas(16) Mesh {
 };
 
 struct MeshInstance {
-    int mesh_id     = 0;
-    int material_id = 0;
+    int mesh_id     = -1;
+    int material_id = -1;
 
     int animation_id = -1;
     int skeleton_id  = -1;

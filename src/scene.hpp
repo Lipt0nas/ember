@@ -13,6 +13,8 @@ class Scene {
 public:
     entt::registry entity_registry;
 
+    Scene();
+
     void initialize(class World* world);
     void cleanup();
 
@@ -62,6 +64,8 @@ private:
     template <typename T, typename... Args> T& add_component_intenal(Entity entity, Args&&... args) {
         return entity_registry.emplace<T>(entity, std::forward<Args>(args)...);
     }
+
+    void on_mesh_component_added(entt::registry& registry, entt::entity e);
 };
 
 template <> void Scene::remove_component_internal<components::Physics>(Entity entity);

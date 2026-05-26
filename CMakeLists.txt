@@ -86,6 +86,12 @@ FetchContent_Declare(implot
   GIT_TAG 3da8bd34299965d3b0ab124df743fe3e076fa222
 )
 
+FetchContent_Declare(v-hacd
+  GIT_REPOSITORY https://github.com/kmammou/v-hacd.git
+  GIT_TAG v4.1.0
+  GIT_SHALLOW TRUE
+)
+
 set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
 set(TRACY_ON_DEMAND ON CACHE BOOL "" FORCE)
 set(TRACY_ONLY_LOCALHOST ON CACHE BOOL "" FORCE)
@@ -236,6 +242,7 @@ FetchContent_MakeAvailable(
     ktx
     miniaudio
     imgui_node_editor
+    v-hacd
 )
 
 target_link_libraries(volk PUBLIC Vulkan-Headers)
@@ -366,6 +373,7 @@ set(SOURCES
     "src/cvars.cpp"
 )
 add_executable(Ember ${SOURCES})
+target_include_directories(Ember PUBLIC ${v-hacd_SOURCE_DIR}/include)
 if(MINGW)
     target_compile_options(Ember PRIVATE -Wa,-mbig-obj)
 endif()

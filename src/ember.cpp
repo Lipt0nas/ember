@@ -14,3 +14,6 @@
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include <stb_truetype.h>
+
+#define ENABLE_VHACD_IMPLEMENTATION 1
+#include <VHACD.h>

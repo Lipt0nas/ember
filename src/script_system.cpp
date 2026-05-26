@@ -499,6 +499,10 @@ namespace {
         return glm::quat(glm::vec3(glm::radians(pitch), glm::radians(yaw), glm::radians(roll)));
     }
 
+    glm::quat quat_look_at(const glm::vec3& direction, const glm::vec3& up) {
+        return glm::quatLookAt(direction, up);
+    }
+
     std::string quat_to_string(const glm::quat* self) {
         std::stringstream ss;
         ss << "quat(" << self->w << ", " << self->x << ", " << self->y << ", " << self->z << ")";
@@ -1020,6 +1024,10 @@ namespace {
             "quat quat_from_euler(float pitch, float yaw, float roll)", asFUNCTION(quat_from_euler), asCALL_CDECL
         );
         assert(r >= 0);
+        r = engine->RegisterGlobalFunction(
+            "quat quat_look_at(const vec3 &in, const vec3 &in)", asFUNCTION(quat_look_at), asCALL_CDECL
+        );
+        assert(r >= 0);
     }
 
     void register_glm_types(asIScriptEngine* engine) {
@@ -1249,7 +1257,7 @@ namespace {
     }
 
     void node_physics_set_linear_velocity(glm::vec3 velocity, components::Physics* p) {
-        if (p->is_static || p->body_id.IsInvalid()) {
+        if (p->motion_type != PhysicsMotionType::DYNAMIC || p->body_id.IsInvalid()) {
             return;
         }
 
@@ -1263,7 +1271,7 @@ namespace {
     }
 
     void node_physics_set_angular_velocity(glm::vec3 velocity, components::Physics* p) {
-        if (p->is_static || p->body_id.IsInvalid()) {
+        if (p->motion_type != PhysicsMotionType::DYNAMIC || p->body_id.IsInvalid()) {
             return;
         }
 
@@ -1335,33 +1343,20 @@ namespace {
         }
     }
 
-    void node_physics_set_box_body(glm::vec3 half_extents, float mass, components::Physics* p) {
+    void node_physics_apply_impulse(glm::vec3 impulse, glm::vec3 position, components::Physics* p) {
+        if (p->body_id.IsInvalid()) {
+            return;
+        }
+
         auto world  = get_world_from_context();
         auto entity = world->scene.get_node_from_component(*p);
 
-        auto t = world->scene.get_component<components::Transform>(entity);
+        if (world->scene.entity_registry.valid(entity)) {
+            JPH::Vec3 target_impulse  = JPH::Vec3(impulse.x, impulse.y, impulse.z);
+            JPH::Vec3 target_position = JPH::Vec3(position.x, position.y, position.z);
 
-        if (!p->body_id.IsInvalid()) {
-            world->physics.system.GetBodyInterface().RemoveBody(p->body_id);
-            world->physics.system.GetBodyInterface().DestroyBody(p->body_id);
+            world->physics.system.GetBodyInterface().AddImpulse(p->body_id, target_impulse, target_position);
         }
-
-        auto body_settings = JPH::BodyCreationSettings(
-            new JPH::BoxShape(JPH::RVec3(half_extents.x, half_extents.y, half_extents.z)),
-            JPH::Vec3(t->position.x, t->position.y, t->position.z),
-            JPH::Quat::sIdentity(),
-            JPH::EMotionType::Dynamic,
-            Layers::MOVING
-        );
-        body_settings.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
-        body_settings.mMassPropertiesOverride.mMass = mass;
-
-        JPH::BodyID body_id =
-            world->physics.system.GetBodyInterface().CreateAndAddBody(body_settings, JPH::EActivation::Activate);
-        world->physics.system.GetBodyInterface().SetUserData(body_id, (uint32_t)entity);
-        p->body_id    = body_id;
-        p->is_static  = false;
-        p->last_scale = t->scale;
     }
 
     Mesh* node_mesh_get_mesh(components::Mesh* m) {
@@ -1760,6 +1755,13 @@ void ScriptSystem::initialize(class World* world) {
     engine->RegisterGlobalFunction(
         "bool cast_ray(vec3, vec3, float, float &out, Node &out)",
         asMETHOD(ScriptSystem, ScriptSystem::cast_ray),
+        asCALL_THISCALL_ASGLOBAL,
+        this
+    );
+
+    engine->RegisterGlobalFunction(
+        "bool cast_ray(vec3, vec3, float, vec3 &out, vec3 &out, Node &out)",
+        asMETHOD(ScriptSystem, ScriptSystem::cast_ray_hit_point),
         asCALL_THISCALL_ASGLOBAL,
         this
     );
@@ -2401,6 +2403,48 @@ bool ScriptSystem::cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance,
     return hit;
 }
 
+bool ScriptSystem::cast_ray_hit_point(
+    glm::vec3 origin, glm::vec3 dir, float max_distance, glm::vec3& out_pos, glm::vec3& out_normal, uint32_t& entity
+) {
+    JPH::RRayCast ray;
+    ray.mOrigin    = JPH::Vec3(origin.x, origin.y, origin.z);
+    ray.mDirection = JPH::Vec3(dir.x, dir.y, dir.z) * max_distance;
+
+    JPH::RayCastResult result;
+
+    bool hit = world->physics.system.GetNarrowPhaseQuery().CastRay(
+        ray,
+        result,
+        world->physics.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING | Layers::NON_MOVING),
+        world->physics.system.GetDefaultLayerFilter(Layers::MOVING | Layers::NON_MOVING)
+    );
+
+    entity = entt::null;
+
+    if (hit) {
+        JPH::BodyLockRead lock(world->physics.system.GetBodyLockInterface(), result.mBodyID);
+        if (lock.Succeeded()) {
+            const JPH::Body& body = lock.GetBody();
+
+            JPH::RVec3 hit_point = ray.GetPointOnRay(result.mFraction);
+            JPH::Vec3  normal    = body.GetWorldSpaceSurfaceNormal(result.mSubShapeID2, hit_point);
+
+            out_pos    = glm::vec3(hit_point.GetX(), hit_point.GetY(), hit_point.GetZ());
+            out_normal = glm::vec3(normal.GetX(), normal.GetY(), normal.GetZ());
+        }
+
+        auto view = world->scene.entity_registry.view<components::Physics>();
+        for (auto [e, p] : view.each()) {
+            if (p.body_id == result.mBodyID) {
+                entity = (uint32_t)e;
+                break;
+            }
+        }
+    }
+
+    return hit;
+}
+
 CScriptArray* ScriptSystem::find_nodes_with_tag(const std::string& tag) {
     auto nodes = world->scene.find_nodes_with_tag(tag);
 
@@ -2737,6 +2781,9 @@ void ScriptSystem::register_components(class asIScriptEngine* engine) {
         asCALL_CDECL_OBJLAST
     );
     engine->RegisterObjectMethod(
+        "Physics", "void apply_impulse(vec3, vec3)", asFUNCTION(node_physics_apply_impulse), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
         "Physics", "void set_linear_velocity(vec3)", asFUNCTION(node_physics_set_linear_velocity), asCALL_CDECL_OBJLAST
     );
     engine->RegisterObjectMethod(
@@ -2753,9 +2800,6 @@ void ScriptSystem::register_components(class asIScriptEngine* engine) {
     );
     engine->RegisterObjectMethod(
         "Physics", "void set_active(bool)", asFUNCTION(node_physics_set_active), asCALL_CDECL_OBJLAST
-    );
-    engine->RegisterObjectMethod(
-        "Physics", "void set_box_body(vec3, float = 1.0f)", asFUNCTION(node_physics_set_box_body), asCALL_CDECL_OBJLAST
     );
 
     register_component.operator()<components::Mesh>("Mesh");
@@ -2920,6 +2964,9 @@ void ScriptSystem::register_components(class asIScriptEngine* engine) {
     register_component.operator()<components::Sky>("Sky");
     engine->RegisterObjectProperty("Sky", "vec4 top_hemisphere", asOFFSET(components::Sky, top_hemisphere_color));
     engine->RegisterObjectProperty("Sky", "vec4 bottom_hemisphere", asOFFSET(components::Sky, bottom_hemisphere_color));
+
+    register_component.operator()<components::ParticleEffect>("ParticleEffect");
+    engine->RegisterObjectProperty("ParticleEffect", "bool dirty", asOFFSET(components::ParticleEffect, dirty));
 }
 
 void ScriptSystem::register_engine_events(class asIScriptEngine* engine) {
