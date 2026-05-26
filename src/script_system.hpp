@@ -66,9 +66,6 @@ public:
 
     const std::unordered_map<uint32_t, Script>& get_scripts();
 
-    // NOTE: might be unneeded if we have lazy initialization
-    void run_script(Entity entity, components::Script& script);
-
     void call_on_update(Entity entity, components::Script& script, float delta);
     void call_on_fixed_update(Entity entity, components::Script& script, float delta);
     void call_on_collision_started(Entity entity, components::Script& script, const CollisionStarted& e);
@@ -118,7 +115,6 @@ private:
     std::unordered_map<int, std::vector<EventSubscription>> event_subscriptions;
 
     bool initialize_script_object(Entity entity, ScriptInstance& instance, Script** handle);
-    void call_on_start(Entity entity, components::Script& script);
 
     void     subscribe_to_event(Entity entity, int event_type, class asIScriptFunction* callback);
     void     unsubscribe_from_event(Entity, int event_type);

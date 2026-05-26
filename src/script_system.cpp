@@ -2281,25 +2281,7 @@ bool ScriptSystem::initialize_script_object(Entity entity, ScriptInstance& insta
     }
     context->Unprepare();
 
-    return result;
-}
-
-void ScriptSystem::run_script(Entity entity, components::Script& s) {
-    call_on_start(entity, s);
-}
-
-void ScriptSystem::call_on_start(Entity entity, components::Script& s) {
-    Script* script = nullptr;
-
-    for (ScriptInstance& instance : s.scripts) {
-        if (!initialize_script_object(entity, instance, &script)) {
-            continue;
-        }
-
-        if (!script->on_start) {
-            continue;
-        }
-
+    if (result && script->on_start) {
         context->Prepare(script->on_start);
         context->SetObject(instance.object);
         int r = context->Execute();
@@ -2313,6 +2295,8 @@ void ScriptSystem::call_on_start(Entity entity, components::Script& s) {
         }
         context->Unprepare();
     }
+
+    return result;
 }
 
 void ScriptSystem::call_on_update(Entity entity, components::Script& s, float delta) {

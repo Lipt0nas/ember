@@ -682,7 +682,31 @@ int main(int argc, char* argv[]) {
 
                 update_transform_hierarchy(world, true);
                 JPH::BodyInterface& bi = world.physics.system.GetBodyInterface();
-                auto physics_view      = world.scene.entity_registry.view<components::Physics, components::Transform>();
+
+                // NOTE: I really dislike how this works, but at least it does work
+                {
+                    JPH::BodyIDVector body_ids;
+                    world.physics.system.GetBodies(body_ids);
+
+                    JPH::BodyIDVector bodies_to_remove;
+
+                    for (const JPH::BodyID& id : body_ids) {
+                        JPH::BodyLockRead lock(world.physics.system.GetBodyLockInterface(), id);
+                        if (lock.Succeeded()) {
+                            uint64_t entity_id = lock.GetBody().GetUserData();
+                            if (!world.scene.entity_registry.valid((entt::entity)entity_id)) {
+                                bodies_to_remove.push_back(id);
+                            }
+                        }
+                    }
+
+                    for (const JPH::BodyID& id : bodies_to_remove) {
+                        bi.RemoveBody(id);
+                        bi.DestroyBody(id);
+                    }
+                }
+
+                auto physics_view = world.scene.entity_registry.view<components::Physics, components::Transform>();
                 for (auto [e, p, t] : physics_view.each()) {
                     if (p.body_id.IsInvalid()) {
                         continue;
@@ -763,11 +787,6 @@ int main(int argc, char* argv[]) {
                     if (s.autoplay && s.instance_id == SoundSystem::INVALID_SOUND_INSTANCE) {
                         s.instance_id = world.node_play_sound(e);
                     }
-                }
-
-                auto view = world.scene.entity_registry.view<components::Script>();
-                for (auto [e, s] : view.each()) {
-                    world.script.run_script(e, s);
                 }
             }
         }

@@ -24,7 +24,7 @@ layout(set = 1, binding = 0) uniform sampler2D textures[];
 void main() {
     vec2 uv = vec2(in_uv.x, in_uv.y);
 
-    vec4 albedo = texture(textures[nonuniformEXT(in_data_index)], in_uv);
+    vec4 albedo = texture(textures[nonuniformEXT(in_data_index)], in_uv) * in_color;
     vec3 emissive = vec3(0.0);
     vec2 rougness_metallic = vec2(1.0, 0.0);
 
