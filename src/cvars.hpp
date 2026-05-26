@@ -48,6 +48,8 @@ public:
     virtual void load_from_file(const std::filesystem::path& path) = 0;
     virtual void save_to_file(const std::filesystem::path& path)   = 0;
 
+    virtual void render_ui() = 0;
+
 private:
 };
 

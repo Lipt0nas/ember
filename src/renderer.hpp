@@ -190,9 +190,7 @@ public:
     float camera_shutter_time = 1.0f / 60.0f;
     float camera_iso          = 100.0f;
 
-    bool editor_overlay   = true;
-    bool visualize_probes = false;
-    bool debug_physics    = false;
+    bool editor_overlay = true;
 
     std::array<uint64_t, 2> pipeline_stats;
 

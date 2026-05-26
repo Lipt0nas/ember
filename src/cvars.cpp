@@ -4,6 +4,7 @@
 
 #include <cereal/archives/json.hpp>
 #include <cereal/cereal.hpp>
+#include <imgui_stdlib.h>
 
 enum class CVarType : char {
     INT,
@@ -104,6 +105,8 @@ public:
 
     void load_from_file(const std::filesystem::path& path) override;
     void save_to_file(const std::filesystem::path& path) override;
+
+    void render_ui() override;
 
     constexpr static int32_t MAX_INT_CVARS = 1000;
     CVarArray<int32_t>       int_vars      = {MAX_INT_CVARS};
@@ -352,6 +355,96 @@ void CVarSystemImpl::save_to_file(const std::filesystem::path& path) {
     save_vars.operator()<float>();
     save_vars.operator()<bool>();
     save_vars.operator()<std::string>();
+}
+
+void CVarSystemImpl::render_ui() {
+    static std::string filter = "";
+
+    ImGui::InputText("Filter", &filter);
+    ImGui::Separator();
+
+    std::vector<CVarParam*> filtered_params;
+    auto                    add_parameter = [&](CVarParam* param) {
+        bool hidden = ((uint32_t)param->flags & (uint32_t)CVarFlags::HIDDEN);
+
+        if (!hidden) {
+            if (param->name.find(filter) != std::string::npos) {
+                filtered_params.push_back(param);
+            }
+        }
+    };
+
+    for (int i = 0; i < get_var_array<int32_t>()->last_var; i++) {
+        add_parameter(get_var_array<int32_t>()->storage[i].parameter);
+    }
+
+    for (int i = 0; i < get_var_array<bool>()->last_var; i++) {
+        add_parameter(get_var_array<bool>()->storage[i].parameter);
+    }
+
+    for (int i = 0; i < get_var_array<float>()->last_var; i++) {
+        add_parameter(get_var_array<float>()->storage[i].parameter);
+    }
+
+    for (int i = 0; i < get_var_array<std::string>()->last_var; i++) {
+        add_parameter(get_var_array<std::string>()->storage[i].parameter);
+    }
+
+    std::ranges::sort(filtered_params, [](CVarParam* a, CVarParam* b) {
+        return a->name < b->name;
+    });
+
+    auto edit_parameter = [&](CVarParam* param) {
+        bool editable = !((uint32_t)param->flags & (uint32_t)CVarFlags::READONLY);
+
+        switch (param->type) {
+        case CVarType::INT:
+            ImGui::InputInt(
+                param->name.c_str(),
+                get_var_array<int32_t>()->get_ptr(param->array_index),
+                1,
+                100,
+                editable ? 0 : ImGuiInputTextFlags_ReadOnly
+            );
+            break;
+        case CVarType::BOOL: {
+            auto  store = get_var_array<bool>()->get_storage(param->array_index);
+            bool  val   = store->current;
+            bool* edit  = editable ? &store->current : &val;
+
+            ImGui::Checkbox(param->name.c_str(), edit);
+        } break;
+        case CVarType::FLOAT:
+            ImGui::InputFloat(
+                param->name.c_str(),
+                get_var_array<float>()->get_ptr(param->array_index),
+                0.0f,
+                0.0f,
+                "%.3f",
+                editable ? 0 : ImGuiInputTextFlags_ReadOnly
+            );
+            break;
+        case CVarType::STRING:
+            ImGui::InputText(
+                param->name.c_str(),
+                get_var_array<std::string>()->get_ptr(param->array_index),
+                editable ? 0 : ImGuiInputTextFlags_ReadOnly
+            );
+            break;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::BeginItemTooltip()) {
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+            ImGui::TextUnformatted(param->description.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+    };
+
+    for (auto param : filtered_params) {
+        edit_parameter(param);
+    }
 }
 
 template <typename T> T* CVarSystemImpl::get_current_var(const std::string& id) {

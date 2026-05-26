@@ -15,7 +15,13 @@
 #include <glm/gtc/random.hpp>
 #include <tracy/TracyVulkan.hpp>
 
-BoolCVar editor_debug_ddgi("debug.show_ddgi_probes", "Render DDGI probes in world", false);
+BoolCVar ddgi_show_probes("debug.ddgi_show_probes", "Render DDGI probes in world", false);
+BoolCVar ddgi_cull_probes("debug.ddgi_cull_probes", "Do not render disabled DDGI probes", false);
+BoolCVar physics_enable_wireframe("debug.physics_wireframe", "Draw physics debug wireframe", false);
+
+BoolCVar node_component_wireframe(
+    "editor.node_component_wireframe", "Draw node component wireframe (Light bounds, Camera frustums, etc.", false
+);
 
 void transition_clear_color_image_subresource(
     const Image&            image,
@@ -7169,16 +7175,17 @@ void Renderer::render_frame(float delta_time) {
         VK_CHECK(vmaFlushAllocation(vma_allocator, light_buffer.allocation, offset, light_buffer.size));
     }
 
-    debug_renderer_constants.combined_matrix = camera->combined_matrix;
+    debug_renderer_constants.cull_innactive_probes = ddgi_cull_probes.get();
+    debug_renderer_constants.combined_matrix       = camera->combined_matrix;
     debug_renderer_start_frame(debug_renderer, frame_index);
 
-    if (debug_physics) {
+    if (physics_enable_wireframe.get()) {
         JPH::BodyManager::DrawSettings draw_settings = {};
         draw_settings.mDrawShapeWireframe            = true;
         world->physics.system.DrawBodies(draw_settings, world->physics.debug_renderer);
     }
 
-    if (ddgi_enabled() && editor_debug_ddgi.get()) {
+    if (ddgi_enabled() && ddgi_show_probes.get()) {
         glm::vec3 grid_shift =
             glm::vec3(ddgi_volume.probe_counts.x - 1, ddgi_volume.probe_counts.y - 1, ddgi_volume.probe_counts.z - 1) *
             ddgi_volume.probe_spacing * 0.5f;
@@ -7201,7 +7208,7 @@ void Renderer::render_frame(float delta_time) {
         }
     }
 
-    if (visualize_probes) {
+    if (node_component_wireframe.get()) {
         {
             auto view = world->scene.entity_registry.view<components::Transform, components::Camera>();
             for (auto [e, t, c] : view.each()) {

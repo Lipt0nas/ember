@@ -600,10 +600,6 @@ int main(int argc, char* argv[]) {
                 velocity.y = 1;
             }
 
-            if (world.input.is_key_just_pressed(Key::P)) {
-                world.renderer.visualize_probes = !world.renderer.visualize_probes;
-            }
-
             if (world.input.is_key_just_pressed(Key::ESCAPE) && world.input.is_key_pressed(Key::LEFT_SHIFT)) {
                 running = false;
             }
@@ -1125,7 +1121,9 @@ int main(int argc, char* argv[]) {
         ImGui::InputInt("Simulate Target FPS", &simulated_fps);
         ImGui::Checkbox("Simulate FPS", &simulate_lower_fps);
 
-        ImGui::Checkbox("Debug Physics", &world.renderer.debug_physics);
+        if (ImGui::CollapsingHeader("Variables")) {
+            CVars::get()->render_ui();
+        }
 
         if (ImGui::CollapsingHeader("Renderer Info", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Text("Rendering path: %s", world.renderer.meshlets_enabled ? "Meshlets" : "Indirect");
@@ -1232,12 +1230,6 @@ int main(int argc, char* argv[]) {
         }
 
         if (ImGui::CollapsingHeader("Rendering")) {
-            ImGui::SeparatorText("DDGI");
-            ImGui::Checkbox("Visualize Probes", (bool*)&world.renderer.visualize_probes);
-            ImGui::Checkbox(
-                "Cull Innactive Probes", (bool*)&world.renderer.debug_renderer_constants.cull_innactive_probes
-            );
-
             ImGui::SeparatorText("Light Pass");
             ImGui::SeparatorText("Bloom");
             ImGui::SliderFloat("Bloom Upscale radius", &world.renderer.bloom_upscale_sample_scale, 0.0, 5.0);
@@ -1524,6 +1516,8 @@ int main(int argc, char* argv[]) {
         world.input.update_key_states();
     }
     world.renderer.wait_idle();
+
+    CVars::get()->save_to_file(std::filesystem::path(project_path) / CVars::FILENAME);
 
     spdlog::info("Cleaning up");
 
