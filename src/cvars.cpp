@@ -1,7 +1,5 @@
 #include "cvars.hpp"
 
-#include "ui.hpp"
-
 #include <shared_mutex>
 
 #include <cereal/archives/json.hpp>
@@ -106,8 +104,6 @@ public:
 
     void load_from_file(const std::filesystem::path& path) override;
     void save_to_file(const std::filesystem::path& path) override;
-
-    void register_console_commands(imgui_console* console) override;
 
     constexpr static int32_t MAX_INT_CVARS = 1000;
     CVarArray<int32_t>       int_vars      = {MAX_INT_CVARS};
@@ -356,105 +352,6 @@ void CVarSystemImpl::save_to_file(const std::filesystem::path& path) {
     save_vars.operator()<float>();
     save_vars.operator()<bool>();
     save_vars.operator()<std::string>();
-}
-
-void CVarSystemImpl::register_console_commands(imgui_console* console) {
-    auto var_name_completer = [this](const std::string& prefix) -> std::vector<std::string> {
-        std::vector<std::string> matches;
-        auto                     collect = [&]<typename T>(auto* arr) {
-            for (int32_t i = 0; i < arr->last_var; i++) {
-                std::string name = arr->storage[i].parameter->name;
-                if (name.starts_with(prefix)) {
-                    matches.push_back(std::move(name));
-                }
-            }
-        };
-        collect.operator()<int32_t>(get_var_array<int32_t>());
-        collect.operator()<float>(get_var_array<float>());
-        collect.operator()<bool>(get_var_array<bool>());
-        collect.operator()<std::string>(get_var_array<std::string>());
-        return matches;
-    };
-
-    console->register_command(
-        "var_get",
-        "Get the value of a cvar",
-        [this, console](std::vector<std::string> args) {
-            if (args.empty()) {
-                console->add_log("Usage: var_get <name>", spdlog::level::warn);
-                return;
-            }
-            const auto& name = args[0];
-            CVarParam*  p    = get_var(name);
-            if (!p) {
-                console->add_log("Unknown cvar: " + name, spdlog::level::err);
-                return;
-            }
-            switch (p->type) {
-            case CVarType::INT:
-                console->add_log(name + " = " + std::to_string(*get_int_var(name)), spdlog::level::info);
-                break;
-            case CVarType::FLOAT:
-                console->add_log(name + " = " + std::to_string(*get_float_var(name)), spdlog::level::info);
-                break;
-            case CVarType::BOOL:
-                console->add_log(
-                    name + " = " + std::string(*get_bool_var(name) ? "true" : "false"), spdlog::level::info
-                );
-                break;
-            case CVarType::STRING:
-                console->add_log(name + " = " + *get_string_var(name), spdlog::level::info);
-                break;
-            default:
-                console->add_log("Unknown type for cvar: " + name, spdlog::level::err);
-                break;
-            }
-        },
-        var_name_completer
-    );
-
-    console->register_command(
-        "var_set",
-        "Set the value of a cvar",
-        [this, console](std::vector<std::string> args) {
-            if (args.size() < 2) {
-                console->add_log("Usage: var_set <name> <value>", spdlog::level::warn);
-                return;
-            }
-            const auto& name  = args[0];
-            const auto& value = args[1];
-            CVarParam*  p     = get_var(name);
-            if (!p) {
-                console->add_log("Unknown cvar: " + name, spdlog::level::err);
-                return;
-            }
-            try {
-                switch (p->type) {
-                case CVarType::INT:
-                    set_int_var(name, std::stoi(value));
-                    break;
-                case CVarType::FLOAT:
-                    set_float_var(name, std::stof(value));
-                    break;
-                case CVarType::BOOL:
-                    set_bool_var(name, value == "1" || value == "true");
-                    break;
-                case CVarType::STRING:
-                    set_string_var(name, value);
-                    break;
-                default:
-                    console->add_log("Unknown type for cvar: " + name, spdlog::level::err);
-                    return;
-                }
-                console->add_log(name + " = " + value, spdlog::level::info);
-            } catch (const std::invalid_argument&) {
-                console->add_log("Invalid value for " + name + ": " + value, spdlog::level::err);
-            } catch (const std::out_of_range&) {
-                console->add_log("Value out of range for " + name + ": " + value, spdlog::level::err);
-            }
-        },
-        var_name_completer
-    );
 }
 
 template <typename T> T* CVarSystemImpl::get_current_var(const std::string& id) {

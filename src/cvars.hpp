@@ -48,8 +48,6 @@ public:
     virtual void load_from_file(const std::filesystem::path& path) = 0;
     virtual void save_to_file(const std::filesystem::path& path)   = 0;
 
-    virtual void register_console_commands(class imgui_console* console) = 0;
-
 private:
 };
 
