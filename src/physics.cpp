@@ -127,6 +127,7 @@ void PhysicsSystem::flush_pending_contacts() {
 
         if (auto* s = contact_listener.world->scene.get_component<components::Script>((entt::entity)ev.body_1)) {
             contact_listener.world->script.call_on_collision_started(
+                (Entity)ev.body_1,
                 *s,
                 CollisionStarted{
                     .other             = ev.body_2,
@@ -140,6 +141,7 @@ void PhysicsSystem::flush_pending_contacts() {
 
         if (auto* s = contact_listener.world->scene.get_component<components::Script>((entt::entity)ev.body_2)) {
             contact_listener.world->script.call_on_collision_started(
+                (Entity)ev.body_2,
                 *s,
                 CollisionStarted{
                     .other             = ev.body_1,
@@ -191,11 +193,11 @@ void PhysicsSystem::flush_pending_contacts() {
         contact_listener.world->script.issue_event(ev);
 
         if (auto* s = contact_listener.world->scene.get_component<components::Script>((entt::entity)id1)) {
-            contact_listener.world->script.call_on_collision_ended(*s, CollisionEnded{.other = id2});
+            contact_listener.world->script.call_on_collision_ended((Entity)id1, *s, CollisionEnded{.other = id2});
         }
 
         if (auto* s = contact_listener.world->scene.get_component<components::Script>((entt::entity)id2)) {
-            contact_listener.world->script.call_on_collision_ended(*s, CollisionEnded{.other = id1});
+            contact_listener.world->script.call_on_collision_ended((Entity)id2, *s, CollisionEnded{.other = id1});
         }
     }
 

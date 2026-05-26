@@ -66,15 +66,17 @@ public:
 
     const std::unordered_map<uint32_t, Script>& get_scripts();
 
-    void construct_script_objects(Entity entity, components::Script& script);
-    void call_on_start(const components::Script& script);
-    void call_on_update(const components::Script& script, float delta);
-    void call_on_fixed_update(const components::Script& script, float delta);
-    void call_on_collision_started(const components::Script& script, const CollisionStarted& e);
-    void call_on_collision_ended(const components::Script& script, const CollisionEnded& e);
+    // NOTE: might be unneeded if we have lazy initialization
+    void run_script(Entity entity, components::Script& script);
+
+    void call_on_update(Entity entity, components::Script& script, float delta);
+    void call_on_fixed_update(Entity entity, components::Script& script, float delta);
+    void call_on_collision_started(Entity entity, components::Script& script, const CollisionStarted& e);
+    void call_on_collision_ended(Entity entity, components::Script& script, const CollisionEnded& e);
 
     friend void node_get_component(class asIScriptGeneric* gen);
     friend void node_add_component(class asIScriptGeneric* gen);
+    friend void node_remove_component(class asIScriptGeneric* gen);
 
     friend void bind_event(class asIScriptGeneric* gen);
 
@@ -90,6 +92,12 @@ public:
     void flush_events();
 
 private:
+    struct RemoveEvent {
+        Entity node;
+        bool   remove_children;
+    };
+    std::vector<RemoveEvent> node_remove_queue;
+
     struct Event {
         int                  type_id;
         std::vector<uint8_t> data;
@@ -108,6 +116,9 @@ private:
         class asIScriptFunction* callback;
     };
     std::unordered_map<int, std::vector<EventSubscription>> event_subscriptions;
+
+    bool initialize_script_object(Entity entity, ScriptInstance& instance, Script** handle);
+    void call_on_start(Entity entity, components::Script& script);
 
     void     subscribe_to_event(Entity entity, int event_type, class asIScriptFunction* callback);
     void     unsubscribe_from_event(Entity, int event_type);
@@ -142,6 +153,7 @@ private:
 
     std::unordered_map<int, std::function<void*(Scene& scene, Entity e)>> component_retrieve_map;
     std::unordered_map<int, std::function<void*(Scene& scene, Entity e)>> component_create_map;
+    std::unordered_map<int, std::function<void(Scene& scene, Entity e)>>  component_remove_map;
 
     void register_node_type(class asIScriptEngine* engine);
     void register_components(class asIScriptEngine* engine);

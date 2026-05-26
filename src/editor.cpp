@@ -242,6 +242,7 @@ template <> bool Editor::render_component_ui<components::Script>(Entity e) {
         }
 
         if (script) {
+            ImGui::Checkbox("Active", &instance.active);
             ImGui::SeparatorText(script->name.c_str());
 
             for (auto& prop : script->editable_properties) {
@@ -1487,6 +1488,10 @@ void Editor::set_selected_entity(Entity e) {
 }
 
 Entity Editor::get_selected_entity() {
+    if (!world->scene.entity_registry.valid(this->selected_entity)) {
+        this->selected_entity = entt::null;
+    }
+
     return this->selected_entity;
 }
 

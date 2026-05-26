@@ -767,11 +767,7 @@ int main(int argc, char* argv[]) {
 
                 auto view = world.scene.entity_registry.view<components::Script>();
                 for (auto [e, s] : view.each()) {
-                    world.script.construct_script_objects(e, s);
-                }
-
-                for (auto [e, s] : view.each()) {
-                    world.script.call_on_start(s);
+                    world.script.run_script(e, s);
                 }
             }
         }
@@ -860,7 +856,7 @@ int main(int argc, char* argv[]) {
                 if (!editor_mode) {
                     auto script_view = world.scene.entity_registry.view<components::Script>();
                     for (auto [e, s] : script_view.each()) {
-                        world.script.call_on_fixed_update(s, world.physics.frame_time);
+                        world.script.call_on_fixed_update(e, s, world.physics.frame_time);
                     }
                 }
 
@@ -981,7 +977,7 @@ int main(int argc, char* argv[]) {
         if (!editor_mode) {
             auto script_view = world.scene.entity_registry.view<components::Script>();
             for (auto [e, s] : script_view.each()) {
-                world.script.call_on_update(s, delta_time);
+                world.script.call_on_update(e, s, delta_time);
             }
         }
 

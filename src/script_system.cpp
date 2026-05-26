@@ -1523,6 +1523,27 @@ void node_add_component(asIScriptGeneric* gen) {
     }
 }
 
+void node_remove_component(asIScriptGeneric* gen) {
+    auto type_id = gen->GetEngine()->GetTypeInfoById(gen->GetReturnTypeId())->GetTypeId();
+
+    Entity entity = *reinterpret_cast<Entity*>(gen->GetObject());
+
+    auto world = get_world_from_context();
+    auto it    = world->script.component_remove_map.find(type_id);
+
+    if (it != world->script.component_remove_map.end()) {
+        it->second(world->scene, entity);
+    }
+}
+
+ScriptInstance* script_get_script(int index, components::Script* self) {
+    return &self->scripts[index];
+}
+
+int script_get_count(components::Script* self) {
+    return (int)self->scripts.size();
+}
+
 void bind_event(asIScriptGeneric* gen) {
     auto handler = (*(asIScriptFunction**)gen->GetAddressOfArg(0));
     handler->AddRef();
@@ -2192,165 +2213,217 @@ const std::unordered_map<uint32_t, Script>& ScriptSystem::get_scripts() {
     return scripts;
 }
 
-void ScriptSystem::construct_script_objects(Entity entity, components::Script& s) {
+bool ScriptSystem::initialize_script_object(Entity entity, ScriptInstance& instance, Script** handle) {
+    if (!instance.active) {
+        return false;
+    }
+
+    auto it = scripts.find(instance.script_id);
+    if (it == scripts.end()) {
+        return false;
+    }
+
+    auto script = &it->second;
+    *handle     = script;
+
+    if (!script->valid) {
+        return false;
+    }
+
+    if (instance.object) {
+        return true;
+    }
+
+    if (!script->constructor) {
+        return false;
+    }
+
+    bool result = true;
+
+    context->Prepare(script->constructor);
+    int r = context->Execute();
+    if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
+        spdlog::error(
+            "Exception executing script constructor: {} ({}:{})",
+            context->GetExceptionString(),
+            context->GetExceptionFunction()->GetDeclaration(),
+            context->GetExceptionLineNumber()
+        );
+
+        result = false;
+    } else if (r == asEXECUTION_FINISHED) {
+        instance.object = *((asIScriptObject**)context->GetAddressOfReturnValue());
+        auto object     = ((asIScriptObject*)instance.object);
+        object->AddRef();
+
+        asITypeInfo* type        = object->GetObjectType();
+        uint32_t*    node_id_ptr = (uint32_t*)object->GetAddressOfProperty(node_id_property_index);
+        *node_id_ptr             = (uint32_t)entity;
+
+        for (auto& property : script->editable_properties) {
+            auto it = instance.property_overrides.find(property.name);
+
+            if (it != instance.property_overrides.end()) {
+                auto id = object->GetPropertyTypeId(property.index);
+
+                if (property.type_id == id) {
+                    auto prop = object->GetAddressOfProperty(property.index);
+                    std::visit(
+                        [prop](auto&& value) {
+                            using T                = std::decay_t<decltype(value)>;
+                            *static_cast<T*>(prop) = value;
+                        },
+                        it->second.value
+                    );
+                }
+            }
+        }
+    }
+    context->Unprepare();
+
+    return result;
+}
+
+void ScriptSystem::run_script(Entity entity, components::Script& s) {
+    call_on_start(entity, s);
+}
+
+void ScriptSystem::call_on_start(Entity entity, components::Script& s) {
+    Script* script = nullptr;
+
     for (ScriptInstance& instance : s.scripts) {
-        if (scripts.contains(instance.script_id)) {
-            auto& script = scripts.at(instance.script_id);
-            if (script.valid && script.constructor && !instance.object) {
-                context->Prepare(script.constructor);
-                int r = context->Execute();
-                if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
-                    spdlog::error(
-                        "Exception executing script: {} ({}:{})",
-                        context->GetExceptionString(),
-                        context->GetExceptionFunction()->GetDeclaration(),
-                        context->GetExceptionLineNumber()
-                    );
-                } else if (r == asEXECUTION_FINISHED) {
-                    instance.object = *((asIScriptObject**)context->GetAddressOfReturnValue());
-                    auto object     = ((asIScriptObject*)instance.object);
-                    object->AddRef();
-
-                    asITypeInfo* type        = object->GetObjectType();
-                    uint32_t*    node_id_ptr = (uint32_t*)object->GetAddressOfProperty(node_id_property_index);
-                    *node_id_ptr             = (uint32_t)entity;
-
-                    for (auto& property : script.editable_properties) {
-                        auto it = instance.property_overrides.find(property.name);
-
-                        if (it != instance.property_overrides.end()) {
-                            auto id = object->GetPropertyTypeId(property.index);
-
-                            if (property.type_id == id) {
-                                auto prop = object->GetAddressOfProperty(property.index);
-                                std::visit(
-                                    [prop](auto&& value) {
-                                        using T                = std::decay_t<decltype(value)>;
-                                        *static_cast<T*>(prop) = value;
-                                    },
-                                    it->second.value
-                                );
-                            }
-                        }
-                    }
-                }
-                context->Unprepare();
-            }
+        if (!initialize_script_object(entity, instance, &script)) {
+            continue;
         }
+
+        if (!script->on_start) {
+            continue;
+        }
+
+        context->Prepare(script->on_start);
+        context->SetObject(instance.object);
+        int r = context->Execute();
+        if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
+            spdlog::error(
+                "Exception executing script start(): {} ({}:{})",
+                context->GetExceptionString(),
+                context->GetExceptionFunction()->GetDeclaration(),
+                context->GetExceptionLineNumber()
+            );
+        }
+        context->Unprepare();
     }
 }
 
-void ScriptSystem::call_on_start(const components::Script& s) {
-    for (const ScriptInstance& instance : s.scripts) {
-        if (scripts.contains(instance.script_id)) {
-            auto& script = scripts.at(instance.script_id);
-            if (script.valid && script.on_start && instance.object) {
-                context->Prepare(script.on_start);
-                context->SetObject(instance.object);
-                int r = context->Execute();
-                if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
-                    spdlog::error(
-                        "Exception executing script: {} ({}:{})",
-                        context->GetExceptionString(),
-                        context->GetExceptionFunction()->GetDeclaration(),
-                        context->GetExceptionLineNumber()
-                    );
-                }
-                context->Unprepare();
-            }
+void ScriptSystem::call_on_update(Entity entity, components::Script& s, float delta) {
+    Script* script = nullptr;
+
+    for (ScriptInstance& instance : s.scripts) {
+        if (!initialize_script_object(entity, instance, &script)) {
+            continue;
         }
+
+        if (!script->on_update) {
+            continue;
+        }
+
+        context->Prepare(script->on_update);
+        context->SetObject(instance.object);
+        context->SetArgFloat(0, delta);
+        int r = context->Execute();
+        if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
+            spdlog::error(
+                "Exception executing script on_update(): {} ({}:{})",
+                context->GetExceptionString(),
+                context->GetExceptionFunction()->GetDeclaration(),
+                context->GetExceptionLineNumber()
+            );
+        }
+        context->Unprepare();
     }
 }
 
-void ScriptSystem::call_on_update(const components::Script& s, float delta) {
-    for (const ScriptInstance& instance : s.scripts) {
-        if (scripts.contains(instance.script_id)) {
-            auto& script = scripts.at(instance.script_id);
-            if (script.valid && script.on_update && instance.object) {
-                context->Prepare(script.on_update);
-                context->SetObject(instance.object);
-                context->SetArgFloat(0, delta);
-                int r = context->Execute();
-                if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
-                    spdlog::error(
-                        "Exception executing script: {} ({}:{})",
-                        context->GetExceptionString(),
-                        context->GetExceptionFunction()->GetDeclaration(),
-                        context->GetExceptionLineNumber()
-                    );
-                }
-                context->Unprepare();
-            }
+void ScriptSystem::call_on_fixed_update(Entity entity, components::Script& s, float delta) {
+    Script* script = nullptr;
+
+    for (ScriptInstance& instance : s.scripts) {
+        if (!initialize_script_object(entity, instance, &script)) {
+            continue;
         }
+
+        if (!script->on_fixed_update) {
+            continue;
+        }
+
+        context->Prepare(script->on_fixed_update);
+        context->SetObject(instance.object);
+        context->SetArgFloat(0, delta);
+        int r = context->Execute();
+        if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
+            spdlog::error(
+                "Exception executing script on_fixed_update(): {} ({}:{})",
+                context->GetExceptionString(),
+                context->GetExceptionFunction()->GetDeclaration(),
+                context->GetExceptionLineNumber()
+            );
+        }
+        context->Unprepare();
     }
 }
 
-void ScriptSystem::call_on_fixed_update(const components::Script& s, float delta) {
-    for (const ScriptInstance& instance : s.scripts) {
-        if (scripts.contains(instance.script_id)) {
-            auto& script = scripts.at(instance.script_id);
-            if (script.valid && script.on_fixed_update && instance.object) {
-                context->Prepare(script.on_fixed_update);
-                context->SetObject(instance.object);
-                context->SetArgFloat(0, delta);
-                int r = context->Execute();
-                if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
-                    spdlog::error(
-                        "Exception executing script: {} ({}:{})",
-                        context->GetExceptionString(),
-                        context->GetExceptionFunction()->GetDeclaration(),
-                        context->GetExceptionLineNumber()
-                    );
-                }
-                context->Unprepare();
-            }
+void ScriptSystem::call_on_collision_started(Entity entity, components::Script& s, const CollisionStarted& e) {
+    Script* script = nullptr;
+
+    for (ScriptInstance& instance : s.scripts) {
+        if (!initialize_script_object(entity, instance, &script)) {
+            continue;
         }
+
+        if (!script->on_collision_started) {
+            continue;
+        }
+
+        context->Prepare(script->on_collision_started);
+        context->SetObject(instance.object);
+        context->SetArgObject(0, (void*)&e);
+        int r = context->Execute();
+        if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
+            spdlog::error(
+                "Exception executing script on_collision_started(): {} ({}:{})",
+                context->GetExceptionString(),
+                context->GetExceptionFunction()->GetDeclaration(),
+                context->GetExceptionLineNumber()
+            );
+        }
+        context->Unprepare();
     }
 }
 
-void ScriptSystem::call_on_collision_started(const components::Script& s, const CollisionStarted& e) {
-    for (const ScriptInstance& instance : s.scripts) {
-        if (scripts.contains(instance.script_id)) {
-            auto& script = scripts.at(instance.script_id);
-            if (script.valid && script.on_collision_started && instance.object) {
-                context->Prepare(script.on_collision_started);
-                context->SetObject(instance.object);
-                context->SetArgObject(0, (void*)&e);
-                int r = context->Execute();
-                if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
-                    spdlog::error(
-                        "Exception executing script: {} ({}:{})",
-                        context->GetExceptionString(),
-                        context->GetExceptionFunction()->GetDeclaration(),
-                        context->GetExceptionLineNumber()
-                    );
-                }
-                context->Unprepare();
-            }
-        }
-    }
-}
+void ScriptSystem::call_on_collision_ended(Entity entity, components::Script& s, const CollisionEnded& e) {
+    Script* script = nullptr;
 
-void ScriptSystem::call_on_collision_ended(const components::Script& s, const CollisionEnded& e) {
-    for (const ScriptInstance& instance : s.scripts) {
-        if (scripts.contains(instance.script_id)) {
-            auto& script = scripts.at(instance.script_id);
-            if (script.valid && script.on_collision_ended && instance.object) {
-                context->Prepare(script.on_collision_ended);
-                context->SetObject(instance.object);
-                context->SetArgObject(0, (void*)&e);
-                int r = context->Execute();
-                if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
-                    spdlog::error(
-                        "Exception executing script: {} ({}:{})",
-                        context->GetExceptionString(),
-                        context->GetExceptionFunction()->GetDeclaration(),
-                        context->GetExceptionLineNumber()
-                    );
-                }
-                context->Unprepare();
-            }
+    for (ScriptInstance& instance : s.scripts) {
+        if (!initialize_script_object(entity, instance, &script)) {
+            continue;
         }
+
+        if (!script->on_collision_ended) {
+            continue;
+        }
+
+        context->Prepare(script->on_collision_ended);
+        context->SetObject(instance.object);
+        context->SetArgObject(0, (void*)&e);
+        int r = context->Execute();
+        if (r != asEXECUTION_FINISHED && r == asEXECUTION_EXCEPTION) {
+            spdlog::error(
+                "Exception executing script: {} ({}:{})",
+                context->GetExceptionString(),
+                context->GetExceptionFunction()->GetDeclaration(),
+                context->GetExceptionLineNumber()
+            );
+        }
+        context->Unprepare();
     }
 }
 
@@ -2368,7 +2441,7 @@ Entity ScriptSystem::find_node(const std::string& name) {
 }
 
 void ScriptSystem::delete_node(Entity node, bool delete_children) {
-    world->scene.delete_node(node, delete_children);
+    node_remove_queue.emplace_back(node, delete_children);
 }
 
 bool ScriptSystem::cast_ray(glm::vec3 origin, glm::vec3 dir, float max_distance, float& t, uint32_t& entity) {
@@ -2669,6 +2742,9 @@ void ScriptSystem::register_node_type(class asIScriptEngine* engine) {
 
     engine->RegisterObjectMethod("Node", "T@ get_component<T>() const", asFUNCTION(node_get_component), asCALL_GENERIC);
     engine->RegisterObjectMethod("Node", "T@ add_component<T>()", asFUNCTION(node_add_component), asCALL_GENERIC);
+    engine->RegisterObjectMethod(
+        "Node", "void remove_component<T>()", asFUNCTION(node_remove_component), asCALL_GENERIC
+    );
     engine->RegisterObjectMethod("Node", "Node clone()", asFUNCTION(clone_node), asCALL_CDECL_OBJFIRST);
 
     engine->RegisterObjectMethod("Node", "Node find_child(string &in)", asFUNCTION(find_child), asCALL_CDECL_OBJFIRST);
@@ -2703,6 +2779,13 @@ void ScriptSystem::register_components(class asIScriptEngine* engine) {
                 scene.add_component<T>(e);
 
                 return scene.get_component<T>(e);
+            },
+        });
+
+        component_remove_map.insert({
+            type->GetTypeId(),
+            [](Scene& scene, Entity e) {
+                scene.remove_component<T>(e);
             },
         });
 
@@ -2967,6 +3050,17 @@ void ScriptSystem::register_components(class asIScriptEngine* engine) {
 
     register_component.operator()<components::ParticleEffect>("ParticleEffect");
     engine->RegisterObjectProperty("ParticleEffect", "bool dirty", asOFFSET(components::ParticleEffect, dirty));
+
+    engine->RegisterObjectType("ScriptInstance", sizeof(ScriptInstance), asOBJ_REF | asOBJ_NOCOUNT);
+    engine->RegisterObjectProperty("ScriptInstance", "bool active", asOFFSET(ScriptInstance, active));
+
+    register_component.operator()<components::Script>("Script");
+    engine->RegisterObjectMethod(
+        "Script", "ScriptInstance@ opIndex(int index)", asFUNCTION(script_get_script), asCALL_CDECL_OBJLAST
+    );
+    engine->RegisterObjectMethod(
+        "Script", "int get_script_count()", asFUNCTION(script_get_count), asCALL_CDECL_OBJLAST
+    );
 }
 
 void ScriptSystem::register_engine_events(class asIScriptEngine* engine) {
@@ -3080,4 +3174,9 @@ void ScriptSystem::flush_events() {
     }
 
     engine_event_queue.clear();
+
+    for (auto& action : node_remove_queue) {
+        world->scene.delete_node(action.node, action.remove_children);
+    }
+    node_remove_queue.clear();
 }

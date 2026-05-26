@@ -37,6 +37,8 @@ template <typename Archive> void serialize(Archive& archive, ScriptProperty& pro
 }
 
 struct ScriptInstance {
+    bool active = true;
+
     AssetID                                         script_id;
     std::unordered_map<std::string, ScriptProperty> property_overrides;
     void*                                           object = nullptr;
@@ -69,6 +71,10 @@ template <typename Archive> void serialize(Archive& archive, ScriptInstance& scr
     archive(
         cereal::make_nvp("id", script.script_id), cereal::make_nvp("property_overrides", script.property_overrides)
     );
+
+    if (version > 0) {
+        archive(cereal::make_nvp("active", script.active));
+    }
 }
 
 namespace components {
@@ -459,7 +465,7 @@ namespace components {
 
 CEREAL_CLASS_VERSION(ScriptProperty, 0)
 CEREAL_CLASS_VERSION(MaterialOverrides, 0)
-CEREAL_CLASS_VERSION(ScriptInstance, 0)
+CEREAL_CLASS_VERSION(ScriptInstance, 1)
 CEREAL_CLASS_VERSION(components::Transform, 0)
 CEREAL_CLASS_VERSION(components::Name, 0)
 CEREAL_CLASS_VERSION(components::Material, 0)
