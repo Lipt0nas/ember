@@ -44,8 +44,12 @@ struct ParticleEmitterConfig {
     bool     attached         = false;
 
     template <class Archive> void serialize(Archive& ar, const uint32_t version) {
-        ar(CEREAL_NVP(max_particles), CEREAL_NVP(emission_rate), CEREAL_NVP(emitter_lifetime),
-           CEREAL_NVP(loop), CEREAL_NVP(additive), CEREAL_NVP(attached));
+        ar(CEREAL_NVP(max_particles),
+           CEREAL_NVP(emission_rate),
+           CEREAL_NVP(emitter_lifetime),
+           CEREAL_NVP(loop),
+           CEREAL_NVP(additive),
+           CEREAL_NVP(attached));
     }
 };
 
